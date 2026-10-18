@@ -1,61 +1,65 @@
-# Albert
+# albert
 
-Harness-native engineering orchestrator for one repository at a time. Albert talks to the human, scopes tasks, delegates to four named subagents, and reports only supported outcomes. Albert never implements application code.
+**One voice. Four workers. Your repo.**
 
-## Agents
+Tell Albert what to build, fix, or review. It delegates using your existing **Pi** or **Claude Code** agents. No daemon. No dashboard. No database. No tmux.
 
-- **Albert**: coordinator, installed as primary instructions (`AGENTS.md` for Pi; `CLAUDE.md` for Claude Code).
-- **Nora**: investigator, architecture/research/scoping.
-- **Felix**: engineer, the code-writing worker.
-- **Vera**: independent consequential-change review.
-- **Iris**: observable E2E/smoke acceptance.
+```text
+           you
+            │
+          albert    plan · delegate · verify · report
+            │
+      ┌─────┼─────┬─────┐
+     nora  felix  vera  iris
+     think  build  review  test
+```
 
-Native delegation only: `nathanstephenson/pi-subagents` for Pi; built-in agents for Claude Code. No custom orchestration service, tmux dependency, database, or task logs.
+### the crew
 
-## Install
+| Agent | Job |
+| --- | --- |
+| **Albert** | Scope, route, decide, report. Never writes app code. |
+| **Nora** | Investigate what isn't clear. |
+| **Felix** | Ship the change. Own the checks. |
+| **Vera** | Independent review when it matters. |
+| **Iris** | Real E2E / smoke acceptance. No invented PASS. |
 
-Run from this repository (after applying the migration bundle). Launch the keyboard-driven TUI (arrows/`j`/`k`, Space/Enter, Esc) and review the planned writes before confirming:
+Work starts from normal conversation. Background work when useful. One writer per checkout. Fix/review loops are bounded. [Workflow details →](docs/workflow.md)
+
+### install
+
+Pi needs **>=1.1.0** and [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents):
 
 ```sh
+pi install npm:@tintinweb/pi-subagents
 ./install.sh
 ```
 
-For unattended or scripted installs, pass explicit flags:
+Arrows / `j` `k` · Space / Enter · Esc. Review changes, then install.
+
+**No TUI?**
 
 ```sh
-./install.sh --harness pi --scope global --dry-run
 ./install.sh --harness pi,claude --scope global
-./install.sh --harness claude --scope project --target /path/to/kanade
+./install.sh --harness claude --scope project --target /path/to/repo
 ./install.sh --harness pi --scope global --with-jev
+./install.sh --harness pi,claude --scope project --dry-run
 ```
 
-Global uses `~/.pi/agent` and `~/.claude`. Project uses `.pi/` and `.claude/` plus root instruction files. Existing instruction files are augmented inside a managed block, not overwritten. Existing user settings/models/packages are unchanged. Installation writes backups if replacing managed paths. The TUI includes a mandatory preview; `--dry-run` prints intended writes without changing anything in CLI mode. `--no-tui` disables interaction explicitly. `--with-jev` installs the optional Jev extension only after dependencies are built and configuration is supplied; read `extensions/k-jev/README.md`.
+Existing instructions stay. Managed blocks update in place; changed files get backups. Model settings untouched. Pi installs fail early if the runtime or tintinweb package is missing. `--with-jev` is opt-in and keeps existing registrations. Jev can send code/diffs to your configured endpoint.
 
-Pi prerequisite: `pi install git:github.com/nathanstephenson/pi-subagents`. The installer checks that the package is configured but does not modify your package list automatically. For project agents, allow project agent discovery (`agentScope: "both"`) in the actual subagent call, where supported, and approve untrusted project agents when prompted.
+### how it runs
 
-Recommended start: Pi with only read/discovery and the `subagent` tool enabled for Albert (`pi --tools read,grep,find,ls,subagent`). Confirm your extension registers `subagent` under that exact name. Do not globally remove write tools from Felix; child tools are defined by agent profiles. Claude's native Agent tool and permissions should likewise be set so the primary agent cannot write directly. Prompt-only read-only policies are not sandbox boundaries.
+- **Pi** — native `Agent`, `get_subagent_result`, `steer_subagent`. Worker prompts append to project instructions. Albert-only limits stay Albert-only.
+- **Claude Code** — built-in agents. Shared `CLAUDE.md`, worker-specific roles.
+- **Models** — pick your own. Albert: strong reasoning; Felix/Vera: strong coding/review; Nora/Iris: fit the task. Configure role frontmatter or Pi per-call overrides. No provider lock-in.
+- **Skills** — `architecture`, `domain-modeling`, `ui-ux`, `documentation`, `research`. Nothing auto-loaded beyond native harness behavior.
 
-## Installer verification
+### check
 
 ```sh
 ./tests/install-e2e.sh
 python3 ./tests/tui-e2e.py
 ```
 
-The terminal wizard does not depend on `gum`, `dialog`, or `whiptail`; it requires Bash and an interactive TTY. CI should use `--harness` / `--scope` flags.
-
-## Skills
-
-Five opt-in skills: `architecture`, `domain-modeling`, `ui-ux`, `documentation`, `research`. Their `SKILL.md` files are short; supporting content is under `references/`. All useful guidance from the old `unslop` is incorporated into documentation and role/reporting rules. REA is not bundled.
-
-## Model selection
-
-Models are not pinned in role definitions: model identifiers vary by provider and account. Set Albert to a strong reasoning model at high/max effort; Felix and Vera to strong code/review models at high effort; Nora and Iris to a more economical model when adequate. Your current Pi config uses Luna/Sol and Claude config selects Sonnet; keep those choices unless you deliberately change them.
-
-## Testing philosophy
-
-Use E2E/smoke checks as the first acceptance evidence. Write focused regression or invariant tests when the risk justifies them. No automatic unit tests for every edited function or coverage targets. Reviews are proportional to change risk. Never report unavailable checks as successful.
-
-## Migration from LazyGreed/.pi 1.2.0
-
-See `MIGRATION.md`. The supplied migration bundle replaces old agent and skill definitions but leaves your `settings.json`, `models.json`, `claude-settings.json`, `pi-blackhole`, and existing `k-jev` core untouched unless explicitly patched. Review removals before applying.
+No test-per-function ritual. E2E where observable, focused regression checks for real invariants. Missing checks = **NOT RUN**. No auto merge, release, or deploy.

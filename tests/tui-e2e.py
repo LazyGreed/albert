@@ -88,6 +88,12 @@ def test_dual_project(root: Path):
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='albert-tui-') as td:
         root = Path(td)
+        bin_dir = root / 'bin'
+        bin_dir.mkdir()
+        pi = bin_dir / 'pi'
+        pi.write_text('#!/bin/sh\ncase "$1" in --version) echo 1.1.0;; list) echo npm:@tintinweb/pi-subagents;; esac\n')
+        pi.chmod(0o755)
+        os.environ['PATH'] = f"{bin_dir}:{os.environ['PATH']}"
         test_cancel(root)
         test_dual_project(root)
     print('TUI E2E PASS: escape cancellation, keyboard controls, review, dual-harness install')

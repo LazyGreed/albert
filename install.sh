@@ -118,7 +118,9 @@ install_role() {
   temp="$(mktemp)"
   {
     printf -- '---\nname: %s\ndescription: %s\ntools: %s\n' "$role" "$desc" "$tools"
+    if [[ "$tool" == pi ]]; then printf 'prompt_mode: append\n'; fi
     if [[ "$tool" == claude && "$role" != felix ]]; then printf 'disallowedTools: Write, Edit, NotebookEdit\n'; fi
+    if [[ "$tool" == pi && "$role" != felix ]]; then printf 'disallowed_tools: edit, write\n'; fi
     printf -- '---\n\n'
     cat -- "$source_dir/agents/$role.md"
   } > "$temp"
@@ -167,11 +169,44 @@ install_one() {
       put "$file" "$root/skills/$rel"
     done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
   done
-  if [[ -e "$root/agents/engineer.md" || -e "$root/agents/tech-lead.md" ]]; then
-    report "NOTICE: old agents may coexist in $root/agents; review manually."
-  fi
 }
 
+# Verify the native Pi dependency before touching user files. Preview stays offline.
+pi_in_scope() {
+  if [[ "$scope" == project ]]; then (cd "$target" && pi "$@");
+  else (cd "$HOME" && pi "$@"); fi
+}
+pi_preflight() {
+  ((dry)) && { report 'CHECK Pi >=1.1.0 and npm:@tintinweb/pi-subagents before install'; return 0; }
+  command -v pi >/dev/null || { echo 'Pi missing. Install Pi >=1.1.0 first.' >&2; return 1; }
+  local version
+  version="$(pi --version 2>/dev/null)" || { echo 'Cannot check Pi version.' >&2; return 1; }
+  if [[ ! "$version" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
+    printf 'Cannot parse Pi version: %s\n' "$version" >&2; return 1
+  fi
+  if (( 10#${BASH_REMATCH[1]} < 1 || (10#${BASH_REMATCH[1]} == 1 && 10#${BASH_REMATCH[2]} < 1) )); then
+    printf 'Pi >=1.1.0 required (found %s).\n' "$version" >&2; return 1
+  fi
+  local packages
+  packages="$(pi_in_scope list 2>/dev/null)" || { echo 'Cannot inspect Pi packages (`pi list`).' >&2; return 1; }
+  if ! grep -Fq '@tintinweb/pi-subagents' <<< "$packages"; then
+    echo 'Missing tintinweb agents. Run: pi install npm:@tintinweb/pi-subagents' >&2
+    return 1
+  fi
+}
+pi_jev_registered() {
+  local packages file
+  local files=("${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json")
+  [[ "$scope" != project ]] || files+=("$target/.pi/settings.json")
+  packages="$(pi_in_scope list 2>/dev/null)" || packages=''
+  grep -Fq 'k-jev' <<< "$packages" && return 0
+  for file in "${files[@]}"; do
+    [[ -f "$file" ]] && grep -Fq 'k-jev' "$file" && return 0
+  done
+  return 1
+}
+
+if has_harness pi; then pi_preflight; fi
 has_harness pi && install_one pi
 has_harness claude && install_one claude
 
@@ -184,25 +219,33 @@ if ((with_jev)); then
     (cd "$jev" && npm ci --ignore-scripts && npm run build)
   fi
   if has_harness pi; then
-    if ((dry)); then report "RUN pi install $jev";
-    elif command -v pi >/dev/null; then
-      if [[ "$scope" == project ]]; then (cd "$target" && pi install -l "$jev"); else pi install "$jev"; fi
-    else report 'MANUAL: install Pi and run pi install /path/to/extensions/k-jev'; fi
+    if ((dry)); then report "CHECK Pi Jev registration; install only if absent: $jev"
+    elif pi_jev_registered; then report 'SKIP PI JEV: registration exists; unchanged.'
+    elif [[ "$scope" == project ]]; then (cd "$target" && pi install -l "$jev")
+    else pi install "$jev"; fi
   fi
   if has_harness claude; then
-    if ((dry)); then report "RUN claude mcp add --scope $([[ "$scope" == global ]] && echo user || echo project) --transport stdio k-jev -- node $jev/dist/mcp.js";
+    if ((dry)); then report "CHECK claude mcp get k-jev; add only if absent (scope $([[ "$scope" == global ]] && echo user || echo project))";
     elif command -v claude >/dev/null; then
+      # Preserve existing registrations (including those from another scope).
+      # A registered MCP server must not be replaced as a side effect of installation.
       if [[ "$scope" == project ]]; then
-        (cd "$target" && claude mcp add --scope project --transport stdio k-jev -- node "$jev/dist/mcp.js")
+        if (cd "$target" && claude mcp get k-jev >/dev/null 2>&1); then
+          report 'SKIP CLAUDE MCP: k-jev already registered; existing configuration preserved.'
+        else
+          (cd "$target" && claude mcp add --scope project --transport stdio k-jev -- node "$jev/dist/mcp.js")
+        fi
       else
-        claude mcp add --scope user --transport stdio k-jev -- node "$jev/dist/mcp.js"
+        if claude mcp get k-jev >/dev/null 2>&1; then
+          report 'SKIP CLAUDE MCP: k-jev already registered; existing configuration preserved.'
+        else
+          claude mcp add --scope user --transport stdio k-jev -- node "$jev/dist/mcp.js"
+        fi
       fi
     else report 'MANUAL: install Claude Code and register the k-jev MCP server'; fi
   fi
   report 'Jev requires K_JEV_BASE_URL, K_JEV_MODEL, and K_JEV_API_KEY at runtime.'
 fi
 
-report 'SET MODELS manually: Albert high/max reasoning; Felix/Vera strong code model, high; Nora/Iris task-appropriate.'
-report 'PI: ensure nathanstephenson/pi-subagents is installed; enable project agents in the subagent call if applicable.'
-report 'Albert tool restriction (Pi): pi --tools read,grep,find,ls,subagent (verify local tool names first).'
+report 'MODELS: choose per-agent model/effort; user settings untouched.'
 report 'DONE'

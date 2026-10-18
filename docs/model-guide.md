@@ -10,8 +10,6 @@ No provider-specific model strings appear in role frontmatter. Model and thinkin
 | Vera | independent strong reviewer; ideally different model family from Felix | high |
 | Iris | reliable tool use and precise acceptance evidence | medium/high |
 
-Examples consistent with the existing `.pi` setup: Albert or Felix can use Luna at max, Vera Sol at high. For Claude Code, Sonnet high is an existing user preference. These are suggestions, not verified provider availability or immutable assignments.
-
-Pi: inspect `/model` and `/settings`, then update relevant local/global settings or per-agent frontmatter if that installed runner supports it. The current `nathanstephenson/pi-subagents` README documents a `model` field but not guaranteed per-agent thinking support; do not pretend it applies `thinking` frontmatter without checking the installed version.
+Pi: `@tintinweb/pi-subagents` supports model and `thinking` frontmatter, as well as per-call overrides. Use inexpensive effort for routine investigation/verification and strong reasoning for ambiguous design or consequential review. Do not hard-code model IDs or change user settings at installation.
 
 Claude Code: inspect `/model` and current effort configuration; built-in agents can have a `model` field, but leaving it unset uses the caller's current model. Keep manually selected settings intact.
