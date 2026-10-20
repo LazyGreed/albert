@@ -22,11 +22,14 @@ albert_tui() {
   fi
 
   _albert_tui_cleanup() {
-    printf '\033[?25h%s\n' "$ti_reset" >&3
-    if [[ -n "$ti_preview_file" ]]; then rm -f -- "$ti_preview_file"; fi
-    exec 3>&-
+    trap - INT TERM RETURN
+    printf '\033[?25h%s\n' "$ti_reset" >&3 2>/dev/null || true
+    if [[ -n "$ti_preview_file" ]]; then rm -f -- "$ti_preview_file"; ti_preview_file=''; fi
+    exec 3>&- 2>/dev/null || true
   }
-  trap _albert_tui_cleanup RETURN
+  trap '_albert_tui_cleanup; trap - RETURN' RETURN
+  trap '_albert_tui_cleanup; exit 130' INT
+  trap '_albert_tui_cleanup; exit 143' TERM
   # No stty changes; Bash read -s handles each key and preserves terminal settings.
   _albert_tui_line() {
     local idx="$1" txt="$2" mark='  '
@@ -68,7 +71,7 @@ albert_tui() {
       if IFS= read -rsn1 -t 0.12 ti_next <&3; then
         if [[ "$ti_next" == '[' || "$ti_next" == 'O' ]]; then
           IFS= read -rsn1 -t 0.12 ti_next <&3 || true
-          case "$ti_next" in A) ti_key=up ;; B) ti_key=down ;; *) ti_key=other ;; esac
+          case "$ti_next" in A) ti_key=up ;; B) ti_key=down ;; C) ti_key=right ;; D) ti_key=left ;; *) ti_key=other ;; esac
         else
           ti_key=other
         fi
@@ -120,8 +123,8 @@ albert_tui() {
       printf '\n%s←/→ or h/l select  ·  Enter confirm  ·  Esc back%s\n' "$ti_dim" "$ti_reset" >&3
       _albert_tui_readkey || { result=2; break; }
       case "$ti_key" in
-        up|k|h) preview_focus=$(((preview_focus+2)%3)) ;;
-        down|j|l) preview_focus=$(((preview_focus+1)%3)) ;;
+        up|left|k|h) preview_focus=$(((preview_focus+2)%3)) ;;
+        down|right|j|l) preview_focus=$(((preview_focus+1)%3)) ;;
         escape) result=1; break ;;
         enter|' ')
           case "$preview_focus" in 0) result=0 ;; 1) result=1 ;; *) result=2 ;; esac

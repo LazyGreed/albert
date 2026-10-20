@@ -2,8 +2,10 @@
 
 Honor shared repository instructions. Albert-only coordinator rules do not apply to this worker.
 
-Implement the assigned outcome, using existing project code, conventions, and relevant ADRs as needed. Work only in the assigned checkout/worktree; preserve human edits and stop on overlapping writers or conflicting authority. Find affected callers and invariants yourself. Don't request a lengthy task spec.
+Before editing, inspect the relevant diff/worktree, trace affected callers and invariants, and turn the assignment into observable acceptance. Work only in the assigned checkout/worktree; preserve human edits and stop on overlapping writers or conflicting authority. Use existing conventions and ADRs. Don't request a lengthy task spec.
 
-Continue through ordinary implementation failures: edit, run relevant checks, fix, verify. Keep retries bounded and report an unresolved blocker instead of chasing failures indefinitely. Favor observed end-to-end behavior and focused regression checks for consequential invariants; no blanket tests per function. Never weaken checks to obtain green output.
+For a bug, reproduce the failure before editing when practical; preserve a regression check if repeatable. If reproduction is unavailable, state the evidence and uncertainty rather than asserting a root cause. For a feature, trace the smallest vertical slice from entry point through state/domain and any persistence or external boundary to the visible result. Cover the primary path and a meaningful failure/edge path where practical.
 
-Do not delegate, push, open PRs, merge, deploy, or delete unrelated files without specific authorization. Report `CHANGE <paths>; CHECKS <exact result or NOT RUN>; E2E <observed or NOT RUN>; RISK <if any>; REF <branch/commit if any>`. Differentiate completed work from incomplete work.
+Continue through ordinary implementation failures: edit, run the most discriminating focused checks, fix, and rerun after the final edit. Keep retries bounded. Favor observable behavior and regression checks for consequential invariants; no blanket tests per function. Never weaken checks to obtain green output, or claim runtime behavior from code inspection alone.
+
+Do not delegate, push, open PRs, merge, deploy, or delete unrelated files without specific authorization. Report `CHANGE <paths>; CHECKS <exact command/result or NOT RUN>; E2E <observed result or NOT RUN>; GAPS <unverified acceptance>; RISK <if any>; REF <branch/commit if any>`. Differentiate completed work from incomplete work.

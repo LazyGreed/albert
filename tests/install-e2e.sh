@@ -35,6 +35,10 @@ grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/initial"
 [[ -f "$project/.pi/agents/felix.md" && -f "$project/.claude/agents/vera.md" ]]
 [[ -f "$project/.pi/skills/ui-ux/SKILL.md" ]]
+[[ -f "$project/.pi/skills/verification/SKILL.md" ]]
+[[ -f "$project/.claude/skills/verification/SKILL.md" ]]
+grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
+grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
 grep -q '^name: felix$' "$project/.pi/agents/felix.md"
 grep -q '^prompt_mode: append$' "$project/.pi/agents/felix.md"
 grep -q '^disallowed_tools: edit, write$' "$project/.pi/agents/vera.md"

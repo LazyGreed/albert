@@ -1,9 +1,14 @@
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { chmod, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer, type ServerResponse } from "node:http";
 import { homedir, tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { afterEach, test } from "node:test";
+import { promisify } from "node:util";
+
+const execFile = promisify(execFileCallback);
+
 import type {
   ExtensionAPI,
   ExtensionContext,
@@ -13,13 +18,20 @@ import type {
 import { Check } from "typebox/value";
 import { judge, MAX_REQUEST_BYTES } from "../dist/core/client.js";
 import { resolveConfig } from "../dist/core/config.js";
+import { evaluateDiff } from "../dist/core/diff.js";
 import {
   compactAnswer,
   evaluate,
   type Questions,
 } from "../dist/core/evaluate.js";
+import { evaluateFiles } from "../dist/core/files.js";
 import { CONCURRENCY, MAX_FILE_BYTES, search } from "../dist/core/search.js";
-import kJev, { evaluateOutputSchema, searchOutputSchema } from "../dist/pi.js";
+import kJev, {
+  evaluateDiffOutputSchema,
+  evaluateFilesOutputSchema,
+  evaluateOutputSchema,
+  searchOutputSchema,
+} from "../dist/pi.js";
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -565,14 +577,23 @@ test("registered Pi tools expose only compact content/details/structuredContent 
         events.push(event);
       },
     } as unknown as ExtensionAPI);
-    assert.deepEqual([...tools.keys()], ["jev_evaluate", "jev_search"]);
+    assert.deepEqual(
+      [...tools.keys()],
+      ["jev_evaluate", "jev_search", "jev_evaluate_files", "jev_evaluate_diff"],
+    );
     assert.deepEqual(events, ["session_start"]);
     assert.equal(calls, 0);
     const { cwd, paths } = await candidates(1, sentinel);
     const ctx = { cwd } as ExtensionToolContext;
     const searchTool = tools.get("jev_search");
     const evaluateTool = tools.get("jev_evaluate");
-    assert.ok(searchTool && evaluateTool);
+    const filesTool = tools.get("jev_evaluate_files");
+    const diffTool = tools.get("jev_evaluate_diff");
+    assert.ok(searchTool && evaluateTool && filesTool && diffTool);
+    assert.ok(filesTool.outputSchema);
+    assert.ok(diffTool.outputSchema);
+    assert.ok(Check(evaluateFilesOutputSchema, { results: [] }));
+    assert.equal(evaluateDiffOutputSchema, evaluateOutputSchema);
     const fileResult = await searchTool.execute(
       "s",
       { paths, question: "Relevant?" },
@@ -619,4 +640,99 @@ test("registered Pi tools expose only compact content/details/structuredContent 
       else process.env[key] = value;
     }
   }
+});
+
+test("evaluateFiles primary path, ENOENT and EACCES edges stay specific", async () => {
+  const sentinel = "PRIVATE_FILE_CONTENT_SENTINEL";
+  const { cwd, paths } = await candidates(1, sentinel);
+  const config = await endpoint((payload, response) => {
+    assert.deepEqual(payload.state, { path: paths[0], content: sentinel });
+    send(response, noulResponse());
+  });
+  const result = await evaluateFiles(
+    { paths: [paths[0], "missing.ts"], questions },
+    config,
+    cwd,
+  );
+  assert.equal(result.results.length, 2);
+  assert.ok("answers" in result.results[0]);
+  assert.match(
+    (result.results[1] as { error: string }).error,
+    /File not found/,
+  );
+  assert.ok(!JSON.stringify(result).includes(sentinel));
+  assert.ok(Check(evaluateFilesOutputSchema, { results: result.results }));
+  await assert.rejects(
+    evaluateFiles(
+      {
+        paths: Object.assign([], { length: 1 }) as string[],
+        questions,
+      },
+      config,
+      cwd,
+    ),
+    /1-20 UTF-8 file paths/,
+  );
+  const denied = join(cwd, "denied.ts");
+  await writeFile(denied, sentinel);
+  await chmod(denied, 0);
+  try {
+    if (process.getuid?.() !== 0) {
+      const deniedResult = await evaluateFiles(
+        { paths: ["denied.ts"], questions },
+        config,
+        cwd,
+      );
+      assert.equal(deniedResult.results.length, 1);
+      assert.match(
+        (deniedResult.results[0] as { error: string }).error,
+        /permission denied/,
+      );
+    }
+  } finally {
+    await chmod(denied, 0o600);
+  }
+});
+
+test("evaluateDiff accepts hyphenated refs and reports oversized diffs", async () => {
+  const repo = await mkdtemp(join(tmpdir(), "k-jev-diff-"));
+  cleanups.push(() => rm(repo, { recursive: true, force: true }));
+  await execFile("git", ["init"], { cwd: repo });
+  await execFile("git", ["config", "user.email", "test@example.com"], {
+    cwd: repo,
+  });
+  await execFile("git", ["config", "user.name", "test"], { cwd: repo });
+  await writeFile(join(repo, "tracked.txt"), "base\n");
+  await execFile("git", ["add", "tracked.txt"], { cwd: repo });
+  await execFile("git", ["commit", "-m", "base"], { cwd: repo });
+  await execFile("git", ["branch", "feat/foo-bar"], { cwd: repo });
+  await writeFile(join(repo, "tracked.txt"), `changed\n${"x".repeat(40)}\n`);
+  const config = await endpoint((payload, response) => {
+    const state = payload.state as { base: string; diff: string };
+    assert.equal(state.base, "feat/foo-bar");
+    assert.match(state.diff, /changed/);
+    send(response, noulResponse());
+  });
+  const result = await evaluateDiff(
+    { base: "feat/foo-bar", questions },
+    config,
+    repo,
+  );
+  assert.deepEqual(result.answers.match, {
+    type: "noul",
+    answer: true,
+    probability: 0.9,
+  });
+  assert.ok(Check(evaluateDiffOutputSchema, { answers: result.answers }));
+  for (const base of ["bad..ref", "-bad", "a".repeat(257)]) {
+    await assert.rejects(
+      evaluateDiff({ base, questions }, config, repo),
+      /Invalid Git base ref/,
+    );
+  }
+  await writeFile(join(repo, "tracked.txt"), `${"y".repeat(300 * 1024)}\n`);
+  await assert.rejects(
+    evaluateDiff({ questions }, resolveConfig(env), repo),
+    /Diff exceeds 256 KiB/,
+  );
 });

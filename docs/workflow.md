@@ -16,6 +16,17 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 10. For long tasks, use existing GitHub issues/PRs or project records for goal, decisions, state, evidence, next action, native session/branch reference. On restart verify what actually survived.
 11. Choose agent count, model/effort, and verification proportional to risk. Measure prompts/interventions per accepted task, time to verified result, recovery time, and escaped defects.
 
+## Verification by task type
+
+- **Bug:** capture expected vs actual behavior, the smallest reproduction, and the failing evidence before changing code. Add or preserve a regression check when practical. If it cannot be reproduced, narrow the cause with source/log evidence and report the uncertainty.
+- **Feature:** map only the affected vertical slice: entry point → domain/state → persistence or external boundary → user-visible output. Define the primary success case and a meaningful failure/edge case before implementation; avoid exhaustive inventories of unrelated modules.
+- **Refactor:** identify the behavior and public contracts that must stay stable, then verify them after edits.
+- **Review:** review the actual base-to-head diff against intent and invariants. Treat missing tests or runtime checks as evidence gaps, not proof of a defect or proof of safety.
+
+## Worker handoff
+
+Every handoff should preserve the assigned outcome and its evidence. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse. Albert verifies the returned artifacts rather than trusting a completion message.
+
 ## Dispatch examples (conceptual, not a command parser)
 
 - `review changes` / `review updates` / `check the diff` → identify relevant changes and review them.

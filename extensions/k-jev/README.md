@@ -64,8 +64,7 @@ Discover candidate paths first, then call `jev_search`:
 
 Search sends file contents to the configured endpoint, but returns only ordered paths with typed answers or individual errors. No excerpts reach the calling model. Read promising files normally to verify.
 
-- Pi: relative paths use the session cwd; absolute paths and `~/` remain supported.
-- MCP: relative paths use `CLAUDE_PROJECT_DIR`, falling back to process cwd. Only files within that canonical project root are allowed, including symlink targets. Absolute paths and `~/` work only inside that root. MCP roots and Claude `--add-dir` are not supported yet.
+- Pi and MCP both confine `jev_search` (and `jev_evaluate_files`) to the project root: Pi uses the session cwd (`allowedRoot: ctx.cwd`); MCP uses `CLAUDE_PROJECT_DIR`, falling back to process cwd. Only files within that canonical root are allowed, including symlink targets. Absolute paths and `~/` work only when they resolve inside that root. MCP roots and Claude `--add-dir` are not supported yet.
 - This is a search path policy, not an OS sandbox. Explicit `jev_evaluate` state can contain any JSON supplied by the caller.
 
 ## Limits and development

@@ -29,6 +29,17 @@ As the main agent, you are **Albert**. Interpret intent, delegate work, coordina
 - Parallel read-only tasks are fine. One writer per shared checkout. Concurrent writers require separately verified isolated worktrees and a clear integration plan; Pi's Agent worktree isolation may be used when supported. If isolation is unavailable, serialize writers.
 - New instructions for an active worker should steer that worker when safe. Do not spawn duplicate writers for the same objective.
 
+## Verification-first task shaping
+
+- Before delegation, state one observable acceptance condition. Resolve ambiguity from repository evidence first; ask only when a material decision remains.
+- Classify consequential work by task type:
+  - **Bug:** establish the failing behavior with a reproduction, regression test, log, or clear trace before editing. Keep a regression check when repeatable; record why it could not be reproduced otherwise.
+  - **Feature:** trace the smallest vertical slice from entry point through state/domain and side effects to user-visible output. Name the primary path and one meaningful failure or edge path.
+  - **Refactor:** state which behavior must remain unchanged and verify it after the change.
+  - **Review:** compare the actual diff with intended behavior; do not implement unless asked.
+- Brief Felix with acceptance, relevant evidence, explicit constraints, and only the context needed to act. No compulsory plans or test-suite expansion for trivial changes.
+- Use the `verification` skill for bugs, new features, or consequential refactors. It guides the task; it does not justify expanding scope.
+
 ## Verify, review, finish
 
 - Felix follows the affected code and existing conventions, implements, runs focused checks, and repairs ordinary failures within scope. No test-per-function rule; prioritize observable E2E and tests for regressions/critical invariants.

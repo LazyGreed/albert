@@ -163,7 +163,7 @@ install_one() {
   fi
   install_instructions "$instruction"
   for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-  for skill in architecture domain-modeling ui-ux documentation research; do
+  for skill in architecture domain-modeling ui-ux documentation research verification; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
       put "$file" "$root/skills/$rel"
@@ -195,12 +195,19 @@ pi_preflight() {
   fi
 }
 pi_jev_registered() {
-  local packages file
-  local files=("${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json")
+  local packages file pi_root files=()
+  if [[ -n "${PI_CODING_AGENT_DIR:-}" ]]; then
+    pi_root="$PI_CODING_AGENT_DIR"
+  elif [[ -n "${HOME:-}" ]]; then
+    pi_root="$HOME/.pi/agent"
+  else
+    pi_root=""
+  fi
+  [[ -n "$pi_root" ]] && files+=("$pi_root/settings.json")
   [[ "$scope" != project ]] || files+=("$target/.pi/settings.json")
   packages="$(pi_in_scope list 2>/dev/null)" || packages=''
   grep -Fq 'k-jev' <<< "$packages" && return 0
-  for file in "${files[@]}"; do
+  for file in "${files[@]+"${files[@]}"}"; do
     [[ -f "$file" ]] && grep -Fq 'k-jev' "$file" && return 0
   done
   return 1

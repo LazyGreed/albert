@@ -141,7 +141,7 @@ function data(result: Awaited<ReturnType<Client["callTool"]>>) {
   return result.structuredContent;
 }
 
-test("MCP lists exactly two tools without endpoint calls", {
+test("MCP lists exactly four tools without endpoint calls", {
   timeout: 10000,
 }, async (t) => {
   const f = await fixture(t);
@@ -149,7 +149,7 @@ test("MCP lists exactly two tools without endpoint calls", {
   const listing = await client.listTools();
   assert.deepEqual(
     listing.tools.map((tool) => tool.name),
-    ["jev_evaluate", "jev_search"],
+    ["jev_evaluate", "jev_search", "jev_evaluate_files", "jev_evaluate_diff"],
   );
   assert.equal(f.calls(), 0);
 });

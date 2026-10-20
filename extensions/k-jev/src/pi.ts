@@ -2,10 +2,10 @@ import type { Usage } from "@earendil-works/pi-ai";
 import { defineTool, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { JevError, resolveConfig, safeError } from "./core/config.js";
-import { evaluate } from "./core/evaluate.js";
-import { search } from "./core/search.js";
-import { evaluateFiles } from "./core/files.js";
 import { evaluateDiff } from "./core/diff.js";
+import { evaluate } from "./core/evaluate.js";
+import { evaluateFiles } from "./core/files.js";
+import { search } from "./core/search.js";
 import type { JevUsage } from "./core/usage.js";
 
 const text = Type.String({ minLength: 1, maxLength: 4096 });
@@ -112,6 +112,24 @@ export const searchOutputSchema = Type.Object({
     ]),
   ),
 });
+export const evaluateFilesOutputSchema = Type.Object({
+  results: Type.Array(
+    Type.Union([
+      Type.Object(
+        {
+          path: Type.String(),
+          answers: Type.Record(Type.String(), answerSchema),
+        },
+        { additionalProperties: false },
+      ),
+      Type.Object(
+        { path: Type.String(), error: Type.String() },
+        { additionalProperties: false },
+      ),
+    ]),
+  ),
+});
+export const evaluateDiffOutputSchema = evaluateOutputSchema;
 
 function toPiUsage(usage: JevUsage | undefined): Usage | undefined {
   if (!usage) return undefined;
@@ -212,20 +230,41 @@ export default function kJev(pi: ExtensionAPI) {
     defineTool({
       name: "jev_evaluate_files",
       label: "Jev evaluate files",
-      description: "Evaluate 1-20 project-root files independently against typed questions. Sends contents to configured Jev service. Returns answers per path, no excerpts.",
-      parameters: Type.Object({
-        paths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), { minItems: 1, maxItems: 20 }),
-        questions: evaluateSchema.properties.questions,
-      }, { additionalProperties: false }),
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+      description:
+        "Evaluate 1-20 project-root files independently against typed questions. Sends contents to configured Jev service. Returns answers per path, no excerpts.",
+      parameters: Type.Object(
+        {
+          paths: Type.Array(Type.String({ minLength: 1, maxLength: 4096 }), {
+            minItems: 1,
+            maxItems: 20,
+          }),
+          questions: evaluateSchema.properties.questions,
+        },
+        { additionalProperties: false },
+      ),
+      outputSchema: evaluateFilesOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
       async execute(_id, input, signal, _onUpdate, ctx) {
         try {
-          const { usage, ...data } = await evaluateFiles(input, resolveConfig(), ctx.cwd, signal);
+          const { usage, ...data } = await evaluateFiles(
+            input,
+            resolveConfig(),
+            ctx.cwd,
+            signal,
+          );
           return {
             content: [{ type: "text", text: JSON.stringify(data) }],
-            details: data, structuredContent: data, usage: toPiUsage(usage),
+            details: data,
+            structuredContent: data,
+            usage: toPiUsage(usage),
           };
-        } catch (error) { throw new JevError(safeError(error)); }
+        } catch (error) {
+          throw new JevError(safeError(error));
+        }
       },
     }),
   );
@@ -234,22 +273,39 @@ export default function kJev(pi: ExtensionAPI) {
     defineTool({
       name: "jev_evaluate_diff",
       label: "Jev evaluate diff",
-      description: "Judge the tracked Git diff against HEAD or base with typed questions. Sends diff to configured Jev service. Does not include untracked files.",
-      parameters: Type.Object({
-        base: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
-        questions: evaluateSchema.properties.questions,
-      }, { additionalProperties: false }),
-      annotations: { readOnlyHint: true, destructiveHint: false, openWorldHint: true },
+      description:
+        "Judge the tracked Git diff against HEAD or base with typed questions. Sends diff to configured Jev service. Does not include untracked files.",
+      parameters: Type.Object(
+        {
+          base: Type.Optional(Type.String({ minLength: 1, maxLength: 256 })),
+          questions: evaluateSchema.properties.questions,
+        },
+        { additionalProperties: false },
+      ),
+      outputSchema: evaluateDiffOutputSchema,
+      annotations: {
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
       async execute(_id, input, signal, _onUpdate, ctx) {
         try {
-          const { usage, ...data } = await evaluateDiff(input, resolveConfig(), ctx.cwd, signal);
+          const { usage, ...data } = await evaluateDiff(
+            input,
+            resolveConfig(),
+            ctx.cwd,
+            signal,
+          );
           return {
             content: [{ type: "text", text: JSON.stringify(data) }],
-            details: data, structuredContent: data, usage: toPiUsage(usage),
+            details: data,
+            structuredContent: data,
+            usage: toPiUsage(usage),
           };
-        } catch (error) { throw new JevError(safeError(error)); }
+        } catch (error) {
+          throw new JevError(safeError(error));
+        }
       },
     }),
   );
-
 }
