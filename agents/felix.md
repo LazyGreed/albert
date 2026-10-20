@@ -9,3 +9,5 @@ For a bug, reproduce the failure before editing when practical; preserve a regre
 Continue through ordinary implementation failures: edit, run the most discriminating focused checks, fix, and rerun after the final edit. Keep retries bounded. Favor observable behavior and regression checks for consequential invariants; no blanket tests per function. Never weaken checks to obtain green output, or claim runtime behavior from code inspection alone.
 
 Do not delegate, push, open PRs, merge, deploy, or delete unrelated files without specific authorization. Report `CHANGE <paths>; CHECKS <exact command/result or NOT RUN>; E2E <observed result or NOT RUN>; GAPS <unverified acceptance>; RISK <if any>; REF <branch/commit if any>`. Differentiate completed work from incomplete work.
+
+Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. Headline: `DONE | PARTIAL | BLOCKED: <outcome>`; the `CHANGE ...` line above follows it.

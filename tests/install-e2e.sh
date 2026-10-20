@@ -44,6 +44,20 @@ grep -q '^prompt_mode: append$' "$project/.pi/agents/felix.md"
 grep -q '^disallowed_tools: edit, write$' "$project/.pi/agents/vera.md"
 grep -q '^disallowedTools: Write, Edit, NotebookEdit$' "$project/.claude/agents/vera.md"
 grep -q 'main session only' "$project/AGENTS.md"
+
+# Consolidated reporting: Pi workers are color-badged, Claude Code frontmatter is untouched,
+# every worker leads with a headline, and Albert's one-report rule is installed.
+for pair in nora:cyan felix:green vera:purple iris:orange; do
+  role="${pair%%:*}"; color="${pair##*:}"
+  grep -q "^color: $color$" "$project/.pi/agents/$role.md"
+  ! grep -q '^color:' "$project/.claude/agents/$role.md"
+  grep -q 'Open with a headline' "$project/.pi/agents/$role.md"
+  grep -q 'Open with a headline' "$project/.claude/agents/$role.md"
+done
+grep -q 'Parallel workers: one report per round' "$project/AGENTS.md"
+grep -q 'launch independent workers in the same turn' "$project/AGENTS.md"
+grep -q '^OPTIONAL (Pi): .*defaultJoinMode' "$tmp/initial"
+[[ -z "$(find "$project" -name subagents.json)" ]]  # installer never writes Pi extension settings
 grep -q 'Keep this rule.' "$project/AGENTS.md"
 grep -q 'Keep this too.' "$project/CLAUDE.md"
 [[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/AGENTS.md")" -eq 1 ]]
@@ -57,4 +71,4 @@ MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\n/path/to/k-jev' \
 grep -q 'SKIP PI JEV' "$tmp/jev"
 ! grep -q '^pi install ' "$MOCK_PI_LOG"
 
-echo 'install E2E PASS: prerequisites, dual harness, context, idempotence, Jev reuse'
+echo 'install E2E PASS: prerequisites, dual harness, context, idempotence, reporting, Jev reuse'

@@ -25,7 +25,17 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 
 ## Worker handoff
 
-Every handoff should preserve the assigned outcome and its evidence. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse. Albert verifies the returned artifacts rather than trusting a completion message.
+Every handoff should preserve the assigned outcome and its evidence. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse and lead with a headline (`DONE | PARTIAL | BLOCKED`, `CLEAN | ISSUES`, `PASS | FAIL | NOT RUN | BLOCKED`, `RESOLVED | UNRESOLVED`) of at most ~200 characters. Albert verifies the returned artifacts rather than trusting a completion message.
+
+## Reporting with several workers
+
+Parallel workers produce several results at once; the user should read one report, not one block per worker. Albert has no dashboard or status store, so this relies on three things that already exist:
+
+1. **Headline first.** Each worker opens with a one-line headline. A completion notice carries only the first ~300 characters of a result, so the headline is what Albert, and the user's notification box, actually see.
+2. **One report per round.** Albert merges a settled round into a single message: decisions and blockers, then one line per worker, then what is still running. It never relays worker output. See `AGENTS.md` (Reporting).
+3. **Detail on demand.** Full output stays in the worker's own session, not in the main chat (see the Pi contract below for where to find it).
+
+No `STATUS.md` or run log is added: native sessions are the execution state, and long work already uses the issue/PR record (lifecycle step 10).
 
 ## Dispatch examples (conceptual, not a command parser)
 
@@ -42,6 +52,9 @@ Every handoff should preserve the assigned outcome and its evidence. Workers rep
 - Use `get_subagent_result` to retrieve full outcomes and `steer_subagent` for active jobs; resume existing agents when supported. Respect completion notifications; never poll in an LLM loop.
 - `backgroundByDefault` and `rememberAgents` are extension settings, not guarantees of surviving process termination. `isolation: worktree` can isolate writers; ensure work is discoverable/reviewable before treating it as delivered.
 - Worker profiles set `prompt_mode: append`: inherit project instructions; their role replaces Albert-only instructions. The `tools:` allowlist does not sandbox shell commands. Follow Pi trust controls.
+- Worker profiles carry a `color`, so the widget, FleetView, and notification boxes show which worker is which. Albert names each call (`name`), making `@name` address it: message it while it runs, resume it when done.
+- Full output: FleetView (press `↓` at an empty prompt, `Enter` opens a worker's live conversation), `/agents`, `ctrl+o` on a notification, or the `transcript:` path in it.
+- **Join mode (optional, not set by the installer).** Pi's default `smart` mode delivers each completion at the parent's next boundary; completions that land during one tool batch arrive together. Setting `"defaultJoinMode": "group"` (global `~/.pi/agent/subagents.json`, project `.pi/subagents.json`, or `/agents → Settings → Join mode`) gives one notification per parent turn's batch of two or more background workers; a lone spawn or spawns from different turns still report individually. Trade-off: `group` holds early finishers until the batch settles (about 30 s after the first completion at most, then the rest follow as stragglers), so Albert cannot act on, say, an early Vera blocker while Felix is still running. Prefer `group` for read-only fan-out (Nora/Vera/Iris) and keep `smart` if you steer often. Needs a recent `@tintinweb/pi-subagents` (0.21+ semantics).
 
 ## Limits
 

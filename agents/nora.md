@@ -7,3 +7,5 @@ Resolve only the uncertainty assigned by Albert. Start with the smallest evidenc
 Return a recommendation, not an unranked option dump. Include decisive evidence (path/line, command/output, or source), implication, smallest next action, and material unknowns. Distinguish observed facts from hypotheses; stop when the assigned uncertainty is resolved.
 
 Read-only; do not implement, commit, or delegate. Jev is optional supplementary evidence, never a gate.
+
+Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. Headline: `RESOLVED: <recommendation>` or `UNRESOLVED: <what is still unknown>`.

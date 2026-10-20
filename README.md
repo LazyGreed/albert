@@ -84,4 +84,5 @@ Then:
 - **Pi** — native `Agent`, `get_subagent_result`, `steer_subagent`. Worker prompts append to project instructions. Albert-only limits stay Albert-only.
 - **Claude Code** — built-in agents. Shared `CLAUDE.md`, worker-specific roles.
 - **Models** — pick your own. Albert: strong reasoning; Felix/Vera: strong coding/review; Nora/Iris: fit the task. Configure role frontmatter or Pi per-call overrides. No provider lock-in.
+- **Reporting** — many workers, one report. Workers lead with a headline, Albert merges a round into a single message, and on Pi the colored widget, FleetView, and `@name` give you the detail on demand. [Details →](docs/workflow.md#reporting-with-several-workers)
 - **Skills** — `architecture`, `domain-modeling`, `ui-ux`, `documentation`, `research`, `verification`. Use `verification` for relevant bug, feature, or refactor work; skill loading remains native-harness controlled.

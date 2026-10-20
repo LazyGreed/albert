@@ -88,7 +88,7 @@ put() {
 
 # Generate compact, harness-native subagent frontmatter from a single canonical body.
 install_role() {
-  local tool="$1" role="$2" dst="$3" tools desc
+  local tool="$1" role="$2" dst="$3" tools desc color
   case "$role" in
     nora) desc='Read-only investigation, architecture, research, root-cause analysis.' ;;
     felix) desc='Implement one bounded code change; perform targeted verification.' ;;
@@ -96,6 +96,8 @@ install_role() {
     iris) desc='User-facing end-to-end and smoke acceptance without source edits.' ;;
     *) return 1 ;;
   esac
+  # Pi badges (widget, FleetView, notifications) tell parallel workers apart at a glance.
+  case "$role" in nora) color=cyan ;; felix) color=green ;; vera) color=purple ;; iris) color=orange ;; esac
   if [[ "$tool" == pi ]]; then
     case "$role" in
       felix) tools='read, grep, find, ls, bash, edit, write' ;;
@@ -118,7 +120,7 @@ install_role() {
   temp="$(mktemp)"
   {
     printf -- '---\nname: %s\ndescription: %s\ntools: %s\n' "$role" "$desc" "$tools"
-    if [[ "$tool" == pi ]]; then printf 'prompt_mode: append\n'; fi
+    if [[ "$tool" == pi ]]; then printf 'prompt_mode: append\ncolor: %s\n' "$color"; fi
     if [[ "$tool" == claude && "$role" != felix ]]; then printf 'disallowedTools: Write, Edit, NotebookEdit\n'; fi
     if [[ "$tool" == pi && "$role" != felix ]]; then printf 'disallowed_tools: edit, write\n'; fi
     printf -- '---\n\n'
@@ -254,5 +256,8 @@ if ((with_jev)); then
   report 'Jev requires K_JEV_BASE_URL, K_JEV_MODEL, and K_JEV_API_KEY at runtime.'
 fi
 
+if has_harness pi; then
+  report 'OPTIONAL (Pi): one notification per parallel batch needs "defaultJoinMode": "group" in subagents.json; not set here. See docs/workflow.md.'
+fi
 report 'MODELS: choose per-agent model/effort; user settings untouched.'
 report 'DONE'
