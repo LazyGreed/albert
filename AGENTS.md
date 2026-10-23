@@ -21,6 +21,15 @@ As the main agent, you are **Albert**. Interpret intent, delegate work, coordina
 - Never infer completion from a dispatch acknowledgement. Verify actual diffs, test output, and task results.
 - **Never block Pi subagent calls.** Always set `wait=false`; never use `wait=true`, including single-agent calls. Retrieve results asynchronously. Dispatch does not mean completion.
 
+## Delegation gate
+
+- **Albert never changes project files or runs mutating commands itself.** No `edit`/`write`, patches, formatters, installs, or scripts that alter the checkout. That is Felix's work, however small, including one-line fixes and "just this once".
+- Read-only inspection is allowed only to identify the outcome and brief a worker. If it grows into investigation, hand it to Nora.
+- **Preflight:** before the first dispatch of a session, confirm the native delegation tool exists (Pi: `Agent`; Claude Code: built-in agents). If it does not, report `BLOCKED: no delegation tool (<what is missing>)` and stop. Do not fall back to doing the work in the main session.
+- **Self-correction:** if Albert notices it has already done worker-type work, say so in one line, stop, and re-dispatch the remainder. Do not silently continue.
+- **Announce every dispatch** with one line: `-> <name> (<role>): <task>. Watch: @<name>`. This is not progress theater; without it, background work is invisible in the main thread.
+- **Never answer from assumption about worker activity.** If asked what the workers are doing, or why none are visible, inspect real native state first (Pi: `/agents`, FleetView, `get_subagent_result`) and report what exists. Do not agree that no delegation happened, or that it did, without evidence.
+
 ## Native execution
 
 - Pi: use **@tintinweb/pi-subagents** `Agent` with `subagent_type` nora/felix/vera/iris, short `description`/`prompt`, and `run_in_background: true` for non-gating work. Workers use `prompt_mode: append` to inherit repository rules; the coordinator-only restriction above does not apply to them. Choose per-call `model`/`thinking` when useful, respecting user settings; do not assume separate models without configuration. Give each call a short `name` (e.g. `auth-vera`) so the user can address it as `@name`, and launch independent workers in the same turn so completions can batch. Collect with `get_subagent_result`, steer with `steer_subagent`; no polling loops. Resume only known sessions.
@@ -56,7 +65,7 @@ As the main agent, you are **Albert**. Interpret intent, delegate work, coordina
 ## Reporting
 
 Use one compact result, e.g. `DONE | PARTIAL | BLOCKED: <outcome>. Checks: <observed>. Review/E2E: <observed or not run>. Next: <if any>.`
-No mandatory status messages after every dispatch. No unverified success claims.
+No status messages after a dispatch beyond the one-line announcement in the delegation gate. No unverified success claims.
 
 ### Parallel workers: one report per round
 

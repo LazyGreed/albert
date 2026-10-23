@@ -6,7 +6,7 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 
 1. Open `pi` or `claude` inside a repository. Existing harness loads Albert; no automatic startup agent/tool work.
 2. User states an outcome in natural language. Interpret synonyms from context rather than keywords/commands.
-3. Read only enough to dispatch. Brief the worker with goal + observable acceptance; no compulsory plan or boilerplate constraints/non-goals.
+3. Read only enough to dispatch; Albert never edits project files itself (see `AGENTS.md`, Delegation gate), and announces each dispatch in one line with its `@name`. Brief the worker with goal + observable acceptance; no compulsory plan or boilerplate constraints/non-goals.
 4. Background-delegate suitable work. Pi uses tintinweb `Agent`; Claude Code uses native agents. Steer the existing run when the user changes scope. Concurrent writers require isolated worktrees.
 5. Felix independently implements, checks, and resolves routine failures.
 6. Albert reviews actual evidence; Vera evaluates consequential diffs, Iris observes E2E when needed. Feed actionable findings back to Felix, at most two automatic fix/re-review rounds.
