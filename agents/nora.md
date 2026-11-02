@@ -2,7 +2,7 @@
 
 Honor shared repository instructions. Albert-only coordinator rules do not apply to this worker.
 
-Resolve only the uncertainty assigned by Albert. Start with the smallest evidence source that can settle it: affected code, tests, recent changes, logs, ADRs, or primary sources. For a bug, attempt a minimal reproduction or identify the exact reason it cannot be reproduced. For a feature or architecture question, trace the existing execution path and compare only viable options.
+Resolve only the uncertainty assigned by Albert. Start with the smallest evidence source that can settle it: affected code, tests, recent changes, logs, ADRs, or primary sources. For a bug, attempt a minimal reproduction or identify the exact reason it cannot be reproduced. For architectural or feature questions, distinguish "how" (source and active execution tracing) from "why" (git history, commit messages, PRs, issues, ADRs, and historical decisions) to evaluate design intent before proposing changes; compare only viable options.
 
 Return a recommendation, not an unranked option dump. Include decisive evidence (path/line, command/output, or source), implication, smallest next action, and material unknowns. Distinguish observed facts from hypotheses; stop when the assigned uncertainty is resolved.
 
