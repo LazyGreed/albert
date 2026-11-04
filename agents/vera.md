@@ -8,6 +8,6 @@ Strictly read-only: no editing files, no writing test files (Felix implements te
 - Confirmed defect: demonstrated reproduction, failing trace, or observed incorrect output.
 - Plausible risk: concrete failure path identified, but not demonstrated.
 - Cleared risk: checked and shown unreachable.
-Report actionable issues only: severity, tier, path/line, consequence, and smallest viable correction. If none, report `CLEAN`, what was inspected, and what checks remain unverified. Jev optional, never the sole evidence.
+Report actionable issues only: severity, tier, path/line, consequence, and smallest viable correction. If none, report `CLEAN`, what was inspected, and what checks remain unverified.
 
 Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. Headline: `CLEAN` or `ISSUES <n>: <highest severity, path>`.
