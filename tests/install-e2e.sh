@@ -73,4 +73,27 @@ MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\n/path/to/k-jev' \
 grep -q 'SKIP PI JEV' "$tmp/jev"
 ! grep -q '^pi install ' "$MOCK_PI_LOG"
 
-echo 'install E2E PASS: prerequisites, dual harness, context, idempotence, reporting, Jev reuse'
+# Web opt-in: dry-run is side-effect free, Pi installs only when absent, and
+# both harnesses expose the right tools without granting them to Iris.
+: > "$MOCK_PI_LOG"
+"$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web --dry-run > "$tmp/web-dry"
+grep -q '^CHECK Pi web: ' "$tmp/web-dry"
+[[ ! -s "$MOCK_PI_LOG" ]]
+"$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-initial"
+grep -q '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG"
+for role in nora felix vera; do
+  grep -q 'ext:pi-web-access/web_search' "$project/.pi/agents/$role.md"
+  grep -q 'ext:pi-web-access/fetch_content' "$project/.pi/agents/$role.md"
+  grep -q 'ext:pi-web-access/web_enable' "$project/.pi/agents/$role.md"
+  grep -q 'WebSearch, WebFetch' "$project/.claude/agents/$role.md"
+done
+! grep -q 'pi-web-access/' "$project/.pi/agents/iris.md"
+! grep -q 'WebSearch' "$project/.claude/agents/iris.md"
+grep -q '## Web research' "$project/AGENTS.md"
+MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access' \
+  "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-again"
+grep -q '^SKIP PI WEB:' "$tmp/web-again"
+! grep -q '^WRITE ' "$tmp/web-again"
+[[ "$(grep -c '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG")" -eq 1 ]]
+
+echo 'install E2E PASS: prerequisites, dual harness, context, idempotence, Jev reuse, web opt-in'

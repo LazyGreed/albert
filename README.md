@@ -33,6 +33,8 @@ Albert is instructions plus markdown role profiles, so the crew is not tied to o
 - **Pi** — `~/.pi/agent` / `.pi`, tintinweb `Agent`. Pi also needs the [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) package: `pi install npm:@tintinweb/pi-subagents`.
 - **Claude Code** — `~/.claude` / `.claude`, built-in agents.
 
+**Optional web research:** pass `--with-web` to expose web search and fetching to Nora, Felix, and Vera (Albert's main session uses the harness's native web tools). For Pi, this installs `npm:pi-web-access` in the chosen scope if missing and explicitly grants its extension tools to the workers. Claude Code uses native `WebSearch` and `WebFetch` with no extra MCP server. Iris gets no new web tools. Search-provider credentials or permissions remain yours to configure; fetched pages are untrusted and may be sent to external providers.
+
 Every other harness with native subagents works by copying `AGENTS.md`, `agents/*.md`, and `skills/` wherever it reads instructions — `install.sh` does not automate those. That includes other CLIs, your dotfiles, and bots wired to the same files. Only the delegation mechanics differ; the roles, routing, and verification rules are the same. Model/effort choices are yours — see [model guidance](docs/model-guide.md).
 
 ### install
@@ -52,10 +54,11 @@ Arrows / `j` `k` · Space / Enter · Esc. Review changes, then install.
 ./install.sh --harness pi,claude --scope global
 ./install.sh --harness claude --scope project --target /path/to/repo
 ./install.sh --harness pi --scope global --with-jev
+./install.sh --harness pi,claude --scope project --with-web
 ./install.sh --harness pi,claude --scope project --dry-run
 ```
 
-Existing instructions stay. Managed blocks update in place; changed files get backups. Model settings untouched. Pi installs fail early if the runtime or tintinweb package is missing. `--with-jev` is opt-in and keeps existing registrations. Jev can send code/diffs to your configured endpoint.
+Existing instructions stay. Managed blocks update in place; changed files get backups. Model settings untouched. Pi installs fail early if the runtime or tintinweb package is missing. `--with-jev` and `--with-web` are opt-in; existing Pi package registrations are reused. Jev can send code/diffs to your configured endpoint. For Pi web access, check `~/.pi/agent/web-search.json` and installed provider keys if tools are unavailable; dynamic tool activation may require `web_enable`.
 
 ### setup prompt
 

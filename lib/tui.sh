@@ -9,7 +9,7 @@ albert_tui() {
   fi
   exec 3<>/dev/tty || return 2
 
-  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev"
+  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev" ti_web="$with_web"
   case ",$harness," in
     ,pi,) ti_pi=1 ;;
     ,claude,) ti_claude=1 ;;
@@ -57,9 +57,10 @@ albert_tui() {
     fi
     printf '\n%sOPTIONAL%s\n' "$ti_bold" "$ti_reset" >&3
     _albert_tui_line 5 "[$([[ $ti_jev -eq 1 ]] && echo x || echo ' ')] Jev semantic tools (requires npm and endpoint configuration)"
+    _albert_tui_line 6 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude native tools)"
     printf '\n' >&3
-    _albert_tui_line 6 'Review installation →'
-    _albert_tui_line 7 'Cancel'
+    _albert_tui_line 7 'Review installation →'
+    _albert_tui_line 8 'Cancel'
     printf '\n%s↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit%s\n' "$ti_dim" "$ti_reset" >&3
     [[ -z "$ti_message" ]] || printf '\n%s%s%s\n' "$ti_blue" "$ti_message" "$ti_reset" >&3
   }
@@ -91,6 +92,7 @@ albert_tui() {
     ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope")
     [[ "$ti_scope" != project ]] || ti_args+=(--target "$ti_target")
     ((ti_jev == 0)) || ti_args+=(--with-jev)
+    ((ti_web == 0)) || ti_args+=(--with-web)
   }
   _albert_tui_review() {
     if (( !ti_pi && !ti_claude )); then
@@ -112,7 +114,7 @@ albert_tui() {
       printf '%sALBERT  /  REVIEW%s\n\n' "$ti_bold$ti_blue" "$ti_reset" >&3
       printf ' Harness   %s\n Scope     %s\n' "$(_albert_tui_harness)" "$ti_scope" >&3
       [[ "$ti_scope" != project ]] || printf ' Target    %s\n' "$ti_target" >&3
-      printf ' Jev       %s\n Planned   %s file writes\n' "$([[ $ti_jev -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
+      printf ' Jev       %s\n Web       %s\n Planned   %s file writes\n' "$([[ $ti_jev -eq 1 ]] && echo enabled || echo disabled)" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
       printf '\n%sPreview (first 10 file operations)%s\n' "$ti_bold" "$ti_reset" >&3
       grep '^WRITE ' "$ti_preview_file" | head -n 10 >&3 || true
       if ((n > 10)); then printf '  ... and %s more\n' "$((n-10))" >&3; fi
@@ -139,8 +141,8 @@ albert_tui() {
     _albert_tui_readkey || return 2
     ti_message=''
     case "$ti_key" in
-      up|k) ti_focus=$(((ti_focus+7)%8)) ;;
-      down|j) ti_focus=$(((ti_focus+1)%8)) ;;
+      up|k) ti_focus=$(((ti_focus+8)%9)) ;;
+      down|j) ti_focus=$(((ti_focus+1)%9)) ;;
       escape) return 0 ;;
       enter|' ')
         case "$ti_focus" in
@@ -158,7 +160,8 @@ albert_tui() {
               [[ -z "$new_target" ]] || ti_target="$new_target"
             fi ;;
           5) ti_jev=$((1-ti_jev)) ;;
-          6)
+          6) ti_web=$((1-ti_web)) ;;
+          7)
             local review_status=0
             _albert_tui_review || review_status=$?
             if ((review_status == 0)); then
@@ -166,7 +169,7 @@ albert_tui() {
               printf '\033[?25h\033[H\033[J%sALBERT  /  INSTALLING%s\n\n' "$ti_bold$ti_blue" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;
-          7) return 0 ;;
+          8) return 0 ;;
         esac ;;
     esac
   done

@@ -8,6 +8,7 @@ scope="global"
 target=""
 dry=0
 with_jev=0
+with_web=0
 tui_mode=auto
 explicit_args=0
 
@@ -16,12 +17,13 @@ usage() {
 Usage: ./install.sh                       # interactive TUI
        ./install.sh --tui                 # force interactive TUI
        ./install.sh --harness pi|claude|pi,claude --scope global|project
-                    [--target PROJECT_DIR] [--with-jev] [--dry-run] [--no-tui]
+                    [--target PROJECT_DIR] [--with-jev] [--with-web] [--dry-run] [--no-tui]
 
 Use arrows and Enter/Space to configure the TUI; preview before installing.
 Global: installs in ~/.pi/agent and/or ~/.claude; project: in PROJECT/.pi
 and/or PROJECT/.claude plus an Albert block in root AGENTS.md/CLAUDE.md.
-No change to existing model/provider settings. --with-jev is the only Jev install path.
+--with-web enables web research (Pi extension or Claude native tools).
+No change to existing model/provider settings. Jev remains opt-in.
 USAGE
 }
 while (($#)); do
@@ -30,6 +32,7 @@ while (($#)); do
     --scope) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; scope="$2"; explicit_args=1; shift 2 ;;
     --target) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; target="$2"; explicit_args=1; shift 2 ;;
     --with-jev) with_jev=1; explicit_args=1; shift ;;
+    --with-web) with_web=1; explicit_args=1; shift ;;
     --dry-run) dry=1; explicit_args=1; shift ;;
     --tui) tui_mode=on; shift ;;
     --no-tui) tui_mode=off; shift ;;
@@ -114,6 +117,15 @@ install_role() {
       tools="$tools, jev_evaluate, jev_search, jev_evaluate_files, jev_evaluate_diff"
     else
       tools="$tools, mcp__k-jev__jev_evaluate, mcp__k-jev__jev_search, mcp__k-jev__jev_evaluate_files, mcp__k-jev__jev_evaluate_diff"
+    fi
+  fi
+  # Expose research tools to the named specialists; Iris remains minimal.
+  # Pi extension tools require explicit ext: selectors in tintinweb/pi-subagents.
+  if ((with_web)) && [[ "$role" != iris ]]; then
+    if [[ "$tool" == pi ]]; then
+      tools="$tools, ext:pi-web-access/web_enable, ext:pi-web-access/web_search, ext:pi-web-access/fetch_content, ext:pi-web-access/get_search_content, ext:pi-web-access/source_check"
+    else
+      tools="$tools, WebSearch, WebFetch"
     fi
   fi
   local temp
@@ -215,7 +227,27 @@ pi_jev_registered() {
   return 1
 }
 
+# Install only on explicit opt-in, and reuse any already registered Pi package.
+# Preflight runs first, before changing target files or package settings.
+pi_web_registered() {
+  local packages
+  packages="$(pi_in_scope list 2>/dev/null)" || { echo 'Cannot inspect Pi packages (`pi list`).' >&2; return 2; }
+  grep -Eq '(^|[^[:alnum:]_-])pi-web-access([^[:alnum:]_-]|$)' <<< "$packages"
+}
+install_pi_web() {
+  if ((dry)); then
+    report 'CHECK Pi web: install npm:pi-web-access only if absent'
+  elif pi_web_registered; then
+    report 'SKIP PI WEB: pi-web-access is already registered; unchanged.'
+  elif [[ "$scope" == project ]]; then
+    pi_in_scope install -l npm:pi-web-access
+  else
+    pi_in_scope install npm:pi-web-access
+  fi
+}
+
 if has_harness pi; then pi_preflight; fi
+if ((with_web)) && has_harness pi; then install_pi_web; fi
 has_harness pi && install_one pi
 has_harness claude && install_one claude
 
@@ -258,6 +290,9 @@ fi
 
 if has_harness pi; then
   report 'OPTIONAL (Pi): one notification per parallel batch needs "defaultJoinMode": "group" in subagents.json; not set here. See docs/workflow.md.'
+fi
+if ((with_web)); then
+  report 'WEB: enabled for Albert and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
 fi
 report 'MODELS: choose per-agent model/effort; user settings untouched.'
 report 'DONE'
