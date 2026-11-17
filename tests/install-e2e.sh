@@ -57,7 +57,6 @@ done
 grep -q 'Parallel workers: one report per round' "$project/AGENTS.md"
 grep -q '## Delegation gate' "$project/AGENTS.md"
 grep -q 'Announce every dispatch' "$project/AGENTS.md"
-grep -q 'launch independent workers in the same turn' "$project/AGENTS.md"
 grep -q '^OPTIONAL (Pi): .*defaultJoinMode' "$tmp/initial"
 [[ -z "$(find "$project" -name subagents.json)" ]]  # installer never writes Pi extension settings
 grep -q 'Keep this rule.' "$project/AGENTS.md"

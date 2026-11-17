@@ -16,9 +16,9 @@ albert_tui() {
     ,pi,claude,|,claude,pi,) ti_pi=1; ti_claude=1 ;;
   esac
   local ti_focus=0 ti_message='' ti_preview='' ti_preview_file='' ti_key='' ti_next=''
-  local ti_blue='' ti_bold='' ti_dim='' ti_reset='' ti_reverse=''
+  local ti_bold='' ti_reset='' ti_reverse=''
   if [[ -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
-    ti_blue=$'\033[36m'; ti_bold=$'\033[1m'; ti_dim=$'\033[2m'; ti_reset=$'\033[0m'; ti_reverse=$'\033[7m'
+    ti_bold=$'\033[1m'; ti_reset=$'\033[0m'; ti_reverse=$'\033[7m'
   fi
 
   _albert_tui_cleanup() {
@@ -42,8 +42,8 @@ albert_tui() {
   }
   _albert_tui_draw() {
     printf '\033[?25l\033[H\033[J' >&3
-    printf '%sALBERT  /  INSTALL%s\n' "$ti_bold$ti_blue" "$ti_reset" >&3
-    printf '%sNative Pi + Claude Code agents. No extra TUI dependencies.%s\n\n' "$ti_dim" "$ti_reset" >&3
+    printf '%sALBERT  /  INSTALL%s\n' "$ti_bold" "$ti_reset" >&3
+    printf 'Native Pi + Claude Code agents. No extra TUI dependencies.\n\n' >&3
     printf '%sHARNESS%s  (select one or both)\n' "$ti_bold" "$ti_reset" >&3
     _albert_tui_line 0 "[$([[ $ti_pi -eq 1 ]] && echo x || echo ' ')] Pi"
     _albert_tui_line 1 "[$([[ $ti_claude -eq 1 ]] && echo x || echo ' ')] Claude Code"
@@ -53,7 +53,7 @@ albert_tui() {
     if [[ "$ti_scope" == project ]]; then
       _albert_tui_line 4 "Project directory: $ti_target"
     else
-      printf '%s   Project directory: (choose Project to edit)%s\n' "$ti_dim" "$ti_reset" >&3
+      printf '   Project directory: (choose Project to edit)\n' >&3
     fi
     printf '\n%sOPTIONAL%s\n' "$ti_bold" "$ti_reset" >&3
     _albert_tui_line 5 "[$([[ $ti_jev -eq 1 ]] && echo x || echo ' ')] Jev semantic tools (requires npm and endpoint configuration)"
@@ -61,8 +61,8 @@ albert_tui() {
     printf '\n' >&3
     _albert_tui_line 7 'Review installation →'
     _albert_tui_line 8 'Cancel'
-    printf '\n%s↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit%s\n' "$ti_dim" "$ti_reset" >&3
-    [[ -z "$ti_message" ]] || printf '\n%s%s%s\n' "$ti_blue" "$ti_message" "$ti_reset" >&3
+    printf '\n↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit\n' >&3
+    [[ -z "$ti_message" ]] || printf '\n%s\n' "$ti_message" >&3
   }
   _albert_tui_readkey() {
     ti_key=''
@@ -111,7 +111,7 @@ albert_tui() {
     n="$(grep -c '^WRITE ' "$ti_preview_file" || true)"
     while :; do
       printf '\033[?25l\033[H\033[J' >&3
-      printf '%sALBERT  /  REVIEW%s\n\n' "$ti_bold$ti_blue" "$ti_reset" >&3
+      printf '%sALBERT  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
       printf ' Harness   %s\n Scope     %s\n' "$(_albert_tui_harness)" "$ti_scope" >&3
       [[ "$ti_scope" != project ]] || printf ' Target    %s\n' "$ti_target" >&3
       printf ' Jev       %s\n Web       %s\n Planned   %s file writes\n' "$([[ $ti_jev -eq 1 ]] && echo enabled || echo disabled)" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
@@ -122,7 +122,7 @@ albert_tui() {
       if ((preview_focus == 0)); then printf ' %s> Install%s     Back     Cancel\n' "$ti_reverse" "$ti_reset" >&3
       elif ((preview_focus == 1)); then printf '   Install    %s> Back%s     Cancel\n' "$ti_reverse" "$ti_reset" >&3
       else printf '   Install     Back    %s> Cancel%s\n' "$ti_reverse" "$ti_reset" >&3; fi
-      printf '\n%s←/→ or h/l select  ·  Enter confirm  ·  Esc back%s\n' "$ti_dim" "$ti_reset" >&3
+      printf '\n←/→ or h/l select  ·  Enter confirm  ·  Esc back\n' >&3
       _albert_tui_readkey || { result=2; break; }
       case "$ti_key" in
         up|left|k|h) preview_focus=$(((preview_focus+2)%3)) ;;
@@ -166,7 +166,7 @@ albert_tui() {
             _albert_tui_review || review_status=$?
             if ((review_status == 0)); then
               _albert_tui_args
-              printf '\033[?25h\033[H\033[J%sALBERT  /  INSTALLING%s\n\n' "$ti_bold$ti_blue" "$ti_reset" >&3
+              printf '\033[?25h\033[H\033[J%sALBERT  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;
           8) return 0 ;;
