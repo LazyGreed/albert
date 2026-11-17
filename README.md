@@ -1,81 +1,126 @@
-# albert
+# Albert
 
-**One voice. Four workers. Your repo.**
+**One voice. Four workers. Your repository.**
 
-Tell Albert what to build, fix, or review. It delegates using your harness's native subagents — almost any harness that has them, including **Pi** and **Claude Code**. No daemon. No dashboard. No database. No tmux.
+Albert coordinates coding, debugging, and reviews through your harness's native subagents. Describe the outcome you want; Albert delegates the work and reports what was actually verified.
 
-```text
-           you
-            │
-          albert    plan · delegate · verify · report
-            │
-      ┌─────┼────────┬──────┐
-     nora  felix   vera   iris
-    think  build  review  test
+**Supports Pi and Claude Code.** No daemon, dashboard, database, tmux, or separate runtime.
+
+## Features
+
+- **One point of contact:** Albert coordinates the workers and produces one consolidated report.
+- **Smallest useful workflow:** straightforward changes go to Felix without a compulsory plan or research phase.
+- **Evidence-based completion:** passing tests, code review, and E2E acceptance are distinct signals; missing checks are marked `NOT RUN`.
+
+## Quick start
+
+Clone the repository:
+
+```bash
+git clone https://github.com/LazyGreed/albert.git
+cd albert
 ```
 
-### the crew
+### Pi
 
-| Agent | Job |
-| --- | --- |
-| **Albert** | Scope, route, decide, report. Never writes app code. |
-| **Nora** | Investigate what isn't clear. |
-| **Felix** | Ship the change. Own the checks. |
-| **Vera** | Independent review when it matters. |
-| **Iris** | Real E2E / smoke acceptance. No invented PASS. |
+Requires **Pi 1.1.0 or later** and the [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) package:
 
-Work starts from normal conversation. Background work when useful. One writer per checkout. Fix/review loops are bounded. [Workflow details →](docs/workflow.md)
-
-### harnesses
-
-Albert is instructions plus markdown role profiles, so the crew is not tied to one runtime. Any harness with native subagents can run it; `install.sh` automates two of them today:
-
-- **Pi** — `~/.pi/agent` / `.pi`, tintinweb `Agent`. Pi also needs the [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) package: `pi install npm:@tintinweb/pi-subagents`.
-- **Claude Code** — `~/.claude` / `.claude`, built-in agents.
-
-**Optional web research:** pass `--with-web` to expose web search and fetching to Nora, Felix, and Vera (Albert's main session uses the harness's native web tools). For Pi, this installs `npm:pi-web-access` in the chosen scope if missing and explicitly grants its extension tools to the workers. Claude Code uses native `WebSearch` and `WebFetch` with no extra MCP server. Iris gets no new web tools. Search-provider credentials or permissions remain yours to configure; fetched pages are untrusted and may be sent to external providers.
-
-Every other harness with native subagents works by copying `AGENTS.md`, `agents/*.md`, and `skills/` wherever it reads instructions — `install.sh` does not automate those. That includes other CLIs, your dotfiles, and bots wired to the same files. Only the delegation mechanics differ; the roles, routing, and verification rules are the same. Model/effort choices are yours — see [model guidance](docs/model-guide.md).
-
-### install
-
-Pi needs **>=1.1.0** and [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents):
-
-```sh
+```bash
 pi install npm:@tintinweb/pi-subagents
-./install.sh
+./install.sh --harness pi --scope global
 ```
 
-Arrows / `j` `k` · Space / Enter · Esc. Review changes, then install.
+### Claude Code
 
-**No TUI?**
+Uses Claude Code's built-in subagents:
 
-```sh
-./install.sh --harness pi,claude --scope global
-./install.sh --harness claude --scope project --target /path/to/repo
-./install.sh --harness pi --scope global --with-jev
-./install.sh --harness pi,claude --scope project --with-web
-./install.sh --harness pi,claude --scope project --dry-run
+```bash
+./install.sh --harness claude --scope global
 ```
 
-Existing instructions stay. Managed blocks update in place; changed files get backups. Model settings untouched. Pi installs fail early if the runtime or tintinweb package is missing. `--with-jev` and `--with-web` are opt-in; existing Pi package registrations are reused. Jev can send code/diffs to your configured endpoint. For Pi web access, check `~/.pi/agent/web-search.json` and installed provider keys if tools are unavailable; dynamic tool activation may require `web_enable`.
+To configure both harnesses interactively, run `./install.sh` without arguments. Then open Pi or Claude Code inside a project and describe a task.
 
-### setup prompt
+## The crew
 
-Paste this to your agent and answer its questions. It handles harness, scope, Jev, and per-agent model/effort.
+| Agent | Responsibility | Boundary |
+| --- | --- | --- |
+| **Albert** | Understand the goal, delegate, verify, report | Does not implement project changes |
+| **Nora** | Investigate uncertainty and missing prerequisites | Read-only |
+| **Felix** | Implement and run focused checks | One writer per shared checkout |
+| **Vera** | Independently review consequential changes | Read-only |
+| **Iris** | Run user-facing smoke and E2E acceptance checks | Never invents a passing result |
+
+Workers do not delegate to other workers. Albert coordinates handoffs and communicates with you.
+
+## How tasks flow
+
+1. **Scope:** Albert identifies an observable acceptance condition.
+2. **Check prerequisites when warranted:** uncertain or consequential work gets a lightweight check for missing evidence, contracts, or tool access. Routine work skips this step.
+3. **Delegate:** Nora investigates specific unknowns; Felix implements the change.
+4. **Verify:** Felix runs focused checks; Vera reviews risky changes; Iris tests user-visible behavior when useful.
+5. **Report:** Albert summarizes observed checks, unverified boundaries, and remaining blockers.
+
+When Felix is blocked, Albert distinguishes missing knowledge from an implementation defect. It does not blindly repeat the same approach or assume that switching to a larger model supplies missing evidence. See [Workflow and prerequisite-aware delegation](docs/workflow.md).
+
+## Installation options
+
+| Command | Purpose |
+| --- | --- |
+| `./install.sh` | Interactive installer |
+| `./install.sh --harness pi,claude --scope global` | Install both harness profiles globally |
+| `./install.sh --harness claude --scope project --target /path/to/repo` | Install into one repository |
+| `./install.sh --harness pi,claude --scope project --dry-run` | Preview changes without writing |
+| `./install.sh --harness pi --scope global --with-jev` | Enable optional Pi Jev integration |
+| `./install.sh --harness pi,claude --scope project --with-web` | Enable web tools for eligible workers |
+
+The installer preserves existing instructions, updates its managed blocks, and backs up changed files. It does not change model settings. Other harnesses with native subagents may use the same `AGENTS.md`, `agents/*.md`, and `skills/` rules, but the installer currently targets Pi and Claude Code only.
+
+### Optional web research
+
+Pass `--with-web` to expose web search and fetching to Nora, Felix, and Vera:
+
+- **Pi:** installs `npm:pi-web-access` if missing and grants worker tool access. Configure provider keys in `~/.pi/agent/web-search.json`; dynamic activation may require `web_enable`.
+- **Claude Code:** uses native `WebSearch` and `WebFetch`; no extra MCP server is required.
+- **Iris:** receives no additional web tools.
+
+External content is untrusted. Do not send secrets or private repository material to external providers. Jev is also optional and may send code or diffs to its configured endpoint.
+
+### Models and effort
+
+Choose models and reasoning effort in your harness; Albert does not lock you to a provider or overwrite your selections. See [Model/effort guidance](docs/model-guide.md).
+
+## Setup prompt
+
+If you prefer an agent-guided installation, paste this into your current coding agent:
 
 ```text
-Set up Albert (https://github.com/LazyGreed/albert) — the agent crew in this repo: AGENTS.md, agents/{nora,felix,vera,iris}.md, and skills/.
-
-Check my current harness and set it up based on the repo guidelines accordingly to the global scope.
-
-Verify by listing the installed agent files, confirm the Albert managed block in AGENTS.md/CLAUDE.md, and report exactly what changed. Mark anything you could not check as NOT RUN.
+Set up Albert (https://github.com/LazyGreed/albert) in this environment.
+Detect whether I use Pi or Claude Code and check the repository's
+installation instructions. Install globally unless I specify otherwise.
+Ask only about material choices such as optional web/Jev integration.
+Verify the installed agent files and managed AGENTS.md/CLAUDE.md block.
+Report exact changes and checks; label anything unverified NOT RUN.
 ```
 
-### how it runs
+## Documentation
 
-- **Pi** — native `Agent`, `get_subagent_result`, `steer_subagent`. Worker prompts append to project instructions. Albert-only limits stay Albert-only.
-- **Claude Code** — built-in agents. Shared `CLAUDE.md`, worker-specific roles.
-- **Models** — pick your own. Albert: strong reasoning; Felix/Vera: strong coding/review; Nora/Iris: fit the task. Configure role frontmatter or Pi per-call overrides. No provider lock-in.
-- **Reporting** — many workers, one report. Workers lead with a headline, Albert merges a round into a single message, and on Pi the colored widget, FleetView, and `@name` give you the detail on demand. [Details →](docs/workflow.md#reporting-with-several-workers)
-- **Skills** — `architecture`, `domain-modeling`, `ui-ux`, `documentation`, `research`, `verification`. Use `verification` for relevant bug, feature, or refactor work; skill loading remains native-harness controlled.
+- [Workflow](docs/workflow.md): lifecycle, prerequisite-aware delegation, verification, and recovery.
+- [Model/effort guidance](docs/model-guide.md): choosing capabilities for each agent.
+- [Coordinator rules](AGENTS.md): dispatch, first-principles reasoning, safety, and reporting.
+- [Agent profiles](agents/): Nora, Felix, Vera, and Iris.
+- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, and verification.
+
+## Development and checks
+
+Installer smoke tests are available:
+
+```bash
+bash tests/install-e2e.sh
+python3 tests/tui-e2e.py
+```
+
+These tests exercise installation, not agent task quality. For prerequisite-aware delegation, compare verified task completion, token usage, recovery time, and unnecessary research handoffs against the original workflow.
+
+## Limitations and safety
+
+Albert relies on native harness sessions: background tasks are not guaranteed to survive an exited parent process. Concurrent writers require isolated worktrees. Merging, deploying, releasing, changing credentials, and destructive operations need explicit approval. No additional supervisor or persistent task database is introduced.

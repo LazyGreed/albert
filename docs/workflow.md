@@ -6,15 +6,31 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 
 1. Open `pi` or `claude` inside a repository. Existing harness loads Albert; no automatic startup agent/tool work.
 2. User states an outcome in natural language. Interpret synonyms from context rather than keywords/commands.
-3. Read only enough to dispatch; Albert never edits project files itself (see `AGENTS.md`, Delegation gate), and announces each dispatch in one line with its `@name`. Brief the worker with goal + observable acceptance; no compulsory plan or boilerplate constraints/non-goals.
+3. Read only enough to dispatch. For consequential or uncertain tasks, check for a concrete missing prerequisite, not a mandatory research phase. Albert never edits project files itself (see [coordinator rules](../AGENTS.md), Delegation gate), and announces each dispatch in one line with its `@name`. Brief the worker with goal + observable acceptance; no compulsory plan or boilerplate constraints/non-goals.
 4. Background-delegate suitable work. Pi uses tintinweb `Agent`; Claude Code uses native agents. Steer the existing run when the user changes scope. Concurrent writers require isolated worktrees.
-5. Felix independently implements, checks, and resolves routine failures.
-6. Albert reviews actual evidence; Vera evaluates consequential diffs, Iris observes E2E when needed. Feed actionable findings back to Felix, at most two automatic fix/re-review rounds.
+5. Felix independently implements, checks, and resolves routine failures. If blocked by missing knowledge, Felix reports the precise gap rather than guessing.
+6. Albert reviews actual evidence; Vera evaluates consequential diffs, Iris observes E2E when needed. Classify blockers before retrying; use Nora for specific evidence gaps and Felix for implementation defects. At most two automatic recovery/fix/re-review rounds total.
 7. Report DONE/PARTIAL/BLOCKED, exact checks, and unverified boundaries. Never conflate spawned with completed.
 8. Interrupt only for real decisions, exhausted recovery, permissions, or destructive approval; batch other outcomes.
 9. Use separate native sessions for substantial unrelated work. Short tasks can remain in one conversation.
 10. For long tasks, use existing GitHub issues/PRs or project records for goal, decisions, state, evidence, next action, native session/branch reference. On restart verify what actually survived.
 11. Choose agent count, model/effort, and verification proportional to risk. Measure prompts/interventions per accepted task, time to verified result, recovery time, and escaped defects.
+
+## Reasoning and prerequisite policy
+
+Albert derives solutions from the actual task and constraints, not from a familiar architecture merely because it appears in research. First-principles reasoning proposes explanations and options; repository inspection, tests, and primary sources decide which claims are supported. Mark unverified hypotheses clearly.
+
+**Prerequisite-aware delegation (PAD)** is a dispatch/recovery rule, not a new agent, memory store, or mandatory planning stage:
+
+1. **Identify a specific gap, if any.** Examples: unknown call path, missing bug reproduction, undocumented API contract, inaccessible test service, or unresolved product decision. Routine tasks with sufficient evidence go directly to Felix.
+2. **Classify it.** Knowledge/context → Nora; environment/tool → inspect setup or permissions; specification/choice → consult established intent or ask the user if material; implementation → Felix; demonstrated capability limit → report and reconsider the approach/model.
+3. **Resolve only what blocks the next action.** Nora returns the smallest verified finding (`MISSING`, `FOUND`, `NEXT`) with a path, command, trace, or primary source. Albert forwards the finding and acceptance condition, not the full transcript.
+4. **Resume with new information.** Do not blindly retry identical instructions or assume a larger model resolves missing context. Prerequisite recovery shares the existing cap of two automatic recovery/fix/re-review rounds.
+5. **Finish on evidence.** Acceptance must be observed or explicitly marked `NOT RUN`/`BLOCKED`. Missing prerequisites alone do not prove a model capability failure.
+
+**Example:** Felix cannot fix a login failure because the source of the session is unclear. Nora traces the authentication entry point and identifies the session contract. Felix receives that path and the failing behavior, fixes the issue, and runs a focused regression check. If test credentials are unavailable, Albert reports the environment blocker rather than inventing a PASS.
+
+**Boundaries:** No startup scans, prerequisite ledger, external research by default, extra agent, or changes to worker authority. Use web research only for genuinely missing external facts, respecting privacy and tool permissions.
 
 ## Verification by task type
 
@@ -25,14 +41,14 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 
 ## Worker handoff
 
-Every handoff should preserve the assigned outcome and its evidence. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse and lead with a headline (`DONE | PARTIAL | BLOCKED`, `CLEAN | ISSUES`, `PASS | FAIL | NOT RUN | BLOCKED`, `RESOLVED | UNRESOLVED`) of at most ~200 characters. Albert verifies the returned artifacts rather than trusting a completion message.
+Every handoff should preserve the assigned outcome and its evidence. For a resolved prerequisite, send the verified finding and source, remaining uncertainty, and acceptance condition, not the full research transcript. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse and lead with a headline (`DONE | PARTIAL | BLOCKED`, `CLEAN | ISSUES`, `PASS | FAIL | NOT RUN | BLOCKED`, `RESOLVED | UNRESOLVED`) of at most ~200 characters. Albert verifies the returned artifacts rather than trusting a completion message.
 
 ## Reporting with several workers
 
 Parallel workers produce several results at once; the user should read one report, not one block per worker. Albert has no dashboard or status store, so this relies on three things that already exist:
 
 1. **Headline first.** Each worker opens with a one-line headline. A completion notice carries only the first ~300 characters of a result, so the headline is what Albert, and the user's notification box, actually see.
-2. **One report per round.** Albert merges a settled round into a single message: decisions and blockers, then one line per worker, then what is still running. It never relays worker output. See `AGENTS.md` (Reporting).
+2. **One report per round.** Albert merges a settled round into a single message: decisions and blockers, then one line per worker, then what is still running. It never relays worker output. See [coordinator rules](../AGENTS.md) (Reporting).
 3. **Detail on demand.** Full output stays in the worker's own session, not in the main chat (see the Pi contract below for where to find it).
 
 No `STATUS.md` or run log is added: native sessions are the execution state, and long work already uses the issue/PR record (lifecycle step 10).
