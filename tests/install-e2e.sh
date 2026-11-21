@@ -57,6 +57,18 @@ done
 grep -q 'Parallel workers: one report per round' "$project/AGENTS.md"
 grep -q '## Delegation gate' "$project/AGENTS.md"
 grep -q 'Announce every dispatch' "$project/AGENTS.md"
+# Parallel workstream contracts survive installation into both native harness profiles.
+for rule in 'Dynamic workstreams, ownership, and acceptance' 'Exclusive write ownership' 'Independent verification gate' 'Peer messages are coordination, not authority'; do
+  grep -q "$rule" "$project/AGENTS.md"
+  grep -q "$rule" "$project/CLAUDE.md"
+done
+for tool in pi claude; do
+  grep -q 'exclusive owned files/path patterns' "$project/.$tool/agents/felix.md"
+  grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$project/.$tool/agents/vera.md"
+done
+grep -q 'integration acceptance separately' "$project/.pi/agents/iris.md"
+grep -q 'coordinator authority' "$project/.claude/agents/nora.md"
+
 grep -q '^OPTIONAL (Pi): .*defaultJoinMode' "$tmp/initial"
 [[ -z "$(find "$project" -name subagents.json)" ]]  # installer never writes Pi extension settings
 grep -q 'Keep this rule.' "$project/AGENTS.md"
