@@ -107,4 +107,46 @@ grep -q '^SKIP PI WEB:' "$tmp/web-again"
 ! grep -q '^WRITE ' "$tmp/web-again"
 [[ "$(grep -c '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG")" -eq 1 ]]
 
-echo 'install E2E PASS: prerequisites, dual harness, context, idempotence, Jev reuse, web opt-in'
+# Antigravity CLI project-scope install, parallel workstream contracts, and idempotence.
+"$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project"
+[[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
+[[ -f "$project/.agents/skills/verification/SKILL.md" ]]
+for role in albert nora felix vera iris; do
+  [[ -f "$project/.agents/agents/$role.md" ]]
+done
+grep -q '^mainAgent: true$' "$project/.agents/agents/albert.md"
+for role in nora felix vera iris; do
+  grep -q '^subagent: true$' "$project/.agents/agents/$role.md"
+  grep -q '^mainAgent: false$' "$project/.agents/agents/$role.md"
+  grep -q 'Open with a headline' "$project/.agents/agents/$role.md"
+done
+for rule in 'Dynamic workstreams, ownership, and acceptance' 'Exclusive write ownership' 'Independent verification gate' 'Peer messages are coordination, not authority'; do
+  grep -q "$rule" "$project/.agents/rules/AGENTS.md"
+  grep -q "$rule" "$project/.agents/agents/albert.md"
+done
+grep -q 'exclusive owned files/path patterns' "$project/.agents/agents/felix.md"
+grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$project/.agents/agents/vera.md"
+grep -q 'integration acceptance separately' "$project/.agents/agents/iris.md"
+grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
+[[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
+"$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-again"
+! grep -q '^WRITE ' "$tmp/agy-project-again"
+
+# Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
+mock_home="$tmp/home"
+mkdir -p "$mock_home"
+HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
+agy_global="$mock_home/.gemini/config/plugins/albert"
+[[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
+grep -q '"name": "albert"' "$agy_global/plugin.json"
+grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
+for role in albert nora felix vera iris; do
+  [[ -f "$agy_global/agents/$role.md" ]]
+done
+grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
+grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
+grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
+HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
+! grep -q '^WRITE ' "$tmp/agy-global-again"
+
+echo 'install E2E PASS: prerequisites, pi/claude/antigravity harnesses, context, idempotence, Jev reuse, web opt-in'

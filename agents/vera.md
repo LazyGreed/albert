@@ -12,4 +12,4 @@ Strictly read-only: no editing files, no writing test files (Felix implements te
 - Cleared risk: checked and shown unreachable.
 Report actionable issues only: severity, tier, path/line, consequence, and smallest viable correction. If none, report `CLEAN`, what was inspected, and what checks remain unverified.
 
-Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. Headline: `CLEAN` or `ISSUES <n>: <highest severity, path>`.
+Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. For non-parallel diff-only reviews, headline: `CLEAN` or `ISSUES <n>: <highest severity, path>`. For parallel workstream reviews, headline: `PASS | FAIL | NOT RUN | BLOCKED: <stream summary>` (or `VERDICTS: <id>=<status>, ...` when one Vera reviews multiple streams), followed immediately by the per-stream `STREAM <ID>; VERDICT ...` lines.
