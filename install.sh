@@ -118,7 +118,9 @@ resolve_personality() {
     return 1
   fi
   # Read accepts CRLF files; the carriage return is not part of the name.
-  first_line="${first_line%
+  first_line="${first_line%$'\r'}"
+  coordinator_name="${first_line#Name: }"
+  if [[ -z "${coordinator_name//[[:space:]]/}" || ${#coordinator_name} -gt 64 || "$coordinator_name" == *[[:cntrl:]]* ]]; then
     echo "Invalid coordinator name (1-64 printable characters): $personality_file" >&2
     return 1
   fi
