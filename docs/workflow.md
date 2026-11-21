@@ -1,4 +1,4 @@
-# Albert workflow (Pi and Claude Code)
+# Albert workflow (Pi, Claude Code, and Antigravity CLI)
 
 Albert remains instructions plus native harness agents; no additional runtime, database, dashboard, custom command language, or task service.
 
@@ -7,14 +7,39 @@ Albert remains instructions plus native harness agents; no additional runtime, d
 1. Open `pi` or `claude` inside a repository. Existing harness loads Albert; no automatic startup agent/tool work.
 2. User states an outcome in natural language. Interpret synonyms from context rather than keywords/commands.
 3. Read only enough to dispatch. For consequential or uncertain tasks, check for a concrete missing prerequisite, not a mandatory research phase. Albert never edits project files itself (see [coordinator rules](../AGENTS.md), Delegation gate), and announces each dispatch in one line with its `@name`. Brief the worker with goal + observable acceptance; no compulsory plan or boilerplate constraints/non-goals.
-4. Background-delegate suitable work. Pi uses tintinweb `Agent`; Claude Code uses native agents. Steer the existing run when the user changes scope. Concurrent writers require isolated worktrees.
+4. Delegate suitable work through the harness's native agents (Pi tintinweb `Agent`, Claude Code subagents, Antigravity CLI native subagents). For independent parallel implementation, name dynamic Felix instances and assign exclusive file ownership, separate worktrees, acceptance conditions, and a verifier before dispatch. Steer existing runs rather than creating duplicates.
 5. Felix independently implements, checks, and resolves routine failures. If blocked by missing knowledge, Felix reports the precise gap rather than guessing.
-6. Albert reviews actual evidence; Vera evaluates consequential diffs, Iris observes E2E when needed. Classify blockers before retrying; use Nora for specific evidence gaps and Felix for implementation defects. At most two automatic recovery/fix/re-review rounds total.
+6. Albert reviews actual evidence; for parallel work each implementation stream gets a separate Vera verdict against its own diff and acceptance, then the integrated result gets a separate combined check. Iris observes E2E when needed. Classify blockers before retrying; use Nora for specific evidence gaps and Felix for implementation defects. At most two automatic recovery/fix/re-review rounds total.
 7. Report DONE/PARTIAL/BLOCKED, exact checks, and unverified boundaries. Never conflate spawned with completed.
 8. Interrupt only for real decisions, exhausted recovery, permissions, or destructive approval; batch other outcomes.
 9. Use separate native sessions for substantial unrelated work. Short tasks can remain in one conversation.
 10. For long tasks, use existing GitHub issues/PRs or project records for goal, decisions, state, evidence, next action, native session/branch reference. On restart verify what actually survived.
 11. Choose agent count, model/effort, and verification proportional to risk. Measure prompts/interventions per accepted task, time to verified result, recovery time, and escaped defects.
+
+## Parallel implementation and independent verification
+
+Parallel work is optional, not the default. Spawn additional instances of the **existing** Felix role only for disjoint, independently testable workstreams whose benefit exceeds scheduling/integration overhead; instances may be named `felix-api`, `felix-ui`, etc. Their names do not create new roles or isolate a checkout.
+
+For each parallel stream, Albert records a compact dispatch brief in the native task/session context:
+
+```text
+STREAM: api
+INSTANCE/ROLE: felix-api / felix
+GOAL: Return validation errors with stable fields
+WRITE OWNERSHIP: server/validation/**, tests/validation/**
+DO NOT EDIT: server/routes/**, shared/config/**
+CHECKOUT: isolated worktree/branch <actual ref, not an assumed one>
+ACCEPT: valid payload accepted; invalid payload returns documented error shape
+CHECKS: focused API validation checks + error-path regression
+DEPENDENCIES: ui consumes documented validation error fields
+VERIFIER: vera-api / vera (read-only)
+```
+
+`WRITE OWNERSHIP` must be **exclusive across all active writers**; include tests, generated files and common manifests. Do not rely on apparently disjoint directories when tooling rewrites a shared lockfile. Shared paths belong to one named integration owner or are edited sequentially. Worktrees or native working-copy isolation must be *verified* before parallel edits. If isolation is unavailable, run writers serially. User changes and other workers' edits remain untouched. Discovering a new required path is a blocker to be relayed to Albert, not permission to edit it.
+
+Each stream first supplies its own focused tests and changed-path/ref evidence; a *separately tasked Vera* assesses the actual diff, ownership adherence, acceptance evidence and cross-boundary risk. Vera produces a `STREAM; VERDICT PASS|FAIL|NOT RUN|BLOCKED; REF; ACCEPT; CHECKS; FINDINGS` record for **each** stream, even if one Vera reviews several. Review is read-only; no fabricated test pass. Albert routes findings to the owning Felix, respecting the two-round recovery cap. A subsequent combined integration check covers contracts and regressions across streams. Iris checks user-visible behavior when needed. Do not call the entire task DONE from passing isolated checks alone.
+
+Messages between active peer workers are allowed for narrow source-anchored dependency/blocker/review handoffs **only when native transport is available**. Peers cannot reassign ownership, change acceptance, approve actions, or spawn workers. Albert remains the authority, and receives any decision-impacting message. If peer routing is absent, relay through Albert's existing native completion/steering workflow. See [peer messaging capabilities](peer-messaging.md). No new daemon, queue, board, or polling loop is required.
 
 ## Reasoning and prerequisite policy
 
@@ -41,11 +66,11 @@ Albert derives solutions from the actual task and constraints, not from a famili
 
 ## Worker handoff
 
-Every handoff should preserve the assigned outcome and its evidence. For a resolved prerequisite, send the verified finding and source, remaining uncertainty, and acceptance condition, not the full research transcript. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse and lead with a headline (`DONE | PARTIAL | BLOCKED`, `CLEAN | ISSUES`, `PASS | FAIL | NOT RUN | BLOCKED`, `RESOLVED | UNRESOLVED`) of at most ~200 characters. Albert verifies the returned artifacts rather than trusting a completion message.
+Every handoff should preserve the assigned outcome and its evidence. For parallel work, include the stable stream ID, explicit owned paths, read-only or isolated checkout, individual acceptance, verifier, and dependency recipients. Missing acceptance or overlapping ownership must be corrected before dispatch. For a resolved prerequisite, send the verified finding and source, remaining uncertainty, and acceptance condition, not the full research transcript. Workers report changed paths or observations, exact commands/results, acceptance cases passed or not run, known risks, and the next action if blocked. Keep reports terse and lead with a headline (`DONE | PARTIAL | BLOCKED`, `CLEAN | ISSUES`, `PASS | FAIL | NOT RUN | BLOCKED`, `RESOLVED | UNRESOLVED`) of at most ~200 characters. Albert verifies the returned artifacts rather than trusting a completion message.
 
 ## Reporting with several workers
 
-Parallel workers produce several results at once; the user should read one report, not one block per worker. Albert has no dashboard or status store, so this relies on three things that already exist:
+Parallel workers produce several results at once; the user should read one report, not one block per worker. Show each workstream's owner, independent verification status, and integrated acceptance status. Albert has no dashboard or status store, so this relies on three things that already exist:
 
 1. **Headline first.** Each worker opens with a one-line headline. A completion notice carries only the first ~300 characters of a result, so the headline is what Albert, and the user's notification box, actually see.
 2. **One report per round.** Albert merges a settled round into a single message: decisions and blockers, then one line per worker, then what is still running. It never relays worker output. See [coordinator rules](../AGENTS.md) (Reporting).
