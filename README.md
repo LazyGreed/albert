@@ -93,5 +93,3 @@ bash tests/workstream-e2e.sh
 - [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification
 
 Native background tasks are not guaranteed to survive the parent session exiting.
-
-**Migration:** GitHub must be renamed from `LazyGreed/albert` to `LazyGreed/quintet` after merging. Until then, use the current repository URL to clone.
