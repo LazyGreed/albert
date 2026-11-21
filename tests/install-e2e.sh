@@ -138,7 +138,7 @@ grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
 # Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
 mock_home="$tmp/home"
 mkdir -p "$mock_home"
-HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
@@ -152,7 +152,7 @@ done
 grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
 grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
-HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
 ! grep -q '^WRITE ' "$tmp/agy-global-again"
 
 # Custom identity only changes the main agent.
@@ -188,7 +188,7 @@ grep -q 'Personality must start' "$tmp/invalid"
 
 # Global identity edits survive reinstall and update the plugin display name.
 printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$mock_home/.config/quintet/PERSONALITY.md"
-HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
 grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
 grep -q 'Name: Rei' "$agy_global/agents/albert.md"
 grep -q '^Name: Rei' "$mock_home/.config/quintet/PERSONALITY.md"
