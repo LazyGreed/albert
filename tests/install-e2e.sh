@@ -97,10 +97,11 @@ grep -q 'Keep this too.' "$project/CLAUDE.md"
 assert_absent '^WRITE ' "$tmp/again"
 
 # Existing Pi Jev is kept. No second install registration.
+cp -- "$MOCK_PI_LOG" "$tmp/pi-before-jev"
 MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\n/path/to/k-jev' \
   "$root/install.sh" --harness pi --scope project --target "$project" --with-jev > "$tmp/jev"
 grep -q 'SKIP PI JEV' "$tmp/jev"
-assert_absent '^pi install ' "$MOCK_PI_LOG"
+cmp -s "$tmp/pi-before-jev" "$MOCK_PI_LOG"
 
 # Web opt-in: dry-run is side-effect free, Pi installs only when absent, and
 # both harnesses expose the right tools without granting them to Iris.
