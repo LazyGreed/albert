@@ -1,138 +1,97 @@
-# Albert
+# Quintet
 
-**One voice. Four workers. Your repository.**
+**One voice. Four specialists. Your rules.**
 
-Albert coordinates coding, debugging, and reviews through your harness's native subagents. Describe the outcome you want; Albert delegates the work and reports what was actually verified.
+Quintet coordinates coding tasks inside your existing AI coding harness. Customize the main agent's name and personality. Its workers retain their fixed roles:
 
-**Supports Pi, Claude Code, and Antigravity CLI.** No daemon, dashboard, database, tmux, or separate runtime.
+| Agent | Responsibility |
+| --- | --- |
+| Main agent (Albert by default) | Delegate, coordinate, verify, report |
+| Nora | Research and investigate, read-only |
+| Felix | Implement and run focused checks |
+| Vera | Independently review, read-only |
+| Iris | Test user-facing acceptance, read-only |
 
-## Features
+Quintet uses native subagents. It can split independent work into parallel streams with exclusive file ownership and separate verification. There is no separate runtime, daemon, or database.
 
-- **One point of contact:** Albert coordinates the workers and produces one consolidated report.
-- **Smallest useful workflow:** straightforward changes go to Felix without a compulsory plan or research phase.
-- **Evidence-based completion:** passing tests, code review, and E2E acceptance are distinct signals; missing checks are marked `NOT RUN`.
-- **Dynamic workstreams:** when parallelism pays off, Albert names multiple native Felix instances with exclusive file ownership and measurable acceptance.
-- **Independent workstream verification:** Vera reviews each parallel diff separately; integration is checked after combining workstreams.
+## Install
 
-## Quick start
-
-Clone the repository:
-
-```bash
-git clone https://github.com/LazyGreed/albert.git
-cd albert
+```sh
+git clone https://github.com/LazyGreed/quintet.git
+cd quintet
 ```
 
-### Antigravity CLI
+Use `./install.sh` for the interactive Pi and Claude Code installer, or pick a harness directly:
 
-Uses Antigravity CLI's native plugin & subagent system:
+```sh
+# Pi: requires Pi 1.1.0+ and the subagents package
+pi install npm:@tintinweb/pi-subagents
+./install.sh --harness pi --scope global
 
-```bash
+# Claude Code
+./install.sh --harness claude --scope global
+
+# Antigravity CLI
 ./install.sh --harness antigravity --scope global
 ```
 
-### Pi
+For one project, add `--scope project --target /path/to/project`. Add `--dry-run` to preview. Installer updates back up changed files and keep existing model settings.
 
-Requires **Pi 1.1.0 or later** and the [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) package:
+## Customize the main agent
 
-```bash
-pi install npm:@tintinweb/pi-subagents
-./install.sh --harness pi --scope global
+Edit the repository's `PERSONALITY.md`, beside `AGENTS.md`, to change the main agent's name and style:
+
+```md
+Name: Kanade
+
+# Personality
+
+- Be concise and direct.
+- Explain important choices, not routine steps.
 ```
 
-### Claude Code
+Rerun your install command to apply changes. Global installs use this file directly; there is no separate personality config directory.
 
-Uses Claude Code's built-in subagents:
+Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
 
-```bash
-./install.sh --harness claude --scope global
-```
+Only the main agent uses the personality. Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
 
-To configure harnesses interactively, run `./install.sh` without arguments. Then open your coding agent inside a project and describe a task.
+Native agent identifiers and the Antigravity plugin directory remain `albert` for compatibility. Changing the name updates the main prompt and Antigravity plugin display name, not the underlying agent ID or harness title.
 
-## The crew
+## Workflow
 
-| Agent | Responsibility | Boundary |
-| --- | --- | --- |
-| **Albert** | Understand the goal, delegate, verify, report | Does not implement project changes |
-| **Nora** | Investigate uncertainty and missing prerequisites | Read-only |
-| **Felix** | Implement and run focused checks | One writer per shared checkout |
-| **Vera** | Independently review consequential changes | Read-only |
-| **Iris** | Run user-facing smoke and E2E acceptance checks | Never invents a passing result |
+1. Describe the outcome.
+2. The coordinator delegates the smallest necessary work.
+3. Felix implements; Vera independently reviews meaningful changes; Iris checks observable behavior when useful.
+4. The coordinator reports verified results, gaps, and required approvals.
 
-Workers do not delegate to other workers. Albert owns work allocation and communicates with you; native peer messaging is permitted for bounded dependency handoffs where supported, never to reassign ownership.
+Parallel writers require isolated worktrees, exclusive owned paths, and independent reviews before integration. Pushing, merging, deploying, and destructive changes require approval.
 
-## How tasks flow
+## Options and checks
 
-1. **Scope:** Albert identifies an observable acceptance condition.
-2. **Check prerequisites when warranted:** uncertain or consequential work gets a lightweight check for missing evidence, contracts, or tool access. Routine work skips this step.
-3. **Delegate:** Nora investigates specific unknowns; Felix implements the change. For independent parallel tasks, use named Felix instances with verified isolated checkouts, exclusive file ownership, explicit acceptance, and a verifier per stream.
-4. **Verify:** Felix runs focused checks; Vera independently reviews every parallel stream; integration gets its own combined check. Iris tests user-visible behavior when useful.
-5. **Report:** Albert summarizes observed checks, unverified boundaries, and remaining blockers.
-
-When Felix is blocked, Albert distinguishes missing knowledge from an implementation defect. It does not blindly repeat the same approach or assume that switching to a larger model supplies missing evidence. See [Workflow and prerequisite-aware delegation](docs/workflow.md).
-
-## Installation options
-
-| Command | Purpose |
+| Option | Purpose |
 | --- | --- |
-| `./install.sh` | Interactive installer |
-| `./install.sh --harness pi,claude --scope global` | Install both harness profiles globally |
-| `./install.sh --harness claude --scope project --target /path/to/repo` | Install into one repository |
-| `./install.sh --harness pi,claude --scope project --dry-run` | Preview changes without writing |
-| `./install.sh --harness pi --scope global --with-jev` | Enable optional Pi Jev integration |
-| `./install.sh --harness pi,claude --scope project --with-web` | Enable web tools for eligible workers |
+| `--harness pi,claude` | Install both harnesses |
+| `--scope project --target PATH` | Install in one project |
+| `--with-web` / `--no-web` | Toggle web access (enabled by default) |
+| `--with-jev` | Optional semantic tools |
+| `--dry-run` | Preview changes |
 
-The installer preserves existing instructions, updates its managed blocks, and backs up changed files. It does not change model settings. Other harnesses with native subagents may use the same `AGENTS.md`, `agents/*.md`, and `skills/` rules, and the installer currently targets Pi, Claude Code, and Antigravity CLI.
-
-### Web research
-
-Web research is enabled by default for Albert and Nora/Felix/Vera (Iris remains minimal):
-
-- **Antigravity CLI:** uses native `search_web`.
-- **Pi:** installs `npm:pi-web-access` if missing and grants worker tool access. Configure provider keys in `~/.pi/agent/web-search.json`; dynamic activation may require `web_enable`.
-- **Claude Code:** uses native `WebSearch` and `WebFetch`; no extra MCP server is required.
-- **Iris:** receives no additional web tools.
-
-Use `--no-web` during installation if you need an entirely offline profile. External content is untrusted. Do not send secrets or private repository material to external providers. Jev is optional and may send code or diffs to its configured endpoint.
-
-### Models and effort
-
-Choose models and reasoning effort in your harness; Albert does not lock you to a provider or overwrite your selections. See [Model/effort guidance](docs/model-guide.md).
-
-## Setup prompt
-
-If you prefer an agent-guided installation, paste this into your current coding agent:
-
-```text
-Set up Albert (https://github.com/LazyGreed/albert) in this environment.
-Detect whether I use Pi, Claude Code, or Antigravity CLI and check the repository's
-installation instructions. Install globally unless I specify otherwise.
-Ask only about material choices such as optional web/Jev integration.
-Verify the installed agent files and managed AGENTS.md/CLAUDE.md block.
-Report exact changes and checks; label anything unverified NOT RUN.
-```
-
-## Documentation
-
-- [Workflow](docs/workflow.md): lifecycle, dynamic workstreams, exclusive ownership, verification, and recovery.
-- [Peer messaging](docs/peer-messaging.md): harness capability matrix, bounded messages, and coordinator fallback.
-- [Model/effort guidance](docs/model-guide.md): choosing capabilities for each agent.
-- [Coordinator rules](AGENTS.md): dispatch, first-principles reasoning, safety, and reporting.
-- [Agent profiles](agents/): Nora, Felix, Vera, and Iris.
-- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, and verification.
-
-## Development and checks
-
-Installer smoke tests are available:
-
-```bash
+```sh
 bash tests/install-e2e.sh
 python3 tests/tui-e2e.py
+bash tests/workstream-e2e.sh
 ```
 
-These tests exercise installation, not agent task quality. For prerequisite-aware delegation, compare verified task completion, token usage, recovery time, and unnecessary research handoffs against the original workflow.
+## References
 
-## Limitations and safety
+- [Workflow](docs/workflow.md): delegation, ownership, review, recovery
+- [Peer messaging](docs/peer-messaging.md): native handoffs by harness
+- [Model guide](docs/model-guide.md): choose model and effort
+- [Coordinator contract](AGENTS.md): authoritative rules
+- [Agent profiles](agents/): unchanged specialist roles
+- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification
 
-Albert relies on native harness sessions: background tasks are not guaranteed to survive an exited parent process. Concurrent writers require isolated worktrees. Merging, deploying, releasing, changing credentials, and destructive operations need explicit approval. No additional supervisor or persistent task database is introduced.
+Native background tasks are not guaranteed to survive the parent session exiting.
+
+**Migration:** GitHub must be renamed from `LazyGreed/albert` to `LazyGreed/quintet` after merging. Until then, use the current repository URL to clone.

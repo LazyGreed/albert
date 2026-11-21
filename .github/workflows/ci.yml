@@ -10,6 +10,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n install.sh tests/install-e2e.sh
       - name: Install E2E
         run: bash tests/install-e2e.sh
       - name: TUI E2E

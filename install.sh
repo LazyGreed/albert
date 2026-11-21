@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install Albert's native agent profiles and skills without replacing user settings.
+# Install Quintet's native agent profiles and skills without replacing user settings.
 set -euo pipefail
 
 source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -20,6 +20,8 @@ Usage: ./install.sh                       # interactive TUI
                     [--target PROJECT_DIR] [--with-jev] [--with-web|--no-web] [--dry-run] [--no-tui]
 
 Use arrows and Enter/Space to configure the TUI; preview before installing.
+Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
+Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
 Global: installs in ~/.pi/agent, ~/.claude, and/or ~/.gemini/config/plugins/albert; project: in PROJECT/.pi,
 PROJECT/.claude, and/or PROJECT/.agents plus an Albert block in root AGENTS.md/CLAUDE.md.
 Web research is enabled by default for eligible workers (use --no-web to disable).
@@ -93,11 +95,68 @@ put() {
   cp -- "$src" "$dst"
 }
 
+# Personality belongs to the main agent; specialist roles are unchanged.
+personality_file=''
+project_personality=''
+coordinator_name=''
+coordinator_json_name=''
+resolve_personality() {
+  personality_file="$source_dir/PERSONALITY.md"
+  if [[ "$scope" == project ]]; then
+    project_personality="$target/PERSONALITY.md"
+    if [[ -f "$project_personality" ]]; then
+      personality_file="$project_personality"
+    elif [[ -e "$project_personality" || -L "$project_personality" ]]; then
+      echo "Not a regular personality file: $project_personality" >&2
+      return 1
+    fi
+  fi
+  local first_line=''
+  IFS= read -r first_line < "$personality_file" || true
+  if [[ "$first_line" != 'Name: '* ]]; then
+    echo "Personality must start with 'Name: Your Name': $personality_file" >&2
+    return 1
+  fi
+  # Read accepts CRLF files; the carriage return is not part of the name.
+  first_line="${first_line%$'\r'}"
+  coordinator_name="${first_line#Name: }"
+  if [[ -z "${coordinator_name//[[:space:]]/}" || ${#coordinator_name} -gt 64 || "$coordinator_name" == *[[:cntrl:]]* ]]; then
+    echo "Invalid coordinator name (1-64 printable characters): $personality_file" >&2
+    return 1
+  fi
+  coordinator_json_name="${coordinator_name//\\/\\\\}"
+  coordinator_json_name="${coordinator_json_name//\"/\\\"}"
+  # Managed markers must not come from user-controlled personality text.
+  if ! awk '{
+    sub(/\r$/, "")
+    if ($0 == "<!-- ALBERT MANAGED START -->" || $0 == "<!-- ALBERT MANAGED END -->") exit 1
+  }' "$personality_file"; then
+    echo "Reserved managed marker in personality: $personality_file" >&2
+    return 1
+  fi
+}
+install_personality() {
+  [[ "$scope" == project && ! -f "$project_personality" ]] || return 0
+  report "WRITE $project_personality"
+  ((dry)) && return 0
+  # Create the user-editable project override once. Never overwrite user edits.
+  cp -- "$source_dir/PERSONALITY.md" "$project_personality"
+  personality_file="$project_personality"
+}
+render_coordinator() {
+  cat -- "$source_dir/AGENTS.md"
+  printf '\n## Main-agent personality (user configuration)\n\n'
+  printf 'This section controls only the coordinator name and communication style. Role, permissions, approvals, and verification rules above always take priority.\n\n'
+  # awk adds the final newline if absent, and normalizes CRLF to LF.
+  # Use this one renderer for both comparison and writing.
+  awk '{ sub(/\r$/, ""); print }' "$personality_file"
+}
+
 # Generate compact, harness-native subagent frontmatter from a single canonical body.
 install_role() {
   local tool="$1" role="$2" dst="$3" tools desc color
   case "$role" in
-    albert) desc='Autonomous engineering coordinator; understands intent, delegates to Nora/Felix/Vera/Iris, verifies, and reports.' ;;
+    albert) desc='Quintet coordinator; delegates to Nora/Felix/Vera/Iris, verifies, and reports.' ;;
     nora) desc='Read-only investigation, architecture, research, root-cause analysis.' ;;
     felix) desc='Implement one bounded code change; perform targeted verification.' ;;
     vera) desc='Independent, read-only consequential-change review.' ;;
@@ -169,7 +228,7 @@ install_role() {
       printf -- '---\n\n'
     fi
     if [[ "$role" == albert ]]; then
-      cat -- "$source_dir/AGENTS.md"
+      render_coordinator
     else
       cat -- "$source_dir/agents/$role.md"
     fi
@@ -182,7 +241,7 @@ install_role() {
 install_instructions() {
   local dst="$1" begin='<!-- ALBERT MANAGED START -->' end='<!-- ALBERT MANAGED END -->'
   if [[ -f "$dst" ]] && grep -Fqx "$begin" "$dst" && grep -Fqx "$end" "$dst"; then
-    if awk -v b="$begin" -v e="$end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$dst" | cmp -s "$source_dir/AGENTS.md" -; then
+    if awk -v b="$begin" -v e="$end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$dst" | cmp -s <(render_coordinator) -; then
       return 0
     fi
   fi
@@ -197,7 +256,7 @@ install_instructions() {
       cp -- "$dst" "$temp"
     fi
   fi
-  { printf '\n%s\n' "$begin"; cat "$source_dir/AGENTS.md"; printf '%s\n' "$end"; } >> "$temp"
+  { printf '\n%s\n' "$begin"; render_coordinator; printf '%s\n' "$end"; } >> "$temp"
   put "$temp" "$dst"
   rm -f -- "$temp"
 }
@@ -215,12 +274,12 @@ install_one() {
     if [[ "$scope" == global ]]; then
       local manifest="$root/plugin.json"
       local temp_manifest; temp_manifest="$(mktemp)"
-      cat > "$temp_manifest" <<'EOF'
+      cat > "$temp_manifest" <<EOF
 {
   "name": "albert",
-  "displayName": "Albert",
+  "displayName": "$coordinator_json_name",
   "version": "1.0.0",
-  "description": "Albert autonomous engineering coordinator with Nora, Felix, Vera, and Iris workers.",
+  "description": "Quintet coordinator with Nora, Felix, Vera, and Iris workers.",
   "suggestedPrompts": [
     "Coordinate implementation and verification for this feature",
     "Investigate root cause and delegate fix to Felix",
@@ -319,7 +378,9 @@ install_pi_web() {
   fi
 }
 
+resolve_personality
 if has_harness pi; then pi_preflight; fi
+install_personality
 if ((with_web)) && has_harness pi; then install_pi_web; fi
 has_harness pi && install_one pi
 has_harness claude && install_one claude
@@ -366,7 +427,7 @@ if has_harness pi; then
   report 'OPTIONAL (Pi): one notification per parallel batch needs "defaultJoinMode": "group" in subagents.json; not set here. See docs/workflow.md.'
 fi
 if ((with_web)); then
-  report 'WEB: enabled for Albert and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
+  report 'WEB: enabled for the coordinator and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
 fi
 report 'MODELS: choose per-agent model/effort; user settings untouched.'
 report 'DONE'

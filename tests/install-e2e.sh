@@ -3,6 +3,20 @@ set -euo pipefail
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
+# A negative grep must fail on a match even under set -e.
+assert_absent() {
+  local pattern="$1" file="$2" status
+  if grep -q -- "$pattern" "$file"; then
+    printf 'Unexpected match (%s) in %s\n' "$pattern" "$file" >&2
+    exit 1
+  else
+    status=$?
+    if ((status != 1)); then
+      printf 'Cannot check %s (grep exit %d)\n' "$file" "$status" >&2
+      exit 1
+    fi
+  fi
+}
 project="$tmp/kanade"
 mkdir -p "$project" "$tmp/bin"
 printf '# Kanade contract\nKeep this rule.\n' > "$project/AGENTS.md"
@@ -24,7 +38,7 @@ chmod +x "$tmp/bin/pi" "$tmp/bin/npm"
 export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
-[[ ! -d "$project/.pi" && ! -d "$project/.claude" ]]
+[[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
 MOCK_PI_VERSION=0.87.1 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/version" 2>&1 && exit 1
 ! test -d "$project/.pi"
 grep -q 'Pi >=1.1.0 required' "$tmp/version"
@@ -33,6 +47,8 @@ MOCK_PI_PACKAGES='npm:some-other-package' "$root/install.sh" --harness pi,claude
 grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/initial"
+[[ -f "$project/PERSONALITY.md" && ! -d "$project/.quintet" ]]
+cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -f "$project/.pi/agents/felix.md" && -f "$project/.claude/agents/vera.md" ]]
 [[ -f "$project/.pi/skills/ui-ux/SKILL.md" ]]
 [[ -f "$project/.pi/skills/verification/SKILL.md" ]]
@@ -48,11 +64,11 @@ grep -q '^disallowedTools: Write, Edit, NotebookEdit$' "$project/.claude/agents/
 grep -q 'main session only' "$project/AGENTS.md"
 
 # Consolidated reporting: Pi workers are color-badged, Claude Code frontmatter is untouched,
-# every worker leads with a headline, and Albert's one-report rule is installed.
+# every worker leads with a headline, and the coordinator's one-report rule is installed.
 for pair in nora:cyan felix:green vera:purple iris:orange; do
   role="${pair%%:*}"; color="${pair##*:}"
   grep -q "^color: $color$" "$project/.pi/agents/$role.md"
-  ! grep -q '^color:' "$project/.claude/agents/$role.md"
+  assert_absent '^color:' "$project/.claude/agents/$role.md"
   grep -q 'Open with a headline' "$project/.pi/agents/$role.md"
   grep -q 'Open with a headline' "$project/.claude/agents/$role.md"
 done
@@ -78,13 +94,15 @@ grep -q 'Keep this too.' "$project/CLAUDE.md"
 [[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/AGENTS.md")" -eq 1 ]]
 [[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/CLAUDE.md")" -eq 1 ]]
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/again"
-! grep -q '^WRITE ' "$tmp/again"
+assert_absent '^WRITE ' "$tmp/again"
 
 # Existing Pi Jev is kept. No second install registration.
-MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\n/path/to/k-jev' \
+grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-before-jev" || true
+MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access\n/path/to/k-jev' \
   "$root/install.sh" --harness pi --scope project --target "$project" --with-jev > "$tmp/jev"
 grep -q 'SKIP PI JEV' "$tmp/jev"
-! grep -q '^pi install ' "$MOCK_PI_LOG"
+grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-after-jev" || true
+cmp -s "$tmp/pi-before-jev" "$tmp/pi-after-jev"
 
 # Web opt-in: dry-run is side-effect free, Pi installs only when absent, and
 # both harnesses expose the right tools without granting them to Iris.
@@ -100,13 +118,13 @@ for role in nora felix vera; do
   grep -q 'ext:pi-web-access/web_enable' "$project/.pi/agents/$role.md"
   grep -q 'WebSearch, WebFetch' "$project/.claude/agents/$role.md"
 done
-! grep -q 'pi-web-access/' "$project/.pi/agents/iris.md"
-! grep -q 'WebSearch' "$project/.claude/agents/iris.md"
+assert_absent 'pi-web-access/' "$project/.pi/agents/iris.md"
+assert_absent 'WebSearch' "$project/.claude/agents/iris.md"
 grep -q '## Web research' "$project/AGENTS.md"
 MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access' \
   "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-again"
 grep -q '^SKIP PI WEB:' "$tmp/web-again"
-! grep -q '^WRITE ' "$tmp/web-again"
+assert_absent '^WRITE ' "$tmp/web-again"
 [[ "$(grep -c '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG")" -eq 1 ]]
 
 # Antigravity CLI project-scope install, parallel workstream contracts, and idempotence.
@@ -133,16 +151,18 @@ grep -q 'integration acceptance separately' "$project/.agents/agents/iris.md"
 grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
 [[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-again"
-! grep -q '^WRITE ' "$tmp/agy-project-again"
+assert_absent '^WRITE ' "$tmp/agy-project-again"
 
 # Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
 mock_home="$tmp/home"
 mkdir -p "$mock_home"
-HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 grep -q '"name": "albert"' "$agy_global/plugin.json"
+[[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
+grep -q '"displayName": "Albert"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$agy_global/agents/$role.md" ]]
@@ -150,7 +170,85 @@ done
 grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
 grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
-HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
-! grep -q '^WRITE ' "$tmp/agy-global-again"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
+assert_absent '^WRITE ' "$tmp/agy-global-again"
 
-echo 'install E2E PASS: prerequisites, pi/claude/antigravity harnesses, context, idempotence, Jev reuse, web opt-in'
+# Project personality sits beside AGENTS.md and changes only the main agent.
+cat > "$project/PERSONALITY.md" <<'PERSONA'
+Name: Kanade
+
+# Personality
+Use short, factual summaries.
+PERSONA
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized"
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md" "$project/.agents/agents/albert.md"; do
+  grep -q 'Name: Kanade' "$file"
+  grep -q 'Use short, factual summaries.' "$file"
+done
+for role in nora felix vera iris; do
+  assert_absent 'Name: Kanade' "$project/.pi/agents/$role.md"
+  assert_absent 'Name: Kanade' "$project/.claude/agents/$role.md"
+  assert_absent 'Name: Kanade' "$project/.agents/agents/$role.md"
+done
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized-again"
+assert_absent '^WRITE ' "$tmp/personalized-again"
+grep -q '^Name: Kanade' "$project/PERSONALITY.md"
+
+# Invalid project personality must fail before writes.
+printf 'Not a valid header\n' > "$project/PERSONALITY.md"
+if "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/invalid" 2>&1; then
+  echo 'Invalid personality was accepted' >&2
+  exit 1
+fi
+grep -q 'Personality must start' "$tmp/invalid"
+assert_absent '^WRITE ' "$tmp/invalid"
+
+# Global identity comes from the repository root; the installer never edits it.
+custom_source="$tmp/custom-source"
+mkdir -p "$custom_source"
+cp -a "$root/." "$custom_source/"
+printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$custom_source/PERSONALITY.md"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
+grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
+grep -q 'Name: Rei' "$agy_global/agents/albert.md"
+grep -q '^Name: Rei' "$custom_source/PERSONALITY.md"
+[[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
+for role in nora felix vera iris; do assert_absent 'Name: Rei' "$agy_global/agents/$role.md"; done
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-again"
+assert_absent '^WRITE ' "$tmp/renamed-again"
+
+# No final newline must not join the managed end marker or cause reinstall writes.
+printf 'Name: Kanade\n\n# Personality\nNo final newline' > "$project/PERSONALITY.md"
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/no-newline"
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md"; do
+  grep -Fqx 'No final newline' "$file"
+  [[ "$(grep -Fxc '<!-- ALBERT MANAGED END -->' "$file")" -eq 1 ]]
+  assert_absent 'No final newline<!-- ALBERT MANAGED END -->' "$file"
+done
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" --dry-run > "$tmp/no-newline-preview"
+assert_absent '^WRITE ' "$tmp/no-newline-preview"
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/no-newline-again"
+assert_absent '^WRITE ' "$tmp/no-newline-again"
+
+# Reject both reserved marker lines, including CRLF, before writing anything.
+for marker in START END; do
+  printf 'Name: Kanade\r\n\r\n<!-- ALBERT MANAGED %s -->\r\nMore style.\r\n' "$marker" > "$project/PERSONALITY.md"
+  if "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/reserved" 2>&1; then
+    echo "Accepted reserved marker: $marker" >&2
+    exit 1
+  fi
+  grep -q 'Reserved managed marker' "$tmp/reserved"
+  assert_absent '^WRITE ' "$tmp/reserved"
+done
+
+# CRLF headers and style lines should be accepted and rendered as LF.
+printf 'Name: Rei\r\n\r\n# Personality\r\nKeep CRLF.\r\n' > "$project/PERSONALITY.md"
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf"
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md" "$project/.agents/agents/albert.md"; do
+  grep -qx 'Name: Rei' "$file"
+  grep -qx 'Keep CRLF.' "$file"
+done
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf-again"
+assert_absent '^WRITE ' "$tmp/crlf-again"
+
+echo 'install E2E PASS: harnesses, personality newline, reserved markers, CRLF, isolation, scope and idempotence'
