@@ -20,8 +20,8 @@ Usage: ./install.sh                       # interactive TUI
                     [--target PROJECT_DIR] [--with-jev] [--with-web|--no-web] [--dry-run] [--no-tui]
 
 Use arrows and Enter/Space to configure the TUI; preview before installing.
-Global main-agent personality: ~/.config/quintet/PERSONALITY.md
-Project override: PROJECT/.quintet/PERSONALITY.md
+Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
+Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
 Global: installs in ~/.pi/agent, ~/.claude, and/or ~/.gemini/config/plugins/albert; project: in PROJECT/.pi,
 PROJECT/.claude, and/or PROJECT/.agents plus an Albert block in root AGENTS.md/CLAUDE.md.
 Web research is enabled by default for eligible workers (use --no-web to disable).
@@ -95,22 +95,21 @@ put() {
   cp -- "$src" "$dst"
 }
 
-# User-owned identity for the main agent only. Worker files stay untouched.
+# Personality belongs to the main agent; specialist roles are unchanged.
 personality_file=''
-personality_create=''
+project_personality=''
 coordinator_name=''
 coordinator_json_name=''
 resolve_personality() {
-  local global_file="${XDG_CONFIG_HOME:-$HOME/.config}/quintet/PERSONALITY.md"
-  local project_file=''
-  [[ "$scope" != project ]] || project_file="$target/.quintet/PERSONALITY.md"
-  if [[ -n "$project_file" && -f "$project_file" ]]; then
-    personality_file="$project_file"
-  elif [[ -f "$global_file" ]]; then
-    personality_file="$global_file"
-  else
-    personality_file="$source_dir/PERSONALITY.md"
-    [[ "$scope" != global ]] || personality_create="$global_file"
+  personality_file="$source_dir/PERSONALITY.md"
+  if [[ "$scope" == project ]]; then
+    project_personality="$target/PERSONALITY.md"
+    if [[ -f "$project_personality" ]]; then
+      personality_file="$project_personality"
+    elif [[ -e "$project_personality" || -L "$project_personality" ]]; then
+      echo "Not a regular personality file: $project_personality" >&2
+      return 1
+    fi
   fi
   local first_line=''
   IFS= read -r first_line < "$personality_file" || true
@@ -127,13 +126,12 @@ resolve_personality() {
   coordinator_json_name="${coordinator_json_name//\"/\\\"}"
 }
 install_personality() {
-  [[ -n "$personality_create" ]] || return 0
-  report "WRITE $personality_create"
+  [[ "$scope" == project && ! -f "$project_personality" ]] || return 0
+  report "WRITE $project_personality"
   ((dry)) && return 0
-  mkparent "$personality_create"
-  if [[ ! -e "$personality_create" ]]; then
-    cp -- "$source_dir/PERSONALITY.md" "$personality_create"
-  fi
+  # Create the user-editable project override once. Never overwrite user edits.
+  cp -- "$source_dir/PERSONALITY.md" "$project_personality"
+  personality_file="$project_personality"
 }
 render_coordinator() {
   cat -- "$source_dir/AGENTS.md"

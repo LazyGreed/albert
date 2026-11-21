@@ -39,7 +39,7 @@ For one project, add `--scope project --target /path/to/project`. Add `--dry-run
 
 ## Customize the main agent
 
-Global installs create `~/.config/quintet/PERSONALITY.md` (or `$XDG_CONFIG_HOME/quintet/PERSONALITY.md`). Edit its first line to change the main agent's name:
+Edit the repository's `PERSONALITY.md`, beside `AGENTS.md`, to change the main agent's name and style:
 
 ```md
 Name: Kanade
@@ -50,9 +50,11 @@ Name: Kanade
 - Explain important choices, not routine steps.
 ```
 
-Rerun your install command to apply changes.
+Rerun your install command to apply changes. Global installs use this file directly; there is no separate personality config directory.
 
-For a project-specific override, create `PROJECT/.quintet/PERSONALITY.md`. Resolution order: project override, global file, default template. The installer does not overwrite user personality files. Only the main agent reads the personality; Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
+Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
+
+Only the main agent uses the personality. Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
 
 Native agent identifiers and the Antigravity plugin directory remain `albert` for compatibility. Changing the name updates the main prompt and Antigravity plugin display name, not the underlying agent ID or harness title.
 

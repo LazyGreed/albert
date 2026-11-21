@@ -24,7 +24,7 @@ chmod +x "$tmp/bin/pi" "$tmp/bin/npm"
 export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
-[[ ! -d "$project/.pi" && ! -d "$project/.claude" ]]
+[[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
 MOCK_PI_VERSION=0.87.1 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/version" 2>&1 && exit 1
 ! test -d "$project/.pi"
 grep -q 'Pi >=1.1.0 required' "$tmp/version"
@@ -33,6 +33,8 @@ MOCK_PI_PACKAGES='npm:some-other-package' "$root/install.sh" --harness pi,claude
 grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/initial"
+[[ -f "$project/PERSONALITY.md" && ! -d "$project/.quintet" ]]
+cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -f "$project/.pi/agents/felix.md" && -f "$project/.claude/agents/vera.md" ]]
 [[ -f "$project/.pi/skills/ui-ux/SKILL.md" ]]
 [[ -f "$project/.pi/skills/verification/SKILL.md" ]]
@@ -143,7 +145,7 @@ agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 grep -q '"name": "albert"' "$agy_global/plugin.json"
-[[ -f "$mock_home/.config/quintet/PERSONALITY.md" ]]
+[[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Albert"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
@@ -155,9 +157,8 @@ grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
 ! grep -q '^WRITE ' "$tmp/agy-global-again"
 
-# Custom identity only changes the main agent.
-mkdir -p "$project/.quintet"
-cat > "$project/.quintet/PERSONALITY.md" <<'PERSONA'
+# Project personality sits beside AGENTS.md and changes only the main agent.
+cat > "$project/PERSONALITY.md" <<'PERSONA'
 Name: Kanade
 
 # Personality
@@ -175,10 +176,10 @@ for role in nora felix vera iris; do
 done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized-again"
 ! grep -q '^WRITE ' "$tmp/personalized-again"
-grep -q '^Name: Kanade' "$project/.quintet/PERSONALITY.md"
+grep -q '^Name: Kanade' "$project/PERSONALITY.md"
 
 # Invalid project personality must fail before writes.
-printf 'Not a valid header\n' > "$project/.quintet/PERSONALITY.md"
+printf 'Not a valid header\n' > "$project/PERSONALITY.md"
 if "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/invalid" 2>&1; then
   echo 'Invalid personality was accepted' >&2
   exit 1
@@ -186,12 +187,18 @@ fi
 grep -q 'Personality must start' "$tmp/invalid"
 ! grep -q '^WRITE ' "$tmp/invalid"
 
-# Global identity edits survive reinstall and update the plugin display name.
-printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$mock_home/.config/quintet/PERSONALITY.md"
-HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
+# Global identity comes from the repository root; the installer never edits it.
+custom_source="$tmp/custom-source"
+mkdir -p "$custom_source"
+cp -a "$root/." "$custom_source/"
+printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$custom_source/PERSONALITY.md"
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
 grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
 grep -q 'Name: Rei' "$agy_global/agents/albert.md"
-grep -q '^Name: Rei' "$mock_home/.config/quintet/PERSONALITY.md"
+grep -q '^Name: Rei' "$custom_source/PERSONALITY.md"
+[[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 for role in nora felix vera iris; do ! grep -q 'Name: Rei' "$agy_global/agents/$role.md"; done
+HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-again"
+! grep -q '^WRITE ' "$tmp/renamed-again"
 
 echo 'install E2E PASS: harnesses, personality isolation, scope, idempotence, Jev reuse, web opt-in'
