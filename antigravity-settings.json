@@ -1,0 +1,19 @@
+{
+  "agent": "albert",
+  "contextWindow": "200K",
+  "maxOutputTokens": 32768,
+  "maxTokens": 32768,
+  "maxToken": 32768,
+  "showFeedbackSurvey": false,
+  "showTips": false,
+  "statusLine": {
+    "type": "command",
+    "command": "python3 ~/.gemini/antigravity-cli/statusline.py",
+    "enabled": true
+  },
+  "toolPermission": "always-proceed",
+  "trustedWorkspaces": [
+    "/home/kosal"
+  ],
+  "verbosity": "low"
+}

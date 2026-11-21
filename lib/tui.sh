@@ -9,7 +9,7 @@ albert_tui() {
   fi
   exec 3<>/dev/tty || return 2
 
-  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev" ti_web="$with_web"
+  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev" ti_web=0
   case ",$harness," in
     ,pi,) ti_pi=1 ;;
     ,claude,) ti_claude=1 ;;

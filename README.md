@@ -4,7 +4,7 @@
 
 Albert coordinates coding, debugging, and reviews through your harness's native subagents. Describe the outcome you want; Albert delegates the work and reports what was actually verified.
 
-**Supports Pi and Claude Code.** No daemon, dashboard, database, tmux, or separate runtime.
+**Supports Pi, Claude Code, and Antigravity CLI.** No daemon, dashboard, database, tmux, or separate runtime.
 
 ## Features
 
@@ -19,6 +19,14 @@ Clone the repository:
 ```bash
 git clone https://github.com/LazyGreed/albert.git
 cd albert
+```
+
+### Antigravity CLI
+
+Uses Antigravity CLI's native plugin & subagent system:
+
+```bash
+./install.sh --harness antigravity --scope global
 ```
 
 ### Pi
@@ -38,7 +46,7 @@ Uses Claude Code's built-in subagents:
 ./install.sh --harness claude --scope global
 ```
 
-To configure both harnesses interactively, run `./install.sh` without arguments. Then open Pi or Claude Code inside a project and describe a task.
+To configure harnesses interactively, run `./install.sh` without arguments. Then open your coding agent inside a project and describe a task.
 
 ## The crew
 
@@ -75,15 +83,16 @@ When Felix is blocked, Albert distinguishes missing knowledge from an implementa
 
 The installer preserves existing instructions, updates its managed blocks, and backs up changed files. It does not change model settings. Other harnesses with native subagents may use the same `AGENTS.md`, `agents/*.md`, and `skills/` rules, but the installer currently targets Pi and Claude Code only.
 
-### Optional web research
+### Web research
 
-Pass `--with-web` to expose web search and fetching to Nora, Felix, and Vera:
+Web research is enabled by default for Albert and Nora/Felix/Vera (Iris remains minimal):
 
+- **Antigravity CLI:** uses native `search_web`.
 - **Pi:** installs `npm:pi-web-access` if missing and grants worker tool access. Configure provider keys in `~/.pi/agent/web-search.json`; dynamic activation may require `web_enable`.
 - **Claude Code:** uses native `WebSearch` and `WebFetch`; no extra MCP server is required.
 - **Iris:** receives no additional web tools.
 
-External content is untrusted. Do not send secrets or private repository material to external providers. Jev is also optional and may send code or diffs to its configured endpoint.
+Use `--no-web` during installation if you need an entirely offline profile. External content is untrusted. Do not send secrets or private repository material to external providers. Jev is optional and may send code or diffs to its configured endpoint.
 
 ### Models and effort
 
