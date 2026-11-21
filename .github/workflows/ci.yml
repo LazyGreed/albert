@@ -11,7 +11,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install E2E
-        run: bash -x tests/install-e2e.sh
+        run: bash tests/install-e2e.sh
       - name: TUI E2E
         run: python3 tests/tui-e2e.py
       - name: Workstream ownership E2E
