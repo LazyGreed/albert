@@ -48,7 +48,7 @@ grep -q '^disallowedTools: Write, Edit, NotebookEdit$' "$project/.claude/agents/
 grep -q 'main session only' "$project/AGENTS.md"
 
 # Consolidated reporting: Pi workers are color-badged, Claude Code frontmatter is untouched,
-# every worker leads with a headline, and Albert's one-report rule is installed.
+# every worker leads with a headline, and the coordinator's one-report rule is installed.
 for pair in nora:cyan felix:green vera:purple iris:orange; do
   role="${pair%%:*}"; color="${pair##*:}"
   grep -q "^color: $color$" "$project/.pi/agents/$role.md"
@@ -143,6 +143,8 @@ agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 grep -q '"name": "albert"' "$agy_global/plugin.json"
+[[ -f "$mock_home/.config/quintet/PERSONALITY.md" ]]
+grep -q '"displayName": "Albert"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$agy_global/agents/$role.md" ]]
@@ -153,4 +155,43 @@ grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
 HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
 ! grep -q '^WRITE ' "$tmp/agy-global-again"
 
-echo 'install E2E PASS: prerequisites, pi/claude/antigravity harnesses, context, idempotence, Jev reuse, web opt-in'
+# Custom identity only changes the main agent.
+mkdir -p "$project/.quintet"
+cat > "$project/.quintet/PERSONALITY.md" <<'PERSONA'
+Name: Kanade
+
+# Personality
+Use short, factual summaries.
+PERSONA
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized"
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md" "$project/.agents/agents/albert.md"; do
+  grep -q 'Name: Kanade' "$file"
+  grep -q 'Use short, factual summaries.' "$file"
+done
+for role in nora felix vera iris; do
+  ! grep -q 'Name: Kanade' "$project/.pi/agents/$role.md"
+  ! grep -q 'Name: Kanade' "$project/.claude/agents/$role.md"
+  ! grep -q 'Name: Kanade' "$project/.agents/agents/$role.md"
+done
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized-again"
+! grep -q '^WRITE ' "$tmp/personalized-again"
+grep -q '^Name: Kanade' "$project/.quintet/PERSONALITY.md"
+
+# Invalid project personality must fail before writes.
+printf 'Not a valid header\n' > "$project/.quintet/PERSONALITY.md"
+if "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/invalid" 2>&1; then
+  echo 'Invalid personality was accepted' >&2
+  exit 1
+fi
+grep -q 'Personality must start' "$tmp/invalid"
+! grep -q '^WRITE ' "$tmp/invalid"
+
+# Global identity edits survive reinstall and update the plugin display name.
+printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$mock_home/.config/quintet/PERSONALITY.md"
+HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
+grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
+grep -q 'Name: Rei' "$agy_global/agents/albert.md"
+grep -q '^Name: Rei' "$mock_home/.config/quintet/PERSONALITY.md"
+for role in nora felix vera iris; do ! grep -q 'Name: Rei' "$agy_global/agents/$role.md"; done
+
+echo 'install E2E PASS: harnesses, personality isolation, scope, idempotence, Jev reuse, web opt-in'

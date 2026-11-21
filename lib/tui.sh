@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Albert installer TUI. No external TUI programs required.
+# Quintet installer TUI. No external TUI programs required.
 # Sourced by install.sh; opens /dev/tty so preview/install output may be redirected.
 
 albert_tui() {
@@ -42,7 +42,7 @@ albert_tui() {
   }
   _albert_tui_draw() {
     printf '\033[?25l\033[H\033[J' >&3
-    printf '%sALBERT  /  INSTALL%s\n' "$ti_bold" "$ti_reset" >&3
+    printf '%sQUINTET  /  INSTALL%s\n' "$ti_bold" "$ti_reset" >&3
     printf 'Native Pi + Claude Code agents. No extra TUI dependencies.\n\n' >&3
     printf '%sHARNESS%s  (select one or both)\n' "$ti_bold" "$ti_reset" >&3
     _albert_tui_line 0 "[$([[ $ti_pi -eq 1 ]] && echo x || echo ' ')] Pi"
@@ -111,7 +111,7 @@ albert_tui() {
     n="$(grep -c '^WRITE ' "$ti_preview_file" || true)"
     while :; do
       printf '\033[?25l\033[H\033[J' >&3
-      printf '%sALBERT  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
+      printf '%sQUINTET  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
       printf ' Harness   %s\n Scope     %s\n' "$(_albert_tui_harness)" "$ti_scope" >&3
       [[ "$ti_scope" != project ]] || printf ' Target    %s\n' "$ti_target" >&3
       printf ' Jev       %s\n Web       %s\n Planned   %s file writes\n' "$([[ $ti_jev -eq 1 ]] && echo enabled || echo disabled)" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
@@ -166,7 +166,7 @@ albert_tui() {
             _albert_tui_review || review_status=$?
             if ((review_status == 0)); then
               _albert_tui_args
-              printf '\033[?25h\033[H\033[J%sALBERT  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
+              printf '\033[?25h\033[H\033[J%sQUINTET  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;
           8) return 0 ;;

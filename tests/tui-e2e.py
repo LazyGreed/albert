@@ -54,7 +54,7 @@ class Session:
 
 def test_cancel(root: Path):
     session = Session(root)
-    session.expect(b'ALBERT  /  INSTALL')
+    session.expect(b'QUINTET  /  INSTALL')
     session.send(ESC)
     session.finish()
     assert not (root / '.pi').exists()
@@ -66,14 +66,14 @@ def test_dual_project(root: Path):
     (project / 'AGENTS.md').write_text('Preserve project rules.\n')
     (project / 'CLAUDE.md').write_text('Preserve Claude rules.\n')
     session = Session(root)
-    session.expect(b'ALBERT  /  INSTALL')
+    session.expect(b'QUINTET  /  INSTALL')
     # Toggle Claude (Pi selected initially); select Project; edit project path.
     session.send(ARROW_DOWN + SPACE + ARROW_DOWN * 2 + ENTER + ARROW_DOWN + ENTER)
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
     # Enable the new Web option, then review.
     session.send(ARROW_DOWN * 2 + SPACE + ARROW_DOWN + ENTER)
-    session.expect(b'ALBERT  /  REVIEW')
+    session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       enabled')
     session.expect(b'Planned')
     session.send(ENTER)
