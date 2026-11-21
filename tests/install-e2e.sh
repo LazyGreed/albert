@@ -98,7 +98,7 @@ assert_absent '^WRITE ' "$tmp/again"
 
 # Existing Pi Jev is kept. No second install registration.
 grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-before-jev" || true
-MOCK_PI_PACKAGES= \
+MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access\n/path/to/k-jev' \
   "$root/install.sh" --harness pi --scope project --target "$project" --with-jev > "$tmp/jev"
 grep -q 'SKIP PI JEV' "$tmp/jev"
 grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-after-jev" || true
