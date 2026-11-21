@@ -28,5 +28,6 @@ Use this skill when debugging, implementing a user-facing feature, or changing c
 ## Evidence and reporting
 
 - Run the most discriminating check after the last edit. Never infer runtime success from code inspection or a dispatch acknowledgement.
+- For parallel workstreams, verify `WRITE OWNERSHIP` mechanically before integration with `scripts/check-ownership.sh` (checking changed and untracked paths against the stream allowlist).
 - Report exact commands and outcomes. Mark missing checks `NOT RUN` or `BLOCKED`; state unverified acceptance conditions and material risks.
 - Stop after bounded, relevant retries. Do not weaken tests or expand scope merely to produce a green result.

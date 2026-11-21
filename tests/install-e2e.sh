@@ -37,6 +37,8 @@ grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
 [[ -f "$project/.pi/skills/ui-ux/SKILL.md" ]]
 [[ -f "$project/.pi/skills/verification/SKILL.md" ]]
 [[ -f "$project/.claude/skills/verification/SKILL.md" ]]
+[[ -x "$project/.pi/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$project/.claude/skills/verification/scripts/check-ownership.sh" ]]
 grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
 grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
 grep -q '^name: felix$' "$project/.pi/agents/felix.md"
@@ -111,6 +113,7 @@ grep -q '^SKIP PI WEB:' "$tmp/web-again"
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project"
 [[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
+[[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
 for role in albert nora felix vera iris; do
   [[ -f "$project/.agents/agents/$role.md" ]]
 done
@@ -138,6 +141,7 @@ mkdir -p "$mock_home"
 HOME="$mock_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
+[[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 grep -q '"name": "albert"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
