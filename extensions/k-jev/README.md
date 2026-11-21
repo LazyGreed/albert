@@ -81,7 +81,7 @@ npx @modelcontextprotocol/inspector node dist/mcp.js
 
 Core owns validation independently of adapter schemas. Keep Pi, MCP, tool registration, and UI dependencies out of `src/core/`.
 
-## Added semantic tools (Albert opt-in)
+## Added semantic tools (Quintet opt-in)
 
 - `jev_evaluate_files`: Evaluate 1-20 UTF-8 text files against a common set of typed questions. Each file is evaluated independently; responses contain answers and paths, never file text. Files must resolve beneath the project root. Per-file read/judgment errors are reported independently.
 - `jev_evaluate_diff`: Evaluate the tracked Git diff against `HEAD` or a supplied base ref with typed questions. Includes staged and unstaged changes to tracked files; **does not include untracked files**. Diff size limit: 256 KiB. No changes to Git state.
