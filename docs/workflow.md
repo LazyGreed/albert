@@ -1,6 +1,6 @@
 # Workflow
 
-Quintet uses the harness's native agents. The coordinator is called Albert by default; only its name and personality are customizable. Nora, Felix, Vera, and Iris retain their roles.
+Quintet uses the harness's native agents. The coordinator is called Denia by default; only its name and personality are customizable. Nora, Felix, Vera, and Iris retain their roles.
 
 ## Task flow
 

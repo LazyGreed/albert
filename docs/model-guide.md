@@ -4,7 +4,7 @@ Quintet does not change model settings. Pick models and thinking effort in your 
 
 | Role | Useful capability | Effort |
 | --- | --- | --- |
-| Main agent (Albert by default) | Planning, delegation, judgment | High |
+| Main agent (Denia by default) | Planning, delegation, judgment | High |
 | Nora | Research, reading | Medium/high |
 | Felix | Coding and focused checks | High |
 | Vera | Independent review, ideally a different model family | High |

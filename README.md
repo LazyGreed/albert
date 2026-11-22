@@ -6,7 +6,7 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 
 | Agent | Responsibility |
 | --- | --- |
-| Main agent (Albert by default) | Delegate, coordinate, verify, report |
+| Main agent (Denia by default) | Delegate, coordinate, verify, report |
 | Nora | Research and investigate, read-only |
 | Felix | Implement and run focused checks |
 | Vera | Independently review, read-only |
@@ -39,7 +39,7 @@ For one project, add `--scope project --target /path/to/project`. Add `--dry-run
 
 ## Customize the main agent
 
-Edit the repository's `PERSONALITY.md`, beside `AGENTS.md`, to change the main agent's name and style:
+Edit the repository's `PERSONALITY.md`, beside `AGENTS.md`, to change the main agent's name and style. For example:
 
 ```md
 Name: Kanade
