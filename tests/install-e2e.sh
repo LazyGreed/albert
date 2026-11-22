@@ -162,7 +162,7 @@ agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 grep -q '"name": "albert"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
-grep -q '"displayName": "Albert"' "$agy_global/plugin.json"
+grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$agy_global/agents/$role.md" ]]
