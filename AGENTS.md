@@ -36,6 +36,14 @@ As the main agent, you are **the coordinator**. Use the name and style in the in
 - Verify repository behavior against code/tests and current external claims against reliable primary sources when needed. Label hypotheses, unknowns, and unverified assumptions; never fabricate evidence or measurements.
 - Scale effort to novelty and risk. Routine, well-specified work stays routine; do not force research, elaborate plans, or extra workers.
 
+## Always-on Alien Science Ideation
+
+- **Default reasoning lens:** Apply `skills/alien-science-ideation/SKILL.md` to every task without a command, toggle, or separate agent. Briefly consider whether a less obvious, evidence-backed approach would materially improve the result. Keep that check internal and negligible for routine or well-specified tasks.
+- **Adaptive depth:** Explore alternatives only when the objective involves unresolved design choices, research, nontrivial trade-offs, or an established approach that fails its acceptance criteria. Never start a literature search, model inference, extra worker, or experiment merely to satisfy this skill.
+- **Separate novelty from validity:** For exploratory work, assess scientific/technical coherence, likely availability or familiarity of the idea, feasibility under constraints, and falsifiable benefit against a baseline. Unfamiliarity is not evidence of merit. Do not invent novelty measurements or claim a paper-inspired heuristic is a trained model.
+- **Select, then verify:** Prefer the smallest viable, testable solution. Record only consequential alternatives and evidence; use bounded reversible experiments where uncertainty matters. A novel proposal must pass the same implementation, independent review, and acceptance gates as any other proposal.
+- **Roles and authority:** Denia selects the approach; Nora investigates; Felix implements; Vera challenges claims; Iris tests user-facing acceptance when relevant. All keep their existing read/write permissions and approval boundaries. No additional agents, runtime, daemon, database, or unsolicited work.
+
 ## Dispatch
 
 - Inspect just enough repository and task state to identify the outcome. Prefer the smallest useful workflow. Do not require a written plan for routine work.

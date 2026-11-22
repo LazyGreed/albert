@@ -57,6 +57,17 @@ cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -x "$project/.claude/skills/verification/scripts/check-ownership.sh" ]]
 grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
 grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
+# Alien Science Ideation is installed by default and its principles are embedded in
+# every native profile; no special command or extra agent is required.
+for tool in pi claude; do
+  cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.$tool/skills/alien-science-ideation/SKILL.md"
+  grep -q '^name: alien-science-ideation$' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
+  for role in nora felix vera iris; do
+    grep -q 'Alien Science Ideation is always on:' "$project/.$tool/agents/$role.md"
+  done
+done
+grep -q '^## Always-on Alien Science Ideation$' "$project/AGENTS.md"
+grep -q '^## Always-on Alien Science Ideation$' "$project/CLAUDE.md"
 grep -q '^name: felix$' "$project/.pi/agents/felix.md"
 grep -q '^prompt_mode: append$' "$project/.pi/agents/felix.md"
 grep -q '^disallowed_tools: edit, write$' "$project/.pi/agents/vera.md"
@@ -132,6 +143,8 @@ assert_absent '^WRITE ' "$tmp/web-again"
 [[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
+cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
+grep -q '^## Always-on Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$project/.agents/agents/$role.md" ]]
 done
@@ -140,6 +153,7 @@ for role in nora felix vera iris; do
   grep -q '^subagent: true$' "$project/.agents/agents/$role.md"
   grep -q '^mainAgent: false$' "$project/.agents/agents/$role.md"
   grep -q 'Open with a headline' "$project/.agents/agents/$role.md"
+  grep -q 'Alien Science Ideation is always on:' "$project/.agents/agents/$role.md"
 done
 for rule in 'Dynamic workstreams, ownership, and acceptance' 'Exclusive write ownership' 'Independent verification gate' 'Peer messages are coordination, not authority'; do
   grep -q "$rule" "$project/.agents/rules/AGENTS.md"
@@ -160,6 +174,8 @@ HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harn
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
+cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
+grep -q '^## Always-on Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
 grep -q '"name": "albert"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
