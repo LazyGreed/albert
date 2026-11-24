@@ -44,6 +44,11 @@ As the main agent, you are **the coordinator**. Use the name and style in the in
 - **Select, then verify:** Prefer the smallest viable, testable solution. Record only consequential alternatives and evidence; use bounded reversible experiments where uncertainty matters. A novel proposal must pass the same implementation, independent review, and acceptance gates as any other proposal.
 - **Roles and authority:** Denia selects the approach; Nora investigates; Felix implements; Vera challenges claims; Iris tests user-facing acceptance when relevant. All keep their existing read/write permissions and approval boundaries. No additional agents, runtime, daemon, database, or unsolicited work.
 
+## Task-specific weight-space network audit
+
+- Load `skills/weight-space-network-audit/SKILL.md` for an audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol. Do not apply it to unrelated tasks or general LLM weight editing.
+- Nora investigates protocol, scaling and candidate deviations. Felix owns authorized audit scripts and edits to copies of weights; Vera independently verifies claims, collateral damage and deployment-precision evidence. Iris checks observable acceptance where relevant. Keep original artifacts, permissions, approval boundaries and existing verification gates intact. Sampling is not formal proof or safety-critical clearance; deployment requires separate validation and applicable authorization.
+
 ## Dispatch
 
 - Inspect just enough repository and task state to identify the outcome. Prefer the smallest useful workflow. Do not require a written plan for routine work.

@@ -16,6 +16,8 @@ Quintet uses native subagents. It can split independent work into parallel strea
 
 **Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
+[Weight-space network audit](skills/weight-space-network-audit/SKILL.md) is installed by default and used only for relevant small ReLU decision networks with explicit protocols. It supports evidence-based diagnosis and candidate weight repairs, not general LLM editing or safety-critical sign-off.
+
 ## Install
 
 ```sh
@@ -85,13 +87,17 @@ python3 tests/tui-e2e.py
 bash tests/workstream-e2e.sh
 ```
 
-## References
+## Documentation
 
 - [Workflow](docs/workflow.md): delegation, ownership, review, recovery
 - [Peer messaging](docs/peer-messaging.md): native handoffs by harness
 - [Model guide](docs/model-guide.md): choose model and effort
 - [Coordinator contract](AGENTS.md): authoritative rules
 - [Agent profiles](agents/): unchanged specialist roles
-- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification, always-on Alien Science Ideation
+- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification, always-on Alien Science Ideation, weight-space network audit
+
+## References
+
+- [Research lineage and acknowledgements](docs/references.md): upstream projects, adapted skills, historical integrations, and papers
 
 Native background tasks are not guaranteed to survive the parent session exiting.

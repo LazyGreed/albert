@@ -16,6 +16,10 @@ Workers do not delegate to other workers. The coordinator makes in-scope decisio
 
 Every request gets a proportional, evidence-based check for useful alternatives. Established bug fixes and clear tasks take the direct path; novel or uncertain design/research work can use the installed `skills/alien-science-ideation/SKILL.md` for a deeper, falsifiable comparison. This is a standing reasoning policy, not a new execution stage, user command, worker, or permission. Do not claim novelty or improvement without supporting evidence. Keep the existing ownership, review, and approval gates.
 
+## Weight-space network audit
+
+For small ReLU decision networks with known weights, input scaling and a written protocol, use `skills/weight-space-network-audit/SKILL.md`. Test behavior against the protocol before diagnosing weights; verify each proposed deviation on independently sampled requests. If edits are authorized, work on a copy, compare against the original and baseline, and check collateral damage and deployment precision. Use existing Nora/Felix/Vera/Iris roles and approval gates. Report inconclusive or unrun checks explicitly; do not interpret sampled agreement as clearance or use this method as general LLM editing.
+
 ## Parallel work
 
 Parallel implementation is optional. Add **instances**, not roles: `felix-api`, `felix-ui`. Aliases do not provide filesystem isolation.

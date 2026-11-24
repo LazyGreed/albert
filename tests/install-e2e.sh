@@ -62,6 +62,7 @@ grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
 for tool in pi claude; do
   cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   grep -q '^name: alien-science-ideation$' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
+  cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.$tool/skills/weight-space-network-audit/SKILL.md"
   for role in nora felix vera iris; do
     grep -q 'Alien Science Ideation is always on:' "$project/.$tool/agents/$role.md"
   done
@@ -144,6 +145,7 @@ assert_absent '^WRITE ' "$tmp/web-again"
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
+cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.agents/skills/weight-space-network-audit/SKILL.md"
 grep -q '^## Always-on Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$project/.agents/agents/$role.md" ]]
@@ -175,6 +177,7 @@ agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
+cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$agy_global/skills/weight-space-network-audit/SKILL.md"
 grep -q '^## Always-on Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
 grep -q '"name": "albert"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]

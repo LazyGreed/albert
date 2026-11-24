@@ -292,7 +292,7 @@ EOF
     fi
     install_instructions "$instruction"
     for role in albert nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-    for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation; do
+    for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
       while IFS= read -r -d '' file; do
         rel="${file#"$source_dir"/skills/}"
         put "$file" "$root/skills/$rel"
@@ -309,7 +309,7 @@ EOF
   fi
   install_instructions "$instruction"
   for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-  for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation; do
+  for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
       put "$file" "$root/skills/$rel"
