@@ -7,7 +7,6 @@ harness="pi"
 scope="global"
 target=""
 dry=0
-with_jev=0
 with_web=1
 tui_mode=auto
 explicit_args=0
@@ -17,7 +16,7 @@ usage() {
 Usage: ./install.sh                       # interactive Pi/Claude Code TUI
        ./install.sh --tui                 # force interactive TUI
        ./install.sh --harness pi|claude|antigravity|pi,claude,antigravity --scope global|project
-                    [--target PROJECT_DIR] [--with-jev] [--with-web|--no-web] [--dry-run] [--no-tui]
+                    [--target PROJECT_DIR] [--with-web|--no-web] [--dry-run] [--no-tui]
 
 Use arrows and Enter/Space to configure the TUI; preview before installing.
 Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
@@ -27,7 +26,6 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Web research is enabled by default for eligible workers (use --no-web to disable).
 No bundled settings files are copied. Existing model/provider settings are preserved.
---with-jev opts into the Pi extension and/or Claude MCP registration.
 USAGE
 }
 while (($#)); do
@@ -35,7 +33,6 @@ while (($#)); do
     --harness) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; harness="$2"; explicit_args=1; shift 2 ;;
     --scope) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; scope="$2"; explicit_args=1; shift 2 ;;
     --target) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; target="$2"; explicit_args=1; shift 2 ;;
-    --with-jev) with_jev=1; explicit_args=1; shift ;;
     --with-web) with_web=1; explicit_args=1; shift ;;
     --no-web|--without-web) with_web=0; explicit_args=1; shift ;;
     --dry-run) dry=1; explicit_args=1; shift ;;
@@ -49,7 +46,7 @@ done
 if [[ "$tui_mode" == on ]] || [[ "$tui_mode" == auto && "$explicit_args" == 0 ]]; then
   if [[ -t 0 && -t 1 ]]; then
     if ((dry)); then echo "TUI already includes a preview; omit --dry-run or use --no-tui for scripted previews." >&2; exit 2; fi
-    # A forced TUI takes supplied harness/scope/jev options as initial selections.
+    # A forced TUI takes supplied harness, scope, target, and web options as initial selections.
     source "$source_dir/lib/tui.sh"
     albert_tui
     exit $?
@@ -72,13 +69,6 @@ if [[ "$scope" == project ]]; then
   target="${target:-$PWD}"
   [[ -d "$target" ]] || { echo "Not a directory: $target" >&2; exit 2; }
   target="$(cd -- "$target" && pwd -P)"
-fi
-# Preflight optional dependencies before changing any target files.
-if ((with_jev)); then
-  [[ -f "$source_dir/extensions/k-jev/package.json" ]] || { echo 'k-jev source missing' >&2; exit 1; }
-  if (( !dry )); then
-    command -v npm >/dev/null || { echo 'npm required for --with-jev' >&2; exit 1; }
-  fi
 fi
 
 has_harness() { [[ ",$harness," == *",$1,"* ]]; }
@@ -193,13 +183,6 @@ install_role() {
       felix) tools='Read, Grep, Glob, Bash, Edit, Write' ;;
       *) tools='Read, Grep, Glob, Bash' ;;
     esac
-  fi
-  if ((with_jev)) && [[ "$role" == nora || "$role" == vera ]]; then
-    if [[ "$tool" == pi ]]; then
-      tools="$tools, jev_evaluate, jev_search, jev_evaluate_files, jev_evaluate_diff"
-    else
-      tools="$tools, mcp__k-jev__jev_evaluate, mcp__k-jev__jev_search, mcp__k-jev__jev_evaluate_files, mcp__k-jev__jev_evaluate_diff"
-    fi
   fi
   # Expose research tools to the named specialists; Iris remains minimal.
   # Pi extension tools require explicit ext: selectors in tintinweb/pi-subagents.
@@ -342,26 +325,8 @@ pi_preflight() {
     return 1
   fi
 }
-pi_jev_registered() {
-  local packages file pi_root files=()
-  if [[ -n "${PI_CODING_AGENT_DIR:-}" ]]; then
-    pi_root="$PI_CODING_AGENT_DIR"
-  elif [[ -n "${HOME:-}" ]]; then
-    pi_root="$HOME/.pi/agent"
-  else
-    pi_root=""
-  fi
-  [[ -n "$pi_root" ]] && files+=("$pi_root/settings.json")
-  [[ "$scope" != project ]] || files+=("$target/.pi/settings.json")
-  packages="$(pi_in_scope list 2>/dev/null)" || packages=''
-  grep -Fq 'k-jev' <<< "$packages" && return 0
-  for file in "${files[@]+"${files[@]}"}"; do
-    [[ -f "$file" ]] && grep -Fq 'k-jev' "$file" && return 0
-  done
-  return 1
-}
 
-# Install only on explicit opt-in, and reuse any already registered Pi package.
+# Install only when web access is enabled, and reuse any already registered Pi package.
 # Preflight runs first, before changing target files or package settings.
 pi_web_registered() {
   local packages
@@ -387,41 +352,6 @@ if ((with_web)) && has_harness pi; then install_pi_web; fi
 has_harness pi && install_one pi
 has_harness claude && install_one claude
 (has_harness antigravity || has_harness agy) && install_one antigravity
-
-if ((with_jev)); then
-  jev="$source_dir/extensions/k-jev"
-  report "JEV OPT-IN $jev"
-  if (( !dry )); then
-    (cd "$jev" && npm ci --ignore-scripts && npm run build)
-  fi
-  if has_harness pi; then
-    if ((dry)); then report "CHECK Pi Jev registration; install only if absent: $jev"
-    elif pi_jev_registered; then report 'SKIP PI JEV: registration exists; unchanged.'
-    elif [[ "$scope" == project ]]; then (cd "$target" && pi install -l "$jev")
-    else pi install "$jev"; fi
-  fi
-  if has_harness claude; then
-    if ((dry)); then report "CHECK claude mcp get k-jev; add only if absent (scope $([[ "$scope" == global ]] && echo user || echo project))";
-    elif command -v claude >/dev/null; then
-      # Preserve existing registrations (including those from another scope).
-      # A registered MCP server must not be replaced as a side effect of installation.
-      if [[ "$scope" == project ]]; then
-        if (cd "$target" && claude mcp get k-jev >/dev/null 2>&1); then
-          report 'SKIP CLAUDE MCP: k-jev already registered; existing configuration preserved.'
-        else
-          (cd "$target" && claude mcp add --scope project --transport stdio k-jev -- node "$jev/dist/mcp.js")
-        fi
-      else
-        if claude mcp get k-jev >/dev/null 2>&1; then
-          report 'SKIP CLAUDE MCP: k-jev already registered; existing configuration preserved.'
-        else
-          claude mcp add --scope user --transport stdio k-jev -- node "$jev/dist/mcp.js"
-        fi
-      fi
-    else report 'MANUAL: install Claude Code and register the k-jev MCP server'; fi
-  fi
-  report 'Jev requires K_JEV_BASE_URL, K_JEV_MODEL, and K_JEV_API_KEY at runtime.'
-fi
 
 if has_harness pi; then
   report 'OPTIONAL (Pi): one notification per parallel batch needs "defaultJoinMode": "group" in subagents.json; not set here. See docs/workflow.md.'

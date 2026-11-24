@@ -30,23 +30,9 @@ case "$1" in
   *) exit 1 ;;
 esac
 PI
-cat > "$tmp/bin/npm" <<'NPM'
-#!/usr/bin/env bash
-printf 'npm %s\n' "$*" >> "$MOCK_PI_LOG"
-NPM
-cat > "$tmp/bin/claude" <<'CLAUDE'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$MOCK_CLAUDE_LOG"
-case "$1 $2" in
-  'mcp get') [[ -e "$MOCK_CLAUDE_LOG.registered" ]] ;;
-  'mcp add') touch "$MOCK_CLAUDE_LOG.registered" ;;
-  *) exit 1 ;;
-esac
-CLAUDE
-chmod +x "$tmp/bin/pi" "$tmp/bin/npm" "$tmp/bin/claude"
+chmod +x "$tmp/bin/pi"
 export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
-export MOCK_CLAUDE_LOG="$tmp/claude-actions"
 mkdir -p "$HOME"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
@@ -127,7 +113,7 @@ assert_absent '^WRITE ' "$tmp/again"
 [[ ! -e "$HOME/.claude/settings.json" && ! -e "$PI_CODING_AGENT_DIR/settings.json" ]]
 [[ ! -e "$PI_CODING_AGENT_DIR/pi-blackhole" && ! -e "$project/.pi/pi-blackhole" ]]
 assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
-[[ ! -e "$MOCK_CLAUDE_LOG" ]]
+[[ ! -e "$project/.mcp.json" && ! -e "$HOME/.claude.json" ]]
 
 # Normal reinstalls must not replace unrelated settings or erase user-managed legacy config.
 printf '{ "model" : "user-owned" }\n\n' > "$tmp/claude-settings"
@@ -137,6 +123,9 @@ ln -s "$tmp/linked-settings" "$HOME/.claude/settings.json"
 printf '{ "packages" : ["npm:pi-blackhole", "npm:other"] }\n\n' > "$tmp/pi-settings"
 cp "$tmp/pi-settings" "$project/.pi/settings.json"
 cp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
+printf '{ "mcpServers" : { "user-tool" : { "command" : "user-tool" } } }\n' > "$tmp/mcp-registration"
+cp "$tmp/mcp-registration" "$project/.mcp.json"
+cp "$tmp/mcp-registration" "$HOME/.claude.json"
 printf '{ "compactionEngine" : "blackhole" }\n\n' > "$tmp/legacy-blackhole"
 mkdir -p "$PI_CODING_AGENT_DIR/pi-blackhole"
 cp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-config.json"
@@ -148,24 +137,9 @@ cmp "$tmp/claude-settings" "$HOME/.claude/settings.json"
 cmp "$tmp/pi-settings" "$project/.pi/settings.json"
 cmp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
 cmp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-config.json"
+cmp "$tmp/mcp-registration" "$project/.mcp.json"
+cmp "$tmp/mcp-registration" "$HOME/.claude.json"
 assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
-[[ ! -e "$MOCK_CLAUDE_LOG" ]]
-
-# Claude's optional MCP registration is kept separate from settings and not replaced.
-"$root/install.sh" --harness claude --scope project --target "$project" --with-jev > "$tmp/claude-jev"
-grep -Fxq "mcp add --scope project --transport stdio k-jev -- node $root/extensions/k-jev/dist/mcp.js" "$MOCK_CLAUDE_LOG"
-"$root/install.sh" --harness claude --scope project --target "$project" --with-jev > "$tmp/claude-jev-again"
-grep -q '^SKIP CLAUDE MCP:' "$tmp/claude-jev-again"
-[[ "$(grep -c '^mcp add ' "$MOCK_CLAUDE_LOG")" -eq 1 ]]
-cmp "$tmp/claude-settings" "$project/.claude/settings.json"
-
-# Existing Pi Jev is kept. No second install registration.
-grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-before-jev" || true
-MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access\n/path/to/k-jev' \
-  "$root/install.sh" --harness pi --scope project --target "$project" --with-jev > "$tmp/jev"
-grep -q 'SKIP PI JEV' "$tmp/jev"
-grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-after-jev" || true
-cmp -s "$tmp/pi-before-jev" "$tmp/pi-after-jev"
 
 # Web access: dry-run is side-effect free, Pi installs only when absent, and
 # both harnesses expose the right tools without granting them to Iris.
@@ -320,4 +294,4 @@ done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf-again"
 assert_absent '^WRITE ' "$tmp/crlf-again"
 
-echo 'install E2E PASS: harnesses, settings preservation, opt-in MCP, personality, scope and idempotence'
+echo 'install E2E PASS: harnesses, settings and MCP preservation, web access, personality, scope and idempotence'

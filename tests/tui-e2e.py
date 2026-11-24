@@ -72,7 +72,7 @@ def test_dual_project(root: Path):
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
     # Leave the default web access enabled, then review.
-    session.send(ARROW_DOWN * 3 + ENTER)
+    session.send(ARROW_DOWN * 2 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       enabled')
     session.expect(b'Planned')
@@ -98,8 +98,8 @@ def test_web_disabled(root: Path, *, explicit: bool):
     initial = b'[ ]' if explicit else b'[x]'
     assert initial + b' Web search and fetch' in session.read_buffer
     if not explicit:
-        session.send(ARROW_DOWN * 6 + SPACE)
-    session.send(b'j' * (7 if explicit else 1) + ENTER)
+        session.send(ARROW_DOWN * 5 + SPACE)
+    session.send(b'j' * (6 if explicit else 1) + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       disabled')
     session.send(ENTER)

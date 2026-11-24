@@ -6,7 +6,7 @@ Quintet coordinates agents through existing coding harnesses. This catalogue tra
 
 | Source | Relationship | Where it informs Quintet |
 | --- | --- | --- |
-| [Pi coding agent](https://github.com/earendil-works/pi) | Supported harness and API surface | `install.sh`, `docs/workflow.md`, `extensions/k-jev/src/pi.ts` |
+| [Pi coding agent](https://github.com/earendil-works/pi) | Supported harness and API surface | `install.sh`, `docs/workflow.md` |
 | [tintinweb/pi-subagents](https://github.com/tintinweb/pi-subagents) | Required Pi backend: native profiles, steering, FleetView, parallel runs, and round summaries. Quintet owns the workstream policy. | `README.md`, `install.sh`, `docs/workflow.md`; [integration](https://github.com/LazyGreed/quintet/commit/eb9230875c4ee44b4cb0a1ad3dbdd4c638e9174e) and [reporting](https://github.com/LazyGreed/quintet/commit/0503e78aa614fa6e4a3f9d9918726200281bb980) |
 | [Claude Code subagents](https://code.claude.com/docs/en/sub-agents) | Supported native subagent interface | `install.sh`, `docs/workflow.md`, `agents/` |
 | [Claude Code agent teams](https://code.claude.com/docs/en/agent-teams) | Optional, harness-dependent peer communication | `docs/peer-messaging.md`; messaging only when the host exposes it |
@@ -14,13 +14,11 @@ Quintet coordinates agents through existing coding harnesses. This catalogue tra
 | [Antigravity swarm](https://antigravity.google/docs/swarm/) | Optional, host-managed peer communication | `docs/peer-messaging.md`; Quintet does not start swarms automatically |
 | [Oh My Pi](https://github.com/can1357/oh-my-pi) | Compatibility/reference for peer messaging, not a dedicated installer target | `docs/peer-messaging.md`; `agent://` availability is runtime-dependent |
 
-## Web access and semantic tooling
+## Web access
 
 | Source | Relationship | Where it informs Quintet |
 | --- | --- | --- |
-| [pi-web-access](https://github.com/nicobailon/pi-web-access) | External Pi package used for web search/fetch when web access is enabled | `install.sh`, `AGENTS.md`, `settings.json` |
-| [Model Context Protocol](https://modelcontextprotocol.io/) | Tool protocol used by Quintet's optional `k-jev` MCP adapter | `extensions/k-jev/src/mcp.ts`, `extensions/k-jev/package.json` |
-| [Zod](https://zod.dev/) | Schema-validation dependency, not an architectural inspiration | `extensions/k-jev/src/mcp.ts`, `extensions/k-jev/package.json` |
+| [pi-web-access](https://github.com/nicobailon/pi-web-access) | External Pi package used for web search/fetch when web access is enabled | `install.sh`, `AGENTS.md` |
 
 ## Research and design inspiration
 
@@ -46,7 +44,6 @@ These are more than dependencies. Quintet's history identifies concrete ideas ad
 | --- | --- | --- |
 | [nathanstephenson/pi-subagents](https://github.com/nathanstephenson/pi-subagents) | Earlier Pi subagent backend, **superseded** by tintinweb's implementation. | [2026-10-15 installer](https://github.com/LazyGreed/quintet/commit/48c0361c0fb7691dafbbb6a4ef84f410154d27cb), [2026-10-18 migration](https://github.com/LazyGreed/quintet/commit/eb9230875c4ee44b4cb0a1ad3dbdd4c638e9174e). |
 | [pi-warden](https://github.com/DevMortimer/pi-warden) | Included in the original Pi package list, with a `pi-warden/config.json` directory; **not** a current Quintet prerequisite. | [2026-09-28 historical tree](https://github.com/LazyGreed/quintet/tree/c424552f0c601fb5575278691b5b926c0f067a31), earlier `settings.json`. |
-| [`@narumitw/pi-chrome-devtools` and `@narumitw/pi-lsp`](https://github.com/pi-packages/narumiruna-pi-extensions) | Supporting packages in the **example Pi settings**. These are configured tooling, not a core agent architecture dependency, and Quintet's installer does not require them. | `settings.json`. |
 | [pi-blackhole](https://github.com/k0valik/pi-blackhole) | Former Pi example package and bundled compaction config. The installer does not install either or remove user-managed copies. | [Earlier configuration](https://github.com/LazyGreed/quintet/tree/c424552f0c601fb5575278691b5b926c0f067a31/pi-blackhole). |
 
 ## Consulted or compared, not verified as implemented
