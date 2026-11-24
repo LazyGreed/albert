@@ -14,7 +14,7 @@ explicit_args=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./install.sh                       # interactive TUI
+Usage: ./install.sh                       # interactive Pi/Claude Code TUI
        ./install.sh --tui                 # force interactive TUI
        ./install.sh --harness pi|claude|antigravity|pi,claude,antigravity --scope global|project
                     [--target PROJECT_DIR] [--with-jev] [--with-web|--no-web] [--dry-run] [--no-tui]
@@ -22,10 +22,12 @@ Usage: ./install.sh                       # interactive TUI
 Use arrows and Enter/Space to configure the TUI; preview before installing.
 Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
 Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
-Global: installs in ~/.pi/agent, ~/.claude, and/or ~/.gemini/config/plugins/albert; project: in PROJECT/.pi,
-PROJECT/.claude, and/or PROJECT/.agents plus an Albert block in root AGENTS.md/CLAUDE.md.
+Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
+~/.gemini/config/plugins/albert. Project: installs in PROJECT/.pi or PROJECT/.claude
+with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Web research is enabled by default for eligible workers (use --no-web to disable).
-No change to existing model/provider settings. Jev remains opt-in.
+No bundled settings files are copied. Existing model/provider settings are preserved.
+--with-jev opts into the Pi extension and/or Claude MCP registration.
 USAGE
 }
 while (($#)); do
@@ -261,8 +263,18 @@ install_instructions() {
   rm -f -- "$temp"
 }
 
+install_skills() {
+  local root="$1" skill file rel
+  for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
+    while IFS= read -r -d '' file; do
+      rel="${file#"$source_dir"/skills/}"
+      put "$file" "$root/skills/$rel"
+    done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
+  done
+}
+
 install_one() {
-  local tool="$1" root instruction
+  local tool="$1" root instruction role
   if [[ "$tool" == antigravity || "$tool" == agy ]]; then
     if [[ "$scope" == global ]]; then
       root="$HOME/.gemini/config/plugins/albert"
@@ -292,12 +304,7 @@ EOF
     fi
     install_instructions "$instruction"
     for role in albert nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-    for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
-      while IFS= read -r -d '' file; do
-        rel="${file#"$source_dir"/skills/}"
-        put "$file" "$root/skills/$rel"
-      done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
-    done
+    install_skills "$root"
     return
   fi
   if [[ "$scope" == global ]]; then
@@ -309,12 +316,7 @@ EOF
   fi
   install_instructions "$instruction"
   for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-  for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
-    while IFS= read -r -d '' file; do
-      rel="${file#"$source_dir"/skills/}"
-      put "$file" "$root/skills/$rel"
-    done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
-  done
+  install_skills "$root"
 }
 
 # Verify the native Pi dependency before touching user files. Preview stays offline.
@@ -388,10 +390,8 @@ has_harness claude && install_one claude
 
 if ((with_jev)); then
   jev="$source_dir/extensions/k-jev"
-  [[ -f "$jev/package.json" ]] || { echo 'k-jev source missing' >&2; exit 1; }
   report "JEV OPT-IN $jev"
   if (( !dry )); then
-    command -v npm >/dev/null || { echo 'npm required for --with-jev' >&2; exit 1; }
     (cd "$jev" && npm ci --ignore-scripts && npm run build)
   fi
   if has_harness pi; then
@@ -429,5 +429,5 @@ fi
 if ((with_web)); then
   report 'WEB: enabled for the coordinator and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
 fi
-report 'MODELS: choose per-agent model/effort; user settings untouched.'
+report 'MODELS: choose per-agent model/effort; model and provider settings unchanged.'
 report 'DONE'

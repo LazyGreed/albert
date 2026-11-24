@@ -17,13 +17,13 @@ SPACE = b' '
 
 
 class Session:
-    def __init__(self, cwd: Path):
+    def __init__(self, cwd: Path, *args: str):
         pid, fd = pty.fork()
         if pid == 0:
             os.chdir(cwd)
             env = os.environ.copy()
             env['TERM'] = 'xterm'
-            os.execve('/usr/bin/env', ['env', 'bash', str(INSTALL)], env)
+            os.execve('/usr/bin/env', ['env', 'bash', str(INSTALL), *args], env)
         self.pid, self.fd = pid, fd
         self.read_buffer = b''
 
@@ -71,8 +71,8 @@ def test_dual_project(root: Path):
     session.send(ARROW_DOWN + SPACE + ARROW_DOWN * 2 + ENTER + ARROW_DOWN + ENTER)
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
-    # Enable the new Web option, then review.
-    session.send(ARROW_DOWN * 2 + SPACE + ARROW_DOWN + ENTER)
+    # Leave the default web access enabled, then review.
+    session.send(ARROW_DOWN * 3 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       enabled')
     session.expect(b'Planned')
@@ -85,8 +85,29 @@ def test_dual_project(root: Path):
     assert 'ext:pi-web-access/web_search' in (project / '.pi/agents/nora.md').read_text()
     assert 'Preserve project rules.' in (project / 'AGENTS.md').read_text()
     assert 'Preserve Claude rules.' in (project / 'CLAUDE.md').read_text()
-    # Install is idempotent, even when invoked via TUI.
+    # The TUI install adds one managed instruction block.
     assert (project / 'AGENTS.md').read_text().count('<!-- ALBERT MANAGED START -->') == 1
+
+
+def test_web_disabled(root: Path, *, explicit: bool):
+    project = root / ('explicit-no-web' if explicit else 'toggled-no-web')
+    project.mkdir()
+    args = ('--no-web',) if explicit else ()
+    session = Session(project, '--tui', '--harness', 'pi,claude', '--scope', 'project', *args)
+    session.expect(b'Cancel')
+    initial = b'[ ]' if explicit else b'[x]'
+    assert initial + b' Web search and fetch' in session.read_buffer
+    if not explicit:
+        session.send(ARROW_DOWN * 6 + SPACE)
+    session.send(b'j' * (7 if explicit else 1) + ENTER)
+    session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Web       disabled')
+    session.send(ENTER)
+    session.expect(b'DONE')
+    session.finish()
+    assert 'pi-web-access/' not in (project / '.pi/agents/nora.md').read_text()
+    assert 'WebSearch' not in (project / '.claude/agents/vera.md').read_text()
+    assert not (root / 'pi-installs').exists()
 
 
 if __name__ == '__main__':
@@ -95,9 +116,21 @@ if __name__ == '__main__':
         bin_dir = root / 'bin'
         bin_dir.mkdir()
         pi = bin_dir / 'pi'
-        pi.write_text('#!/bin/sh\ncase "$1" in --version) echo 1.1.0;; list) echo npm:@tintinweb/pi-subagents;; esac\n')
+        pi.write_text('''#!/bin/sh
+case "$1" in
+    --version) echo 1.1.0;;
+    list) echo npm:@tintinweb/pi-subagents;;
+    install) printf '%s\\n' "$*" >> "$HOME/pi-installs";;
+    *) exit 1;;
+esac
+''')
         pi.chmod(0o755)
         os.environ['PATH'] = f"{bin_dir}:{os.environ['PATH']}"
+        os.environ['HOME'] = str(root)
+        os.environ['PI_CODING_AGENT_DIR'] = str(root / '.pi/agent')
         test_cancel(root)
+        test_web_disabled(root, explicit=True)
+        test_web_disabled(root, explicit=False)
         test_dual_project(root)
-    print('TUI E2E PASS: escape cancellation, keyboard controls, review, dual-harness install')
+        assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
+    print('TUI E2E PASS: cancel, keyboard and review, dual install, web default and opt-out')

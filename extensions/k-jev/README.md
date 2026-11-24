@@ -5,7 +5,7 @@ One agent-independent core, a Pi extension, and an MCP v2 stdio server. Calls ar
 
 ## Install
 
-Requires Node.js 22.18+ and npm.
+Requires Node.js 22.18+ and npm. Pass `--with-jev` to Quintet's installer for Pi or Claude Code to build and register it, or follow the manual steps below. The opt-in preserves an existing registration and does not copy Claude Code settings.
 
 ```sh
 cd /path/to/this/repo/extensions/k-jev
@@ -89,4 +89,4 @@ Core owns validation independently of adapter schemas. Keep Pi, MCP, tool regist
 - New tools reuse the same configured Jev endpoint and same question/answer types. Judgment is probabilistic, not a deterministic verifier. Read relevant source and execute checks normally.
 - Enabling Jev sends source text/diffs to the configured endpoint. Exclude credentials, tokens, private customer documents, and proprietary code unless the endpoint and transmission are approved. Jev is never mandatory for reviews or acceptance.
 
-The agent adapter does not require Jev to launch. With opt-in, install/build the extension, configure `K_JEV_*` environment variables, and reload Pi or Claude. Node.js >=22.18 is required by the existing `k-jev` package.
+Jev is not required to launch Quintet agents.

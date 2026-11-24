@@ -34,8 +34,20 @@ cat > "$tmp/bin/npm" <<'NPM'
 #!/usr/bin/env bash
 printf 'npm %s\n' "$*" >> "$MOCK_PI_LOG"
 NPM
-chmod +x "$tmp/bin/pi" "$tmp/bin/npm"
+cat > "$tmp/bin/claude" <<'CLAUDE'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "$MOCK_CLAUDE_LOG"
+case "$1 $2" in
+  'mcp get') [[ -e "$MOCK_CLAUDE_LOG.registered" ]] ;;
+  'mcp add') touch "$MOCK_CLAUDE_LOG.registered" ;;
+  *) exit 1 ;;
+esac
+CLAUDE
+chmod +x "$tmp/bin/pi" "$tmp/bin/npm" "$tmp/bin/claude"
 export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
+export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
+export MOCK_CLAUDE_LOG="$tmp/claude-actions"
+mkdir -p "$HOME"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
 [[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
@@ -108,6 +120,45 @@ grep -q 'Keep this too.' "$project/CLAUDE.md"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/again"
 assert_absent '^WRITE ' "$tmp/again"
 
+# No bundled settings or legacy package install on a fresh install in either scope.
+[[ ! -e "$project/.claude/settings.json" && ! -e "$project/.pi/settings.json" ]]
+"$root/install.sh" --harness pi,claude --scope global > "$tmp/global"
+[[ -f "$HOME/.claude/CLAUDE.md" && -f "$PI_CODING_AGENT_DIR/agents/felix.md" ]]
+[[ ! -e "$HOME/.claude/settings.json" && ! -e "$PI_CODING_AGENT_DIR/settings.json" ]]
+[[ ! -e "$PI_CODING_AGENT_DIR/pi-blackhole" && ! -e "$project/.pi/pi-blackhole" ]]
+assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
+[[ ! -e "$MOCK_CLAUDE_LOG" ]]
+
+# Normal reinstalls must not replace unrelated settings or erase user-managed legacy config.
+printf '{ "model" : "user-owned" }\n\n' > "$tmp/claude-settings"
+cp "$tmp/claude-settings" "$project/.claude/settings.json"
+cp "$tmp/claude-settings" "$tmp/linked-settings"
+ln -s "$tmp/linked-settings" "$HOME/.claude/settings.json"
+printf '{ "packages" : ["npm:pi-blackhole", "npm:other"] }\n\n' > "$tmp/pi-settings"
+cp "$tmp/pi-settings" "$project/.pi/settings.json"
+cp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
+printf '{ "compactionEngine" : "blackhole" }\n\n' > "$tmp/legacy-blackhole"
+mkdir -p "$PI_CODING_AGENT_DIR/pi-blackhole"
+cp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-config.json"
+"$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/preserve-project"
+"$root/install.sh" --harness pi,claude --scope global > "$tmp/preserve-global"
+cmp "$tmp/claude-settings" "$project/.claude/settings.json"
+[[ "$(readlink "$HOME/.claude/settings.json")" == "$tmp/linked-settings" ]]
+cmp "$tmp/claude-settings" "$HOME/.claude/settings.json"
+cmp "$tmp/pi-settings" "$project/.pi/settings.json"
+cmp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
+cmp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-config.json"
+assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
+[[ ! -e "$MOCK_CLAUDE_LOG" ]]
+
+# Claude's optional MCP registration is kept separate from settings and not replaced.
+"$root/install.sh" --harness claude --scope project --target "$project" --with-jev > "$tmp/claude-jev"
+grep -Fxq "mcp add --scope project --transport stdio k-jev -- node $root/extensions/k-jev/dist/mcp.js" "$MOCK_CLAUDE_LOG"
+"$root/install.sh" --harness claude --scope project --target "$project" --with-jev > "$tmp/claude-jev-again"
+grep -q '^SKIP CLAUDE MCP:' "$tmp/claude-jev-again"
+[[ "$(grep -c '^mcp add ' "$MOCK_CLAUDE_LOG")" -eq 1 ]]
+cmp "$tmp/claude-settings" "$project/.claude/settings.json"
+
 # Existing Pi Jev is kept. No second install registration.
 grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-before-jev" || true
 MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access\n/path/to/k-jev' \
@@ -116,7 +167,7 @@ grep -q 'SKIP PI JEV' "$tmp/jev"
 grep '^pi install ' "$MOCK_PI_LOG" > "$tmp/pi-after-jev" || true
 cmp -s "$tmp/pi-before-jev" "$tmp/pi-after-jev"
 
-# Web opt-in: dry-run is side-effect free, Pi installs only when absent, and
+# Web access: dry-run is side-effect free, Pi installs only when absent, and
 # both harnesses expose the right tools without granting them to Iris.
 : > "$MOCK_PI_LOG"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web --dry-run > "$tmp/web-dry"
@@ -170,8 +221,7 @@ grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
 assert_absent '^WRITE ' "$tmp/agy-project-again"
 
 # Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
-mock_home="$tmp/home"
-mkdir -p "$mock_home"
+mock_home="$HOME"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
@@ -270,4 +320,4 @@ done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf-again"
 assert_absent '^WRITE ' "$tmp/crlf-again"
 
-echo 'install E2E PASS: harnesses, personality newline, reserved markers, CRLF, isolation, scope and idempotence'
+echo 'install E2E PASS: harnesses, settings preservation, opt-in MCP, personality, scope and idempotence'

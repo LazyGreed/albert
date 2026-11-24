@@ -9,7 +9,7 @@ albert_tui() {
   fi
   exec 3<>/dev/tty || return 2
 
-  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev" ti_web=0
+  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_jev="$with_jev" ti_web="$with_web"
   case ",$harness," in
     ,pi,) ti_pi=1 ;;
     ,claude,) ti_claude=1 ;;
@@ -92,7 +92,7 @@ albert_tui() {
     ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope")
     [[ "$ti_scope" != project ]] || ti_args+=(--target "$ti_target")
     ((ti_jev == 0)) || ti_args+=(--with-jev)
-    ((ti_web == 0)) || ti_args+=(--with-web)
+    if ((ti_web)); then ti_args+=(--with-web); else ti_args+=(--no-web); fi
   }
   _albert_tui_review() {
     if (( !ti_pi && !ti_claude )); then

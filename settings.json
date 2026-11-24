@@ -21,7 +21,6 @@
     "keepRecentTokens": 20000
   },
   "packages": [
-    "npm:pi-blackhole",
     "npm:pi-web-access",
     "npm:@narumitw/pi-chrome-devtools",
     "npm:@narumitw/pi-lsp",

@@ -39,7 +39,11 @@ pi install npm:@tintinweb/pi-subagents
 ./install.sh --harness antigravity --scope global
 ```
 
-For one project, add `--scope project --target /path/to/project`. Add `--dry-run` to preview. Installer updates back up changed files and keep existing model settings.
+For one project, use `--scope project --target /path/to/project`. Add `--dry-run` to preview. The installer backs up files it replaces and does not copy bundled harness settings. Pi web access may add its package registration; `--with-jev` may register the Pi extension or Claude MCP server. Existing model and provider settings stay in place.
+
+**Updating an older checkout?** Before pulling or switching revisions, save independent copies of any user configs symlinked into this repository, then point the harness at those copies. This matters if you linked `~/.claude/settings.json` to `claude-settings.json` as older instructions suggested, or linked to `antigravity-settings.json` or the bundled `pi-blackhole` config. Those repository files have been removed. The installer does not rewrite those links or remove user-managed Blackhole installs.
+
+[`settings.json`](settings.json) is a standalone Pi example, not an installer default. Review its permissions and packages before using it.
 
 ## Customize the main agent
 
@@ -69,17 +73,18 @@ Native agent identifiers and the Antigravity plugin directory remain `albert` fo
 3. Felix implements; Vera independently reviews meaningful changes; Iris checks observable behavior when useful.
 4. The coordinator reports verified results, gaps, and required approvals.
 
-Parallel writers require isolated worktrees, exclusive owned paths, and independent reviews before integration. Pushing, merging, deploying, and destructive changes require approval.
+Parallel writers require isolated worktrees, exclusive owned paths, and independent reviews before integration. Pushes, final merges to the target branch, deployments, and destructive changes require approval.
 
 ## Options and checks
 
 | Option | Purpose |
 | --- | --- |
-| `--harness pi,claude` | Install both harnesses |
+| `--harness pi,claude,antigravity` | Install all three harnesses; pass one name or a comma-separated subset |
 | `--scope project --target PATH` | Install in one project |
-| `--with-web` / `--no-web` | Toggle web access (enabled by default) |
-| `--with-jev` | Optional semantic tools |
-| `--dry-run` | Preview changes |
+| `--with-web` / `--no-web` | Include or skip installer-managed web tools and Pi web package registration (included by default). `--no-web` does not uninstall packages or disable tools across the harness. |
+| `--with-jev` | Opt into [Jev semantic tools](extensions/k-jev/README.md) for Pi or Claude Code |
+| `--dry-run` | Preview scripted changes |
+| `--tui` / `--no-tui` | Force the Pi/Claude Code TUI or run without it |
 
 ```sh
 bash tests/install-e2e.sh
