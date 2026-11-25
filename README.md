@@ -1,4 +1,4 @@
-# Quintet
+# Quintet v2 (graph-engineering edition)
 
 **One voice. Four specialists. Your rules.**
 
@@ -12,7 +12,7 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 | Vera | Independently review, read-only |
 | Iris | Test user-facing acceptance, read-only |
 
-**v2 is on `main`.** Denia uses a dependency graph for multi-stream work, with exclusive file ownership, review tied to exact revisions, and a separate integration check. Routine single-stream work still uses risk-based review. These are prompt rules for native subagents, not a separate runtime. The coordinator-centric baseline is preserved at [`v1`](https://github.com/LazyGreed/quintet/tree/v1). The [live Q0/Q1 comparison](docs/workflow.md#v2-evaluation) has not been run.
+Denia uses a dependency graph for multi-stream work, with exclusive file ownership, review tied to exact revisions, and a separate integration check. Routine single-stream work still uses risk-based review. The workflow runs through prompt rules for native subagents in the existing harness. The [`v1` branch](https://github.com/LazyGreed/quintet/tree/refs/heads/v1) carries the coordinator-centric edition. The [live Q0/Q1 comparison](docs/workflow.md#v2-evaluation) has not been run.
 
 **Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
@@ -21,7 +21,7 @@ Quintet installs the [weight-space network audit skill](skills/weight-space-netw
 ## Install
 
 ```sh
-git clone https://github.com/LazyGreed/quintet.git
+git clone --branch v2 https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
