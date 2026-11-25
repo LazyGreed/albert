@@ -12,7 +12,7 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 | Vera | Independently review, read-only |
 | Iris | Test user-facing acceptance, read-only |
 
-Quintet uses native subagents. It can split independent work into parallel streams with exclusive file ownership and separate verification. There is no separate runtime, daemon, or database.
+**v2 candidate:** Denia uses a dependency DAG for multi-stream work, with exclusive file ownership, revision-bound review, and a separate integration gate. Routine single-stream work stays lightweight. This is a prompt-level change for native subagents, not a separate runtime, daemon, or database. The coordinator-centric baseline is tagged [`v1`](https://github.com/LazyGreed/quintet/tree/v1); the v2 candidate is subject to the [evaluation gate](docs/workflow.md#v2-evaluation).
 
 **Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 

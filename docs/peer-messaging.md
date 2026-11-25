@@ -1,6 +1,6 @@
 # Peer messaging
 
-Quintet uses native peer messaging when available. **The coordinator retains ownership and approval authority.**
+Quintet uses native peer messaging when available. **Denia is the hub.** Peer messages can report a changed `REF`, `READS` contract, or dependency, but do not advance graph state. Denia checks the current input closure, assigns re-verification, and owns the separate join gate and approval boundaries. A peer can share trial-check evidence; only the assigned Vera issues the bound verdict.
 
 | Harness | Supported mechanism | Default |
 | --- | --- | --- |

@@ -56,6 +56,11 @@ These sources were discussed during Quintet/Albert development, but **a review o
 | [Microsoft TokenEconomizer](https://github.com/microsoft/TokenEconomizer), [research paper](https://arxiv.org/abs/2610.22732) | Efficient handoffs, adaptive delegation, avoiding repeated failed attempts, and tool-economy ideas. | **Consulted only**. No TokenEconomizer runtime or cross-session experience memory added; Quintet retains native session state rather than a new memory system. |
 | `pybot-msgboard` (previous discussion; repository URL not currently verifiable) | Peer-to-peer agent coordination and messaging patterns. | **Exploratory comparison**; no standalone message board or peer broker in Quintet. `docs/peer-messaging.md` documents native host transports and fallback to the coordinator. |
 
+## Graph coordination references
+
+- Kanade's supplied *Quintet Graph-Aware Coordination: Final Proposal* (revision v3, targeting `6715d8d5`): design source for the v2 candidate, not a v3 release. The [workflow](workflow.md#dependency-graph) records the adopted prompt rules; the overlap helper and experiment branches are deferred.
+- Git's [`diff`](https://git-scm.com/docs/git-diff), [`status`](https://git-scm.com/docs/git-status), and [`worktree`](https://git-scm.com/docs/git-worktree) manuals: **consulted only** for incremental path records, cleanliness checks, and isolated verification. No graph engine or Git code was imported.
+
 ## Maintenance and attribution rules
 
 - Record meaningful influences **even after the original files are removed or consolidated**. Link a primary upstream source and the Quintet commit or historical file establishing the relationship.
