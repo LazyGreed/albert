@@ -12,11 +12,11 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 | Vera | Independently review, read-only |
 | Iris | Test user-facing acceptance, read-only |
 
-**v2 candidate:** Denia uses a dependency DAG for multi-stream work, with exclusive file ownership, revision-bound review, and a separate integration gate. Routine single-stream work stays lightweight. This is a prompt-level change for native subagents, not a separate runtime, daemon, or database. The coordinator-centric baseline is tagged [`v1`](https://github.com/LazyGreed/quintet/tree/v1); the v2 candidate is subject to the [evaluation gate](docs/workflow.md#v2-evaluation).
+**v2 is on `main`.** Denia uses a dependency graph for multi-stream work, with exclusive file ownership, review tied to exact revisions, and a separate integration check. Routine single-stream work still uses risk-based review. These are prompt rules for native subagents, not a separate runtime. The coordinator-centric baseline is preserved at [`v1`](https://github.com/LazyGreed/quintet/tree/v1). The [live Q0/Q1 comparison](docs/workflow.md#v2-evaluation) has not been run.
 
 **Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
-[Weight-space network audit](skills/weight-space-network-audit/SKILL.md) is installed by default and used only for relevant small ReLU decision networks with explicit protocols. It supports evidence-based diagnosis and candidate weight repairs, not general LLM editing or safety-critical sign-off.
+Quintet installs the [weight-space network audit skill](skills/weight-space-network-audit/SKILL.md) by default. The [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit) activates it only for audits or authorized repairs of small feed-forward ReLU decision networks with accessible weights and an explicit protocol. The skill file describes a broader method; that does not widen Quintet's default scope.
 
 ## Install
 
@@ -58,11 +58,11 @@ Name: Kanade
 
 Rerun your install command to apply changes. Global installs use this file directly; there is no separate personality config directory.
 
-Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
+Project installs create `PROJECT/PERSONALITY.md` at the project root if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
 
 Only the main agent uses the personality. Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
 
-Native agent identifiers and the Antigravity plugin directory remain `albert` for compatibility. Changing the name updates the main prompt and Antigravity plugin display name, not the underlying agent ID or harness title.
+Changing the name updates the main prompt and the global Antigravity plugin display name. The Antigravity coordinator ID and global plugin directory remain `albert` for compatibility.
 
 ## Workflow
 
@@ -71,7 +71,7 @@ Native agent identifiers and the Antigravity plugin directory remain `albert` fo
 3. Felix implements; Vera independently reviews meaningful changes; Iris checks observable behavior when useful.
 4. The coordinator reports verified results, gaps, and required approvals.
 
-Parallel writers require isolated worktrees, exclusive owned paths, and independent reviews before integration. Pushes, final merges to the target branch, deployments, and destructive changes require approval.
+Parallel writers need isolated worktrees and exclusive write scopes. Each stream needs a mechanical ownership check and an independent Vera `PASS` before landing on the integration branch. The coordinator checks the combined result separately. Pushing, merging to the final target branch, deploying to production, and irreversible cleanup require explicit authorization.
 
 ## Options and checks
 
@@ -88,6 +88,8 @@ bash tests/install-e2e.sh
 python3 tests/tui-e2e.py
 bash tests/workstream-e2e.sh
 ```
+
+These CI checks cover installer output for all three harnesses (with Pi mocked), the Pi/Claude Code installer TUI, and deterministic Git worktree integration. They do not run live agents. The opt-in `tests/live-parallel-smoke.sh` uses Antigravity CLI by default or Claude Code; the separate [Q0/Q1 benchmark](docs/workflow.md#v2-evaluation) uses Claude Code.
 
 ## Documentation
 

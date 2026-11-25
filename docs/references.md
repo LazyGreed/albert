@@ -25,7 +25,7 @@ Quintet coordinates agents through existing coding harnesses. This catalogue tra
 | Source | Relationship | Where it informs Quintet |
 | --- | --- | --- |
 | [*The Alien Space of Science: Sampling Coherent but Cognitively Unavailable Research Directions*](https://arxiv.org/abs/2603.01092) and [authors' code](https://github.com/alejandrohdez00/alien-space-of-science) | **Conceptual inspiration only**. Quintet uses a prompt-level ideation heuristic, not the paper's trained coherence or availability models. Its qualitative scores are not calibrated research measurements. | `skills/alien-science-ideation/SKILL.md`, `AGENTS.md`, `docs/workflow.md` |
-| [Nusrat & Nusrat, *Weight-space programming for auditing clinical decision networks*](https://arxiv.org/abs/2611.05341v1) | **Adapted methodology** from the supplied v1 skill bundle: protocol-based black-box testing, weight-space diagnosis, sampled claim verification, minimal candidate edits, collateral regression and deployment-precision checks. The source is a preprint on small synthetic ReLU networks; this is a procedural skill, not a general LLM weight-editing method or clinical validation. | `skills/weight-space-network-audit/SKILL.md`, `AGENTS.md`, `docs/workflow.md`; supplied `Weight space network audit-v1.zip`. |
+| [Nusrat & Nusrat, *Weight-space programming for auditing clinical decision networks*](https://arxiv.org/abs/2611.05341v1) | **Adapted methodology** from the supplied v1 skill bundle: protocol-based black-box testing, weight-space diagnosis, sampled claim verification, minimal candidate edits, collateral regression and deployment-precision checks. The source is a preprint on small synthetic ReLU networks. It does not validate the broader workflows described in the skill file or establish clinical validity. | `skills/weight-space-network-audit/SKILL.md`, `AGENTS.md`, `docs/workflow.md`; supplied `Weight space network audit-v1.zip`. |
 
 ## Influences adopted into the design
 
@@ -58,7 +58,7 @@ These sources were discussed during Quintet/Albert development, but **a review o
 
 ## Graph coordination references
 
-- Kanade's supplied *Quintet Graph-Aware Coordination: Final Proposal* (revision v3, targeting `6715d8d5`): design source for the v2 candidate, not a v3 release. The [workflow](workflow.md#dependency-graph) records the adopted prompt rules; the overlap helper and experiment branches are deferred.
+- Kanade's supplied *Quintet Graph-Aware Coordination: Final Proposal* (revision v3, targeting `6715d8d5`): design source for the v2 coordination rules on `main`; v3 is the proposal revision, not a Quintet release. The [workflow](workflow.md#dependency-graph) records the adopted prompt rules; the overlap helper and experiment branches are deferred.
 - Git's [`diff`](https://git-scm.com/docs/git-diff), [`status`](https://git-scm.com/docs/git-status), and [`worktree`](https://git-scm.com/docs/git-worktree) manuals: **consulted only** for incremental path records, cleanliness checks, and isolated verification. No graph engine or Git code was imported.
 
 ## Maintenance and attribution rules

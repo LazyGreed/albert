@@ -8,7 +8,7 @@ Quintet uses native peer messaging when available. **Denia is the hub.** Peer me
 | Antigravity ordinary subagents | Coordinator-to-worker tools; peer access differs | Relay through coordinator |
 | Claude Code agent teams | `SendMessage` when teams are enabled | Narrow direct handoffs |
 | Claude Code ordinary subagents | Version-dependent | Relay through coordinator |
-| Pi with `@tintinweb/pi-subagents` | Coordinator steering; peer transport experimental (2026-11-21) | Relay through coordinator |
+| Pi with `@tintinweb/pi-subagents` | Coordinator steering; use peer transport only if the session exposes it | Relay through coordinator |
 | Oh My Pi | `agent://` in supported configurations | Check active route |
 
 Installing Quintet does not automatically start an Antigravity swarm or Claude agent team. Check actual runtime tools.
