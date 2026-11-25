@@ -135,6 +135,12 @@ def projected_commit(repo, before, after, paths):
         return git(repo, 'commit-tree', tree, '-p', before, '-m', 'Runner ownership projection')
 
 
+def authored_merge(old, parents, action):
+    return (len(parents) > 1 and parents[0] == old
+            and (action.startswith('commit (merge):')
+                 or (action.startswith('merge ') and not action.rpartition(': ')[2].startswith('Fast-forward'))))
+
+
 def s4_ownership(repo, base, heads, seed, logs):
     known = seed == {} and all(heads.get(s) for s in ('a', 'b'))
     active = {s for s, h in heads.items() if h}
@@ -163,7 +169,7 @@ def s4_ownership(repo, base, heads, seed, logs):
                     parents[new] = git(repo, 'show', '-s', '--format=%P', new).split()
                 ps = parents[new]
                 edit = ((ps == [old] and action.startswith(('commit:', 'cherry-pick:', 'revert:')))
-                        or (len(ps) >= 2 and ps[0] == old and action.startswith(('merge ', 'commit (merge):'))))
+                        or authored_merge(old, ps, action))
                 if action.startswith('commit (amend):') and len(ps) == 1:
                     edit = git(repo, 'show', '-s', '--format=%P', old).split() == ps
                 if edit:
@@ -204,7 +210,51 @@ def s4_ownership(repo, base, heads, seed, logs):
                 if pair not in violations:
                     violations.append(pair)
             previous.add(stream)
-    return violations, bool(known)
+    return violations, bool(known), attributable
+
+
+def s4_integration_ownership(repo, base, final, seed, log, worker_commits):
+    known = bool(seed and log[:len(seed)] == seed and seed[-1].split(' ', 2)[1:2] == [base])
+    tips = {final} if final else set()
+    actions = {}
+    previous = base
+    if known:
+        for line in log[len(seed):]:
+            meta, tab, action = line.partition('\t')
+            fields = meta.split(' ', 2)
+            if not tab or len(fields) != 3 or fields[0] != previous or resolve(repo, fields[1]) != fields[1]:
+                known = False
+                break
+            old, new = fields[:2]
+            if old != new:
+                actions.setdefault(new, []).append((old, action))
+                tips.add(new)
+            if action.lower().startswith(('branch: renamed', 'branch: copied')):
+                known = False
+            previous = new
+    known = known and previous == final
+    if not tips:
+        return [], known
+
+    violations = []
+    path = 'manifest.txt'
+    # Include every observed tip, not just the final branch, so resets cannot erase a write.
+    for row in git(repo, 'rev-list', '--parents', *sorted(tips), '^' + base).splitlines():
+        sha, *parents = row.split()
+        if not parents:
+            known = False
+            continue
+        if any(path not in changed_paths(repo, parent, sha) for parent in parents):
+            # The result takes a parent version verbatim; that parent's history is also checked.
+            continue
+        moves = actions.get(sha, ())
+        if any((action.startswith(('commit:', 'revert:')) and parents[0] == old)
+               or (action.startswith('commit (amend):') and git(repo, 'show', '-s', '--format=%P', old).split() == parents)
+               or authored_merge(old, parents, action) for old, action in moves):
+            violations.append({'stream': BRANCH, 'commit': sha, 'path': path})
+        elif sha not in worker_commits or any(action.startswith('cherry-pick:') for _, action in moves):
+            known = False
+    return violations, known
 
 
 def changed_paths(repo, before, after):
@@ -358,7 +408,11 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
     joined = all(ancestor(repo, head, final) for s, head in heads.items() if s not in ('manifest', 'seam') or head)
     if scenario == 'S4':
         logs = worker_logs(repo)
-        violations, ownership_attribution_known = s4_ownership(repo, base, heads, checkpoint.get('seed_worker_reflogs'), logs)
+        violations, workers_known, worker_commits = s4_ownership(repo, base, heads, checkpoint.get('seed_worker_reflogs'), logs)
+        integration_violations, integration_known = s4_integration_ownership(
+            repo, base, final, checkpoint.get('seed_reflog', []), snap['reflog'], worker_commits)
+        violations += integration_violations
+        ownership_attribution_known = workers_known and integration_known
         if not ownership_attribution_known and not violations:
             violations = None
     else:
@@ -369,13 +423,17 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
         p = run(repo, 'bash', str(helper), '--base', base, '--head', final, '--repo', str(repo), '--require-changes', '--', *allowed, check=False, text=True)
         if p.returncode:
             violations = (violations or []) + [{'stream': BRANCH, 'check': p.stderr.strip() or p.stdout.strip()}]
-    result = {'accepted': bool(hidden and hidden['passed'] and joined and snap['base'] == base), 'base': base, 'integration': final,
+    accepted = bool(hidden and hidden['passed'] and joined and snap['base'] == base)
+    if scenario == 'S4':
+        accepted = accepted and ownership_attribution_known and not violations
+    result = {'accepted': accepted, 'base': base, 'integration': final,
               'heads': heads, 'worktree_clean': snap['worktree_clean'], 'ownership_violations': violations,
               'ownership_attribution_known': ownership_attribution_known,
               'worker_calls_observed': len(calls) if events else None, 'worker_calls': calls, 'native_turn_tokens': tokens,
               'structured_pass_streams': sorted(supported), 'checkpoint': checkpoint, 'raw_session_evidence': 'separate JSONL'}
     if scenario == 'S4':
         result['worker_reflogs'] = logs
+        result['integration_reflog'] = snap['reflog']
     if scenario == 'S3':
         initial = checkpoint.get('initial')
         seeded = initial and checkpoint.get('no_early_integration') is True and initial.get('api_fail') and initial.get('independent_pass')
@@ -581,6 +639,82 @@ def self_test():
         git(repo, 'branch', '-D', 'wt/a')  # Remove the generic acceptance-test branch before the S4 seed.
         seed = worker_logs(repo)
         assert seed == {}
+        checkpoint = {'seed_worker_reflogs': seed, 'seed_reflog': integration_log(repo)}
+
+        def s4_result():
+            return inspect(repo, 'S4', base, checkpoint, [])
+
+        git(repo, 'branch', 'wt/a', base)
+        git(repo, 'branch', 'wt/b', base)
+        put(repo, 'a.py', 'def value(n): return n + 1\n')
+        put(repo, 'b.py', 'def value(n): return n * 2\n')
+        put(repo, 'manifest.txt', 'a\nb\n')
+        direct = commit(repo, 'Integration writes capabilities and manifest')
+        result = s4_result()
+        assert not result['accepted'] and result['ownership_attribution_known'], result
+        assert result['ownership_violations'] == [{'stream': BRANCH, 'commit': direct, 'path': 'manifest.txt'}]
+        git(repo, 'revert', '--no-edit', direct)
+        assert any(v.get('commit') == direct for v in s4_result()['ownership_violations'])
+        incomplete, known = s4_integration_ownership(repo, base, ref(repo, BRANCH), checkpoint['seed_reflog'],
+                                                     integration_log(repo)[:-1], set())
+        assert not known and any(v.get('commit') == direct for v in incomplete)
+        git(repo, 'reset', '--hard', base)
+        assert any(v.get('commit') == direct for v in s4_result()['ownership_violations'])
+        checkpoint['seed_reflog'] = integration_log(repo)
+        git(repo, 'merge', '--ff-only', direct)
+        result = s4_result()
+        assert not result['accepted'] and not result['ownership_attribution_known'] and result['ownership_violations'] is None
+        git(repo, 'reset', '--hard', base)
+        git(repo, 'branch', '-D', 'wt/a', 'wt/b')
+        checkpoint['seed_reflog'] = integration_log(repo)
+
+        git(repo, 'checkout', '-qb', 'wt/a', base)
+        put(repo, 'a.py', 'def value(n): return n + 1\n')
+        first_parent = commit(repo, 'A capability without registration')
+        git(repo, 'checkout', '-qb', 'wt/b', base)
+        put(repo, 'b.py', 'def value(n): return n * 2\n')
+        second_parent = commit(repo, 'B capability without registration')
+        git(repo, 'checkout', 'wt/a')
+        git(repo, 'merge', '--no-commit', 'wt/b')
+        put(repo, 'manifest.txt', 'a\nb\n')
+        worker_merge = commit(repo, 'A registers both capabilities in the merge')
+        assert git(repo, 'show', '-s', '--format=%P', worker_merge).split() == [first_parent, second_parent]
+        assert all('manifest.txt' in changed_paths(repo, p, worker_merge) for p in (first_parent, second_parent))
+        git(repo, 'checkout', '-qb', 'wt/manifest', first_parent)
+        git(repo, 'merge', '--ff-only', '-m', 'Unused message', 'wt/a')
+        assert '\tmerge wt/a: Fast-forward (' in worker_logs(repo)['manifest'][-1]
+        violations, known, attributed = s4_ownership(repo, base, head_map(repo, 'S4'), seed, worker_logs(repo))
+        assert known and not violations and worker_merge in attributed
+        git(repo, 'checkout', BRANCH)
+        git(repo, 'merge', '--ff-only', first_parent)
+        git(repo, 'merge', '--ff-only', '-m', 'Unused message', 'wt/a')
+        log = integration_log(repo)
+        assert '\tmerge wt/a: Fast-forward (' in log[-1]
+        result = s4_result()
+        assert result['accepted'] and result['ownership_attribution_known'] and result['ownership_violations'] == [], result
+        assert s4_integration_ownership(repo, base, worker_merge, checkpoint['seed_reflog'], log, set()) == ([], False)
+        git(repo, 'reset', '--hard', base)
+        checkpoint['seed_reflog'] = integration_log(repo)
+
+        git(repo, 'checkout', '-qb', 'outside-worker', first_parent)
+        git(repo, 'merge', '--no-commit', 'wt/b')
+        put(repo, 'manifest.txt', 'b\na\n')
+        external_merge = commit(repo, 'External merge registers both capabilities')
+        assert git(repo, 'show', '-s', '--format=%P', external_merge).split() == [first_parent, second_parent]
+        git(repo, 'checkout', 'wt/a')
+        git(repo, 'reset', '--hard', first_parent)
+        git(repo, 'merge', '--ff-only', 'outside-worker')
+        assert worker_logs(repo)['a'][-1].endswith('\tmerge outside-worker: Fast-forward')
+        git(repo, 'checkout', BRANCH)
+        git(repo, 'merge', '--ff-only', first_parent)
+        git(repo, 'merge', '--ff-only', 'wt/a')
+        result = s4_result()
+        assert not result['accepted'] and not result['ownership_attribution_known'] and result['ownership_violations'] is None, result
+        assert external_merge not in s4_ownership(repo, base, head_map(repo, 'S4'), seed, worker_logs(repo))[2]
+        git(repo, 'reset', '--hard', base)
+        git(repo, 'branch', '-D', 'wt/a', 'wt/b', 'wt/manifest')
+        checkpoint['seed_reflog'] = integration_log(repo)
+
         git(repo, 'checkout', '-qb', 'wt/a', base)
         put(repo, 'a.py', 'def value(n): return n + 1\n')
         put(repo, 'manifest.txt', 'a\nb\n')
@@ -589,9 +723,35 @@ def self_test():
         put(repo, 'b.py', 'def value(n): return n * 2\n')
         b_head = commit(repo, 'B capability')
         def s4(logs=None):
-            return s4_ownership(repo, base, head_map(repo, 'S4'), seed, worker_logs(repo) if logs is None else logs)
+            return s4_ownership(repo, base, head_map(repo, 'S4'), seed, worker_logs(repo) if logs is None else logs)[:2]
 
         assert s4() == ([], True)
+        git(repo, 'checkout', BRANCH)
+        for first, second in (('a', 'b'), ('b', 'a')):
+            git(repo, 'merge', '--ff-only', 'wt/' + first)
+            git(repo, 'merge', '--no-edit', 'wt/' + second)
+            result = s4_result()
+            assert result['accepted'] and result['ownership_attribution_known'] and result['ownership_violations'] == []
+            unknown = inspect(repo, 'S4', base, {'seed_worker_reflogs': seed}, [])
+            assert not unknown['accepted'] and not unknown['ownership_attribution_known'] and unknown['ownership_violations'] is None
+            git(repo, 'reset', '--hard', base)
+
+        git(repo, 'merge', '--ff-only', 'wt/b')
+        git(repo, 'merge', '--no-commit', 'wt/a')
+        put(repo, 'manifest.txt', 'b\na\n')
+        resolution = commit(repo, 'Integration modifies imported manifest')
+        result = s4_result()
+        assert not result['accepted'] and result['ownership_attribution_known']
+        assert result['ownership_violations'] == [{'stream': BRANCH, 'commit': resolution, 'path': 'manifest.txt'}]
+        git(repo, 'reset', '--hard', base)
+        checkpoint['seed_reflog'] = integration_log(repo)
+        git(repo, 'merge', '--ff-only', 'wt/b')
+        git(repo, 'cherry-pick', 'wt/a')
+        result = s4_result()
+        assert not result['accepted'] and not result['ownership_attribution_known'] and result['ownership_violations'] is None
+        git(repo, 'reset', '--hard', base)
+        checkpoint['seed_reflog'] = integration_log(repo)
+        git(repo, 'checkout', 'wt/b')
         git(repo, 'merge', '--no-edit', 'wt/a')
         assert s4() == ([], True)  # A's out-of-scope path for B is a pure import, not B's write.
         git(repo, 'reset', '--hard', b_head)
@@ -609,8 +769,8 @@ def self_test():
         git(repo, 'checkout', BRANCH)
         git(repo, 'merge', '--ff-only', 'wt/a')
         git(repo, 'merge', '--no-edit', 'wt/b')
-        result = inspect(repo, 'S4', base, {'seed_worker_reflogs': seed}, [])
-        assert result['accepted'] and result['ownership_attribution_known']
+        result = s4_result()
+        assert not result['accepted'] and result['ownership_attribution_known']
         violations = result['ownership_violations']
         assert {'streams': ['a', 'b'], 'path': 'manifest.txt'} in violations
         assert any(v.get('commit') == bad and 'not-owned.txt' in v['check'] for v in violations)
@@ -681,7 +841,7 @@ def self_test():
         first = initial_join_failure(repo, base, seed, snap, '')
         assert first['observed'] and first['inputs'] == {'api': api_head, 'consumer': consumer_head}
         assert not first['reported_binding']
-    print('PASS: offline fixtures, S3 verdict tuple, S4 reflog ownership, S5 landing history, S5b first join, pinned clean sources')
+    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources')
 
 
 def source_head(source):
