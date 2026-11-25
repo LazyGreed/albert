@@ -1,4 +1,4 @@
-# Quintet
+# Quintet v1 (coordinator-centric edition)
 
 **One voice. Four specialists. Your rules.**
 
@@ -21,7 +21,7 @@ Quintet uses native subagents. It can split independent work into parallel strea
 ## Install
 
 ```sh
-git clone https://github.com/LazyGreed/quintet.git
+git clone --branch v1 https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
