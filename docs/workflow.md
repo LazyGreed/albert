@@ -1,6 +1,6 @@
 # Workflow
 
-Quintet uses the harness's native agents. The coordinator is called Denia by default; only its name and personality are customizable. Nora, Felix, Vera, and Iris retain their roles.
+Quintet uses your harness's native subagents. The coordinator is **Denia** by default; only its name and personality are customizable, while Nora, Felix, Vera, and Iris retain fixed roles.
 
 ## Task flow
 
@@ -8,29 +8,41 @@ Quintet uses the harness's native agents. The coordinator is called Denia by def
 2. **Investigate if needed:** Nora resolves a concrete missing fact or prerequisite.
 3. **Implement:** Felix makes changes and runs focused checks. The coordinator does not edit application code or configuration.
 4. **Verify:** Vera independently reviews consequential changes. Iris checks user-facing behavior when useful.
-5. **Report:** `DONE`, `PARTIAL`, or `BLOCKED` with exact observed checks. Label unrun checks `NOT RUN`.
+5. **Report:** Emit `DONE`, `PARTIAL`, or `BLOCKED` with exact observed checks. Mark unrun checks `NOT RUN`.
 
-Workers do not delegate to other workers. The coordinator makes in-scope decisions without asking for routine approval.
+Workers never delegate to other workers. Denia makes in-scope technical decisions without asking for routine approval.
 
 ## Opt-in Alien Science Ideation
 
-Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or this skill by name. Ordinary research, design, brainstorming, "be creative", or an unconventional-looking task is not a request. Workers apply it only when the brief says the user explicitly requested it. No new worker, mode, or permission. Do not claim novelty or improvement without supporting evidence. Keep the existing ownership, review, and approval gates.
+Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or this skill by name. Ordinary research, design, brainstorming, "be creative", or an unconventional-looking task is not a request. Workers apply it only when the brief states the user explicitly requested it.
+
+No new worker, mode, or permission is added. Do not claim novelty or improvement without supporting evidence, and keep all ownership, review, and approval gates intact.
 
 ## Weight-space network audit
 
-Under the [coordinator contract](../AGENTS.md#task-specific-weight-space-network-audit), [the weight-space network audit skill](../skills/weight-space-network-audit/SKILL.md) uses a three-mode activation contract:
+Under the [coordinator contract](../AGENTS.md#task-specific-weight-space-network-audit), the [weight-space network audit skill](../skills/weight-space-network-audit/SKILL.md) uses a three-mode activation contract:
 
-1. **Default specialized path (`references/relu-audit.md`):** audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol.
-2. **Read-only checkpoint audit (`AUDIT_ONLY`):** inspect or audit a model checkpoint when requested without asking for edits (a weight file alone never authorizes edits or `AUTO_IMPROVE`).
-3. **Explicit universal model improvement (`AUTO_IMPROVE` / `DIRECT_ONLY` / `RESEARCH`):** broader cross-architecture weight-space diagnosis and reversible edits on a safe copy only when the user explicitly requests model improvement or the universal methodology (never unrequested general LLM weight editing, full-model training, original-checkpoint mutation, or bypassing deployment validation and approval boundaries).
+| Mode | Trigger | Scope |
+| --- | --- | --- |
+| **Specialized ReLU (`references/relu-audit.md`)** | Default for small feed-forward ReLU decision networks | Audit or authorized repair with accessible weights and an explicit protocol |
+| **Read-only audit (`AUDIT_ONLY`)** | User asks to inspect a checkpoint without edits | Architecture and weight audit only; a weight file alone never authorizes edits |
+| **Universal improvement (`AUTO_IMPROVE`, `DIRECT_ONLY`, `RESEARCH`)** | Explicit request for model improvement or universal methods | Cross-architecture diagnosis and reversible edits on safe copies only; never unrequested LLM editing, full training, or original-checkpoint mutation |
 
-Test behavior against the protocol before diagnosing weights; verify each proposed deviation on independently sampled requests. If edits are authorized, work on a copy, compare against the original and baseline, and check collateral damage and deployment precision. Use existing Nora/Felix/Vera/Iris roles and approval gates. Report inconclusive or unrun checks explicitly; do not interpret sampled agreement as clearance.
+Test behavior against the protocol before diagnosing weights, and verify candidate deviations on independently sampled requests. When edits are authorized, work on a copy, compare against the original and baseline, and check collateral damage and deployment precision. Use existing Nora/Felix/Vera/Iris roles and approval gates, report inconclusive or unrun checks explicitly, and never treat sampled agreement as clearance.
 
 ## Parallel work
 
-Parallel implementation is optional. Add **instances**, not roles: `felix-api`, `felix-ui`. Aliases do not provide filesystem isolation.
+Parallel implementation is optional. Add **instances**, not roles (`felix-api`, `felix-ui`). Aliases alone do not provide filesystem isolation.
 
-Every parallel writer needs a brief like:
+```mermaid
+flowchart LR
+  B["1. Brief: disjoint WRITE OWNERSHIP + isolated worktrees"] --> W["2. Implement: Felix edits owned files + check-ownership.sh"]
+  W --> V["3. Review: independent Vera PASS per stream"]
+  V -->|"Defects found"| W
+  V -->|"All streams PASS"| I["4. Integrate: land onto task branch + separate combined check"]
+```
+
+Every parallel writer receives a structured brief:
 
 ```text
 STREAM: api
@@ -45,29 +57,31 @@ DEPENDENCIES: ui consumes those error fields
 VERIFIER: vera-api / vera
 ```
 
-Only one writer owns each path, including generated files and lockfiles. If isolation or ownership cannot be verified, run writers sequentially. A worker discovering a new required path reports it to the coordinator instead of editing it.
+Only one writer owns each path, including generated files and lockfiles. If isolation or ownership cannot be verified, run writers sequentially. A worker discovering a new required path reports it to the coordinator instead of editing out of scope.
 
-Before integration, **each** parallel stream needs a mechanical changed-path ownership check and its own independent Vera `PASS` on the actual diff and acceptance evidence. Integrate verified streams into a dedicated task branch. Run a separate combined integration check. Passing isolated streams does not prove integration works.
+Before integration, **each** parallel stream needs a mechanical changed-path ownership check (`skills/verification/scripts/check-ownership.sh`) and its own independent Vera `PASS` on the actual diff and acceptance evidence. Read-only specialists can verify checkout integrity mechanically with `skills/verification/scripts/check-readonly.sh`. Integrate verified streams into a dedicated task branch and run a separate combined integration check; passing isolated streams does not prove integration works.
 
 ## Blockers and recovery
 
-- Missing evidence or contract: Nora investigates the narrow question.
-- Implementation defect: Felix fixes it and reruns focused checks.
-- Missing tool, access, or permission: inspect and report the actual blocker.
-- User-only decision or action beyond authority: ask the user.
+| Blocker type | Owner & action |
+| --- | --- |
+| Missing evidence or contract | Nora investigates the narrow question |
+| Implementation defect | Felix fixes it and reruns focused checks |
+| Missing tool, access, or permission | Inspect and report the actual blocker |
+| User-only decision or authority boundary | Ask the user |
 
 Allow at most two automatic fix/re-review rounds. Never retry an unchanged failing approach or invent a passing test.
 
 ## Messaging
 
-Use native peer messaging only when supported and enabled. Peers may share a contract, dependency, blocker, or review finding but cannot grant ownership, change acceptance, or authorize actions. Otherwise, relay through the coordinator. See [peer messaging](peer-messaging.md).
+Use native peer messaging only when supported and enabled. Peers may share a contract, dependency, blocker, or review finding, but cannot grant ownership, change acceptance, or authorize actions. Otherwise, relay through the coordinator. See [peer messaging](peer-messaging.md).
 
 ## Pi specifics
 
-Requires Pi 1.1.0+ and `npm:@tintinweb/pi-subagents`. Use native `Agent`, `steer_subagent`, and `get_subagent_result`. Inspect workers using FleetView or `/agents`. Worker profiles use `prompt_mode: append` and retain their own boundaries.
-
-`defaultJoinMode: group` in `subagents.json` can group parallel completion notices, but delays early results. The installer does not change it.
+- Requires Pi 1.1.0+ and `npm:@tintinweb/pi-subagents` (`Agent`, `steer_subagent`, `get_subagent_result`).
+- Inspect workers via FleetView or `/agents`; worker profiles use `prompt_mode: append`.
+- `defaultJoinMode: group` in `subagents.json` batches parallel completion notices, which delays early results; the installer leaves it untouched.
 
 ## Limits
 
-Quintet has no daemon, supervisor, status database, or guaranteed background execution after parent exit. Recheck live state on resume. Record long-running task decisions in an existing issue or PR. Final push, merge to main, deployment, destructive cleanup, or credential changes require explicit authorization. See [coordinator contract](../AGENTS.md).
+Quintet has no daemon, supervisor, status database, or guaranteed background execution after parent exit. Recheck live state on resume and record long-running task decisions in an existing issue or PR. Final push, merge to main, deployment, destructive cleanup, or credential changes require explicit authorization. See [coordinator contract](../AGENTS.md).
