@@ -111,8 +111,8 @@ def test_antigravity_project(root: Path):
     assert not (project / '.pi').exists()
 
 
-def test_global_policy(root: Path):
-    """Global scope installs cross-project policy, not the coordinator contract."""
+def test_global_full(root: Path):
+    """Global scope installs the full coordinator contract and personality."""
     session = Session(root, '--tui', '--harness', 'pi', '--scope', 'global', '--no-web')
     session.expect(b'Global')
     # Pi and Global are already selected: walk down to Review (index 7) and install.
@@ -124,11 +124,15 @@ def test_global_policy(root: Path):
     session.finish()
     agents = Path(os.environ['PI_CODING_AGENT_DIR']) / 'AGENTS.md'
     text = agents.read_text()
-    assert '# Quintet | cross-project policy' in text
-    assert '## Coordinator role: project opt-in required' in text
-    assert '## Opt-in Alien Science Ideation' in text
-    for contract in ('## Dispatch', '## Delegation gate', '## Reporting', 'Main-agent personality'):
-        assert contract not in text
+    assert '# Quintet | cross-project policy' not in text
+    for contract in (
+        '## Dynamic workstreams, ownership, and acceptance',
+        '## Dispatch',
+        '## Delegation gate',
+        '## Opt-in Alien Science Ideation',
+        'Main-agent personality',
+    ):
+        assert contract in text
 
 
 def test_web_disabled(root: Path, *, explicit: bool):
@@ -173,8 +177,8 @@ esac
         test_cancel(root)
         test_web_disabled(root, explicit=True)
         test_web_disabled(root, explicit=False)
-        test_global_policy(root)
+        test_global_full(root)
         test_dual_project(root)
         test_antigravity_project(root)
         assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
-    print('TUI E2E PASS: cancel, keyboard and review, dual install, Antigravity install, global policy scope, web default and opt-out')
+    print('TUI E2E PASS: cancel, keyboard and review, dual install, Antigravity install, global full scope, web default and opt-out')

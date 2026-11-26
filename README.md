@@ -41,8 +41,6 @@ pi install npm:@tintinweb/pi-subagents
 
 For one project, use `--scope project --target /path/to/project`. Add `--dry-run` to preview. The installer backs up files it replaces and does not copy bundled harness settings. Pi web access may add its package registration. Existing model and provider settings stay in place.
 
-**Global scope carries cross-project policy only.** The global instruction file holds the opt-in Alien Science Ideation rule and the gate that leaves coordinator work to projects that declare the opt-in. The coordinator contract and the personality section are installed into a project that opts in, by naming the contract in its `AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md`; run a project-scope install there to write them into the project. Global Antigravity `rules/AGENTS.md` stays cross-project policy only, while explicitly invoking the global `quintet` agent uses its full coordinator contract for that session. When an older global install still holds the full contract inside the managed block, the next global install replaces that block with the policy, keeps every line you wrote outside the markers, and prints one `SHRINK` line naming the file.
-
 **Updating an older checkout?** Before pulling or switching revisions, save independent copies of any user configs symlinked into this repository, then point the harness at those copies. This matters if you linked to the repository's Pi `settings.json`, `claude-settings.json`, `antigravity-settings.json`, or bundled `pi-blackhole` config. Those repository files have been removed. The installer does not rewrite those links or remove user-managed Blackhole installs.
 
 ## Customize the main agent
@@ -58,7 +56,7 @@ Name: Kanade
 - Explain important choices, not routine steps.
 ```
 
-Rerun your install command to apply changes. Global installs read this file directly for the coordinator agent (Antigravity) and the plugin display name; no separate personality config directory exists. Global Pi and Claude Code instruction files carry cross-project policy only, so the personality section reaches a harness through a project-scope install.
+Rerun your install command to apply changes. Global installs use this file directly across Pi, Claude Code, and Antigravity (including the coordinator agent and plugin display name); no separate personality config directory exists.
 
 Project installs create `PROJECT/PERSONALITY.md` at the project root if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
 
