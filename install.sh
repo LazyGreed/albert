@@ -248,7 +248,7 @@ install_instructions() {
 
 install_skills() {
   local root="$1" skill file rel
-  for skill in architecture domain-modeling ui-ux documentation research verification alien-science-ideation weight-space-network-audit; do
+  for skill in architecture domain-modeling documentation research verification alien-science-ideation weight-space-network-audit; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
       put "$file" "$root/skills/$rel"

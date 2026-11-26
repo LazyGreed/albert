@@ -14,7 +14,7 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 
 Quintet uses native subagents. It can split independent work into parallel streams with exclusive file ownership and separate verification. There is no separate runtime, daemon, or database.
 
-**Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
+**Alien Science Ideation is installed and opt-in.** It is used only when the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or the skill by name. Ordinary research, design, brainstorming, or an unconventional-looking task is not a request. No new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
 [Weight-space network audit](skills/weight-space-network-audit/SKILL.md) is installed by default and used only for relevant small ReLU decision networks with explicit protocols. It supports evidence-based diagnosis and candidate weight repairs, not general LLM editing or safety-critical sign-off.
 
@@ -96,7 +96,7 @@ bash tests/workstream-e2e.sh
 - [Model guide](docs/model-guide.md): choose model and effort
 - [Coordinator contract](AGENTS.md): authoritative rules
 - [Agent profiles](agents/): unchanged specialist roles
-- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification, always-on Alien Science Ideation, weight-space network audit
+- [Skills](skills/): architecture, domain modeling, documentation, research, verification, opt-in Alien Science Ideation, weight-space network audit
 
 ## References
 
