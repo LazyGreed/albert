@@ -62,7 +62,7 @@ Project installs create `PROJECT/PERSONALITY.md` at the project root if it does 
 
 Only the main agent uses the personality. Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
 
-Changing the name updates the main prompt and the global Antigravity plugin display name. The Antigravity coordinator ID and global plugin directory remain `albert` for compatibility.
+Changing the name updates the main prompt and the global Antigravity plugin display name. Antigravity installs register the coordinator agent as `quintet` in both scopes; global installs write `~/.gemini/config/plugins/quintet` and project installs write `PROJECT/.agents`. Albert was this project's previous name, so a global Antigravity install also replaces a legacy `plugins/albert` directory once the new tree is complete. Text you added to its `rules/AGENTS.md` outside the managed `<!-- ALBERT MANAGED START -->` / `<!-- ALBERT MANAGED END -->` block is carried into the new `rules/AGENTS.md` before the old directory is removed. Anything this installer does not write, such as a skill you added, an extra file, or a directory of your own, keeps the old directory in place, lists those entries, and prints the exact `rm -rf` command. Edits inside generated agent and skill files are not detected or carried: every install overwrites those files in place, which is true of any re-install with or without migration. `--dry-run` previews the carry-over and the removal without changing anything.
 
 ## Workflow
 

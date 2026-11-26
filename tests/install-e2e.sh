@@ -204,7 +204,11 @@ for role in albert nora felix vera iris; do
   [[ -f "$project/.agents/agents/$role.md" ]]
 done
 grep -q '^mainAgent: true$' "$project/.agents/agents/albert.md"
+# The Antigravity coordinator is user-visible and must register as quintet, not albert.
+grep -q '^name: quintet$' "$project/.agents/agents/albert.md"
+assert_absent '^name: albert$' "$project/.agents/agents/albert.md"
 for role in nora felix vera iris; do
+  grep -q "^name: $role$" "$project/.agents/agents/$role.md"
   grep -q '^subagent: true$' "$project/.agents/agents/$role.md"
   grep -q '^mainAgent: false$' "$project/.agents/agents/$role.md"
   grep -q 'Open with a headline' "$project/.agents/agents/$role.md"
@@ -224,10 +228,20 @@ grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
 assert_absent '^WRITE ' "$tmp/agy-project-again"
 
 # Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
+# The preview must name the quintet plugin directory before anything is written.
+agy_dry_home="$tmp/agy-dry-home"
+mkdir -p "$agy_dry_home"
+HOME="$agy_dry_home" XDG_CONFIG_HOME="$agy_dry_home/.config" "$root/install.sh" --harness antigravity --scope global --dry-run > "$tmp/agy-global-preview"
+grep -q "^WRITE $agy_dry_home/.gemini/config/plugins/quintet/plugin.json$" "$tmp/agy-global-preview"
+grep -q "^WRITE $agy_dry_home/.gemini/config/plugins/quintet/agents/albert.md$" "$tmp/agy-global-preview"
+assert_absent 'plugins/albert' "$tmp/agy-global-preview"
+[[ ! -e "$agy_dry_home/.gemini" ]]
 mock_home="$HOME"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global"
-agy_global="$mock_home/.gemini/config/plugins/albert"
+agy_global="$mock_home/.gemini/config/plugins/quintet"
+[[ "$(basename -- "$agy_global")" == quintet ]]
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
+[[ ! -e "$mock_home/.gemini/config/plugins/albert" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$agy_global/skills/alien-science-ideation/references/discovery-workflow.md"
@@ -238,7 +252,7 @@ assert_refs "$agy_global/skills/weight-space-network-audit/references"
 grep -q '^## Opt-in Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
 assert_absent 'Alien Science Ideation is always on' "$agy_global/rules/AGENTS.md"
 assert_absent 'Always-on Alien Science' "$agy_global/rules/AGENTS.md"
-grep -q '"name": "albert"' "$agy_global/plugin.json"
+grep -q '"name": "quintet"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
@@ -250,10 +264,150 @@ for role in nora felix vera iris; do
   assert_absent 'Always-on Alien Science' "$agy_global/agents/$role.md"
 done
 grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
+grep -q '^name: quintet$' "$agy_global/agents/albert.md"
+assert_absent '^name: albert$' "$agy_global/agents/albert.md"
+for role in nora felix vera iris; do grep -q "^name: $role$" "$agy_global/agents/$role.md"; done
 grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
 assert_absent '^WRITE ' "$tmp/agy-global-again"
+assert_absent '^REMOVE ' "$tmp/agy-global-again"
+assert_absent '^KEEP ' "$tmp/agy-global-again"
+
+# Legacy plugins/albert migration. Fixtures come from the archived installer at abab658, the
+# last revision that wrote plugins/albert, so the legacy layout is a real older tree instead of
+# a copy of today's layout.
+legacy_src="$tmp/legacy-src"
+mkdir -p "$legacy_src"
+git -C "$root" archive abab658 | tar -x -C "$legacy_src"
+seed_home="$tmp/seed-home"
+mkdir -p "$seed_home"
+HOME="$seed_home" XDG_CONFIG_HOME="$seed_home/.config" bash "$legacy_src/install.sh" --harness antigravity --scope global > "$tmp/agy-seed"
+seed_plugin="$seed_home/.gemini/config/plugins/albert"
+[[ -f "$seed_plugin/plugin.json" && -f "$seed_plugin/rules/AGENTS.md" && -f "$seed_plugin/agents/nora.md" ]]
+seed_legacy() { mkdir -p "$1/.gemini/config/plugins"; cp -a "$seed_plugin" "$1/.gemini/config/plugins/albert"; }
+
+# (b) A genuine older layout with nothing user-added still migrates away.
+old_home="$tmp/old-home"
+old_dir="$old_home/.gemini/config/plugins/albert"
+seed_legacy "$old_home"
+HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-old"
+grep -q "^REMOVE '$old_dir' (legacy Antigravity plugin, previous project name: every entry is a path this installer rewrites on each update, and the current versions are at '$old_home/.gemini/config/plugins/quintet')" "$tmp/agy-old"
+[[ ! -e "$old_dir" ]]
+[[ -f "$old_home/.gemini/config/plugins/quintet/plugin.json" && -f "$old_home/.gemini/config/plugins/quintet/agents/felix.md" ]]
+assert_absent '^CARRY ' "$tmp/agy-old"
+# (f) A rerun after migration is silent and leaves a single plugin directory.
+HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-old-again"
+assert_absent '^REMOVE ' "$tmp/agy-old-again"
+assert_absent '^KEEP ' "$tmp/agy-old-again"
+assert_absent '^WRITE ' "$tmp/agy-old-again"
+[[ "$(ls -A "$old_home/.gemini/config/plugins")" == quintet ]]
+
+# (a) User text outside the managed block survives the migration.
+carry_home="$tmp/carry-home"
+carry_dir="$carry_home/.gemini/config/plugins/albert"
+carry_rules="$carry_dir/rules/AGENTS.md"
+carry_quintet="$carry_home/.gemini/config/plugins/quintet"
+seed_legacy "$carry_home"
+printf '\n## House rules\nKeep our bespoke policy.\n' >> "$carry_rules"
+HOME="$carry_home" XDG_CONFIG_HOME="$carry_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-carry"
+grep -q "^CARRY '$carry_rules' -> '$carry_quintet/rules/AGENTS.md' (your text outside the managed block was preserved)$" "$tmp/agy-carry"
+grep -q "^REMOVE '$carry_dir' (legacy Antigravity plugin, previous project name:" "$tmp/agy-carry"
+grep -Fqx 'Keep our bespoke policy.' "$carry_quintet/rules/AGENTS.md"
+# The carried text must sit outside the managed block, which is rewritten in full.
+carry_outside="$(awk '$0=="<!-- ALBERT MANAGED START -->" {exit} {print}' "$carry_quintet/rules/AGENTS.md")"
+grep -Fq 'Keep our bespoke policy.' <<< "$carry_outside"
+grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$carry_quintet/rules/AGENTS.md"
+[[ ! -e "$carry_dir" ]]
+
+# (e) A dry run previews the carry-over and the removal and changes nothing.
+dry_home="$tmp/dry-home"
+dry_dir="$dry_home/.gemini/config/plugins/albert"
+seed_legacy "$dry_home"
+printf '\n## House rules\nDry run text.\n' >> "$dry_dir/rules/AGENTS.md"
+HOME="$dry_home" XDG_CONFIG_HOME="$dry_home/.config" "$root/install.sh" --harness antigravity --scope global --dry-run > "$tmp/agy-dry-legacy"
+grep -q "^CARRY '$dry_dir/rules/AGENTS.md' -> '$dry_home/.gemini/config/plugins/quintet/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)$" "$tmp/agy-dry-legacy"
+grep -q "^REMOVE '$dry_dir' (dry run; legacy Antigravity plugin: every entry is a path this installer rewrites on each update" "$tmp/agy-dry-legacy"
+[[ -f "$dry_dir/rules/AGENTS.md" ]]
+[[ ! -e "$dry_home/.gemini/config/plugins/quintet" ]]
+
+# Entries this installer does not write stop the migration and are named.
+keep_home="$tmp/keep-home"
+keep_dir="$keep_home/.gemini/config/plugins/albert"
+keep_quintet="$keep_home/.gemini/config/plugins/quintet"
+seed_legacy "$keep_home"
+mkdir -p "$keep_dir/skills/my-own-skill" "$keep_dir/skills/empty-dir"
+printf 'my own skill\n' > "$keep_dir/skills/my-own-skill/SKILL.md"
+printf 'my own notes\n' > "$keep_dir/notes.txt"
+keep_sum="$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)"
+HOME="$keep_home" XDG_CONFIG_HOME="$keep_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-keep"
+grep -q "^KEEP '$keep_dir': legacy Antigravity plugin kept because it holds entries this installer does not write.$" "$tmp/agy-keep"
+grep -q "^  EXTRA '$keep_dir/notes.txt'$" "$tmp/agy-keep"
+grep -q "^  EXTRA '$keep_dir/skills/my-own-skill'$" "$tmp/agy-keep"
+grep -q "^  EXTRA '$keep_dir/skills/my-own-skill/SKILL.md'$" "$tmp/agy-keep"
+grep -q "^  EXTRA '$keep_dir/skills/empty-dir'$" "$tmp/agy-keep"
+grep -q "rm -rf -- '$keep_dir'$" "$tmp/agy-keep"
+assert_absent '^REMOVE ' "$tmp/agy-keep"
+assert_absent '^CARRY ' "$tmp/agy-keep"
+[[ "$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)" == "$keep_sum" ]]
+[[ -d "$keep_dir/skills/empty-dir" && -f "$keep_quintet/plugin.json" ]]
+
+# A symlinked subdirectory is unlinked with the tree; the data behind it survives.
+link_home="$tmp/link-home"
+link_dir="$link_home/.gemini/config/plugins/albert"
+link_target="$tmp/link-target"
+seed_legacy "$link_home"
+mkdir -p "$link_target"
+printf 'outside data\n' > "$link_target/keep.txt"
+ln -s "$link_target" "$link_dir/skills/linked"
+HOME="$link_home" XDG_CONFIG_HOME="$link_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-link"
+grep -q "^REMOVE '$link_dir' (legacy Antigravity plugin, previous project name:" "$tmp/agy-link"
+[[ ! -e "$link_dir" ]]
+[[ -f "$link_target/keep.txt" && "$(cat "$link_target/keep.txt")" == 'outside data' ]]
+
+# Unmergeable markers keep the tree and name the file instead of dropping text.
+broken_home="$tmp/broken-home"
+broken_dir="$broken_home/.gemini/config/plugins/albert"
+seed_legacy "$broken_home"
+printf '<!-- ALBERT MANAGED START -->\nno end marker\n' > "$broken_dir/rules/AGENTS.md"
+HOME="$broken_home" XDG_CONFIG_HOME="$broken_home/.config" "$root/install.sh" --harness antigravity --scope global 2>/dev/null > "$tmp/agy-broken"
+grep -q "^KEEP '$broken_dir': '$broken_dir/rules/AGENTS.md' has managed markers that cannot be merged safely, so nothing was removed.$" "$tmp/agy-broken"
+[[ -f "$broken_dir/rules/AGENTS.md" ]]
+
+# An incomplete walk never reaches the delete branch.
+guard_home="$tmp/guard-home"
+guard_dir="$guard_home/.gemini/config/plugins/albert"
+seed_legacy "$guard_home"
+mkdir -p "$guard_dir/skills/locked"
+printf 'x\n' > "$guard_dir/skills/locked/file"
+chmod 000 "$guard_dir/skills/locked"
+HOME="$guard_home" XDG_CONFIG_HOME="$guard_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-guard" 2>/dev/null
+grep -q "^KEEP '$guard_dir': the legacy plugin directory could not be enumerated, so nothing was removed.$" "$tmp/agy-guard"
+[[ -f "$guard_dir/plugin.json" ]]
+chmod 700 "$guard_dir/skills/locked"
+
+# (c) A third-party plugin named Albert is neither claimed nor reported.
+foreign_home="$tmp/foreign-home"
+foreign_dir="$foreign_home/.gemini/config/plugins/albert"
+mkdir -p "$foreign_dir/agents" "$foreign_dir/rules"
+printf '{\n  "name": "albert",\n  "displayName": "Albert"\n}\n' > "$foreign_dir/plugin.json"
+printf -- '---\nname: albert\nmainAgent: true\n---\n\nA third-party Albert plugin.\n' > "$foreign_dir/agents/albert.md"
+printf '# Third-party rules\n' > "$foreign_dir/rules/AGENTS.md"
+HOME="$foreign_home" XDG_CONFIG_HOME="$foreign_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-foreign"
+assert_absent '^REMOVE ' "$tmp/agy-foreign"
+assert_absent '^KEEP ' "$tmp/agy-foreign"
+assert_absent 'rm -rf' "$tmp/agy-foreign"
+[[ -f "$foreign_dir/agents/albert.md" && -f "$foreign_dir/rules/AGENTS.md" ]]
+# Quintet's four worker filenames alone, without generated Quintet text, are not enough.
+partial_home="$tmp/partial-home"
+partial_dir="$partial_home/.gemini/config/plugins/albert"
+mkdir -p "$partial_dir/agents"
+for role in nora felix vera iris; do printf 'alpha worker\n' > "$partial_dir/agents/$role.md"; done
+printf 'alpha coordinator\n' > "$partial_dir/agents/albert.md"
+HOME="$partial_home" XDG_CONFIG_HOME="$partial_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-partial"
+assert_absent '^REMOVE ' "$tmp/agy-partial"
+assert_absent '^KEEP ' "$tmp/agy-partial"
+[[ -f "$partial_dir/agents/albert.md" ]]
 
 # Project personality sits beside AGENTS.md and changes only the main agent.
 cat > "$project/PERSONALITY.md" <<'PERSONA'

@@ -22,8 +22,12 @@ Use arrows and Enter/Space to configure the TUI; preview before installing.
 Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
 Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
 Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
-~/.gemini/config/plugins/albert. Project: installs in PROJECT/.pi or PROJECT/.claude
+~/.gemini/config/plugins/quintet. Project: installs in PROJECT/.pi or PROJECT/.claude
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
+Antigravity names the coordinator agent quintet in both scopes. A global install replaces a
+legacy ~/.gemini/config/plugins/albert (the previous project name) once the new plugin is
+written: text you added to its rules/AGENTS.md outside the managed block is carried into the
+new file first. An entry this installer does not write keeps the old directory and is listed.
 Web research is enabled by default for eligible workers (use --no-web to disable).
 No bundled settings files are copied. Existing model/provider settings are preserved.
 USAGE
@@ -92,6 +96,8 @@ personality_file=''
 project_personality=''
 coordinator_name=''
 coordinator_json_name=''
+# Skills shipped to every harness; the migration guard uses the same list as install_skills.
+installable_skills=(architecture domain-modeling documentation research verification alien-science-ideation weight-space-network-audit)
 resolve_personality() {
   personality_file="$source_dir/PERSONALITY.md"
   if [[ "$scope" == project ]]; then
@@ -197,10 +203,13 @@ install_role() {
   temp="$(mktemp)"
   {
     if [[ "$tool" == antigravity || "$tool" == agy ]]; then
-      printf -- '---\nname: %s\ndescription: %s\n' "$role" "$desc"
+      # Antigravity exposes the agent name to the user, so the coordinator is Quintet.
+      # Other harnesses keep the internal `albert` agent key their installs depend on.
       if [[ "$role" == albert ]]; then
+        printf -- '---\nname: quintet\ndescription: %s\n' "$desc"
         printf 'mainAgent: true\nsubagent: true\n'
       else
+        printf -- '---\nname: %s\ndescription: %s\n' "$role" "$desc"
         printf 'subagent: true\nmainAgent: false\n'
       fi
       printf 'tools: [%s]\n' "$tools"
@@ -222,33 +231,59 @@ install_role() {
   rm -f -- "$temp"
 }
 
+# One definition of the managed block and of the user text around it, shared by the
+# install merge and the legacy migration.
+managed_begin='<!-- ALBERT MANAGED START -->'
+managed_end='<!-- ALBERT MANAGED END -->'
+
+# Print a file with the managed block and its markers removed, i.e. the user's own text.
+# Fails when the markers cannot be merged safely, so callers never drop text silently.
+managed_outside_text() {
+  local src="$1"
+  [[ -e "$src" ]] || return 0
+  if grep -Fqx -- "$managed_begin" "$src"; then
+    if ! grep -Fqx -- "$managed_end" "$src"; then
+      echo "Malformed Albert markers: $src" >&2
+      return 1
+    fi
+    awk -v b="$managed_begin" -v e="$managed_end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}' "$src"
+  else
+    cat -- "$src"
+  fi
+}
+
 # Add/update only our clearly delimited section. Never discard project instructions.
 install_instructions() {
-  local dst="$1" begin='<!-- ALBERT MANAGED START -->' end='<!-- ALBERT MANAGED END -->'
-  if [[ -f "$dst" ]] && grep -Fqx "$begin" "$dst" && grep -Fqx "$end" "$dst"; then
-    if awk -v b="$begin" -v e="$end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$dst" | cmp -s <(render_coordinator) -; then
+  local dst="$1"
+  if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst"; then
+    if awk -v b="$managed_begin" -v e="$managed_end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$dst" | cmp -s <(render_coordinator) -; then
       return 0
     fi
   fi
   local temp; temp="$(mktemp)"
   if [[ -f "$dst" ]]; then
-    if grep -Fqx "$begin" "$dst"; then
-      if ! grep -Fqx "$end" "$dst"; then
-        echo "Malformed Albert markers: $dst" >&2; rm -f "$temp"; return 1
-      fi
-      awk -v b="$begin" -v e="$end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}' "$dst" > "$temp"
-    else
-      cp -- "$dst" "$temp"
-    fi
+    if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp"; return 1; fi
   fi
-  { printf '\n%s\n' "$begin"; render_coordinator; printf '%s\n' "$end"; } >> "$temp"
+  { printf '\n%s\n' "$managed_begin"; render_coordinator; printf '%s\n' "$managed_end"; } >> "$temp"
+  put "$temp" "$dst"
+  rm -f -- "$temp"
+}
+
+# Fold text carried from a legacy tree into freshly written instructions, keeping the same
+# "user text outside the managed block" contract as install_instructions.
+merge_carried_instructions() {
+  local dst="$1" carried="$2" temp
+  temp="$(mktemp)"
+  if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp"; return 1; fi
+  cat -- "$carried" >> "$temp"
+  { printf '\n%s\n' "$managed_begin"; render_coordinator; printf '%s\n' "$managed_end"; } >> "$temp"
   put "$temp" "$dst"
   rm -f -- "$temp"
 }
 
 install_skills() {
   local root="$1" skill file rel
-  for skill in architecture domain-modeling documentation research verification alien-science-ideation weight-space-network-audit; do
+  for skill in "${installable_skills[@]}"; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
       put "$file" "$root/skills/$rel"
@@ -256,11 +291,141 @@ install_skills() {
   done
 }
 
+# Older Quintet installs wrote the Antigravity coordinator to plugins/albert; Albert was the
+# project's previous name. Only a tree this project generates is ours: a third-party plugin
+# may also be called Albert, so a bare name or a coordinator file cannot identify one.
+# Require all four Quintet worker agents and generated text that names Quintet.
+legacy_antigravity_plugin() {
+  local legacy="$HOME/.gemini/config/plugins/albert" agent workers=0
+  [[ -d "$legacy" ]] || return 1
+  for agent in nora felix vera iris; do
+    if [[ -f "$legacy/agents/$agent.md" ]]; then workers=$((workers + 1)); fi
+  done
+  [[ "$workers" -eq 4 ]] || return 1
+  grep -Fqs -- 'Quintet' "$legacy/agents/albert.md" "$legacy/plugin.json" || return 1
+  printf '%s' "$legacy"
+}
+
+# A path plus each ancestor, so a directory-only entry is recognised as generated.
+_generated_path() {
+  local path="$1"
+  printf '%s\n' "$path"
+  while [[ "$path" == */* ]]; do
+    path="${path%/*}"
+    printf '%s\n' "$path"
+  done
+}
+
+# Every relative path a global Antigravity install generates. Compared against a legacy
+# tree, so anything else is user content that automatic migration must not destroy.
+generated_antigravity_paths() {
+  local role skill file rel
+  {
+    _generated_path plugin.json
+    _generated_path rules/AGENTS.md
+    for role in albert nora felix vera iris; do _generated_path "agents/$role.md"; done
+    for skill in "${installable_skills[@]}"; do
+      while IFS= read -r -d '' file; do
+        rel="${file#"$source_dir"/skills/}"
+        _generated_path "skills/$rel"
+      done < <(find "$source_dir/skills/$skill" -type f -print0)
+    done
+  } | sort -u
+}
+
+# Count entries under a directory. Fails when the walk itself fails, so a caller never reads
+# "could not look" as "nothing there".
+count_entries() {
+  local dir="$1" list total=0 entry
+  list="$(mktemp)"
+  if ! find "$dir" -mindepth 1 -print0 > "$list"; then rm -f -- "$list"; return 1; fi
+  while IFS= read -r -d '' entry; do total=$((total + 1)); done < "$list"
+  rm -f -- "$list"
+  printf '%s' "$total"
+}
+
+# Replace plugins/albert after the new tree is complete. Runs last so a failed or partial
+# install never leaves the user without a coordinator, and never fails the install.
+migrate_legacy_antigravity_plugin() {
+  local root="$1" legacy rel entry list extras=() extra_count=0 total=0 carried remaining removed
+  legacy="$(legacy_antigravity_plugin)" || return 0
+  # Deletion needs a complete, non-empty walk: a failed or empty enumeration is not evidence
+  # that the tree is safe to remove.
+  list="$(mktemp)"
+  if ! find "$legacy" -mindepth 1 -print0 > "$list"; then
+    rm -f -- "$list"
+    report "KEEP '$legacy': the legacy plugin directory could not be enumerated, so nothing was removed."
+    return 0
+  fi
+  while IFS= read -r -d '' entry; do
+    total=$((total + 1))
+    rel="${entry#"$legacy"/}"
+    # rm -rf unlinks a symlink itself; data behind the link is never touched, so a link is
+    # not user content that blocks migration.
+    [[ -L "$legacy/$rel" ]] && continue
+    if ! grep -Fqx -- "$rel" <(generated_antigravity_paths); then
+      extras+=("$rel")
+      extra_count=$((extra_count + 1))
+    fi
+  done < "$list"
+  rm -f -- "$list"
+  if [[ "$total" -eq 0 ]]; then
+    report "KEEP '$legacy': the legacy plugin directory listed no entries, so nothing was removed."
+    return 0
+  fi
+  if [[ "$extra_count" -eq 0 ]]; then
+    # Carry user text out of the managed block before the old tree goes away.
+    if [[ -f "$legacy/rules/AGENTS.md" ]]; then
+      carried="$(mktemp)"
+      if ! managed_outside_text "$legacy/rules/AGENTS.md" > "$carried"; then
+        rm -f -- "$carried"
+        report "KEEP '$legacy': '$legacy/rules/AGENTS.md' has managed markers that cannot be merged safely, so nothing was removed."
+        return 0
+      fi
+      if grep -q '[^[:space:]]' "$carried"; then
+        if ((dry)); then
+          report "CARRY '$legacy/rules/AGENTS.md' -> '$root/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)"
+        elif ! merge_carried_instructions "$root/rules/AGENTS.md" "$carried"; then
+          rm -f -- "$carried"
+          report "KEEP '$legacy': '$legacy/rules/AGENTS.md' could not be merged into '$root/rules/AGENTS.md', so nothing was removed."
+          return 0
+        else
+          report "CARRY '$legacy/rules/AGENTS.md' -> '$root/rules/AGENTS.md' (your text outside the managed block was preserved)"
+        fi
+      fi
+      rm -f -- "$carried"
+    fi
+    if ((dry)); then
+      report "REMOVE '$legacy' (dry run; legacy Antigravity plugin: every entry is a path this installer rewrites on each update and would be recreated at '$root')"
+    elif rm -rf -- "$legacy"; then
+      report "REMOVE '$legacy' (legacy Antigravity plugin, previous project name: every entry is a path this installer rewrites on each update, and the current versions are at '$root')"
+    else
+      # rm failed midway: report what actually remains instead of claiming nothing changed.
+      if [[ ! -e "$legacy" ]]; then
+        report "REMOVE '$legacy' (legacy Antigravity plugin, previous project name: removed, with the current versions at '$root')"
+      elif remaining="$(count_entries "$legacy")"; then
+        removed=$((total - remaining))
+        ((removed < 0)) && removed=0
+        report "KEEP '$legacy': automatic removal failed partway; $removed of $total entries were removed and $remaining remain. Inspect it and remove it yourself: rm -rf -- '$legacy'"
+      else
+        report "KEEP '$legacy': automatic removal failed and the remaining entries could not be counted. Inspect it and remove it yourself: rm -rf -- '$legacy'"
+      fi
+    fi
+    return 0
+  fi
+  report "KEEP '$legacy': legacy Antigravity plugin kept because it holds entries this installer does not write."
+  for entry in "${extras[@]}"; do
+    report "  EXTRA '$legacy/$entry'"
+  done
+  report "  Inspect or back up those entries, then remove the directory yourself if you accept losing them: rm -rf -- '$legacy'"
+  return 0
+}
+
 install_one() {
   local tool="$1" root instruction role
   if [[ "$tool" == antigravity || "$tool" == agy ]]; then
     if [[ "$scope" == global ]]; then
-      root="$HOME/.gemini/config/plugins/albert"
+      root="$HOME/.gemini/config/plugins/quintet"
       instruction="$root/rules/AGENTS.md"
     else
       root="$target/.agents"
@@ -271,7 +436,7 @@ install_one() {
       local temp_manifest; temp_manifest="$(mktemp)"
       cat > "$temp_manifest" <<EOF
 {
-  "name": "albert",
+  "name": "quintet",
   "displayName": "$coordinator_json_name",
   "version": "1.0.0",
   "description": "Quintet coordinator with Nora, Felix, Vera, and Iris workers.",
@@ -288,6 +453,8 @@ EOF
     install_instructions "$instruction"
     for role in albert nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
     install_skills "$root"
+    # Migrate only after the replacement tree is fully written and verified above.
+    if [[ "$scope" == global ]]; then migrate_legacy_antigravity_plugin "$root"; fi
     return
   fi
   if [[ "$scope" == global ]]; then
