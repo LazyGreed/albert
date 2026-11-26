@@ -24,6 +24,9 @@ Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never o
 Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 ~/.gemini/config/plugins/quintet. Project: installs in PROJECT/.pi or PROJECT/.claude
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
+Global instructions carry cross-project policy only: the opt-in Alien Science Ideation rule and
+the gate that leaves the coordinator contract to projects that declare it in AGENTS.md or
+CLAUDE.md. A project-scope install writes the full contract and personality there.
 Antigravity names the coordinator agent quintet in both scopes. A global install replaces a
 legacy ~/.gemini/config/plugins/albert (the previous project name) once the new plugin is
 written: text you added to its rules/AGENTS.md outside the managed block is carried into the
@@ -150,6 +153,46 @@ render_coordinator() {
   awk '{ sub(/\r$/, ""); print }' "$personality_file"
 }
 
+# Global scope carries cross-project policy only. The opt-in rule is reused verbatim from the
+# contract so the two scopes cannot drift into different wording for the same idea.
+opt_in_section() {
+  awk -v want='## Opt-in Alien Science Ideation' '
+    $0 == want { inside = 1; print; next }
+    inside && /^## / { exit }
+    inside { print }
+  ' "$source_dir/AGENTS.md"
+}
+
+# No coordinator contract here: every project the user opens would inherit it. The gate hands
+# the contract to projects that declare the opt-in themselves.
+render_global_policy() {
+  local opt_in
+  # Command substitution drops the section's trailing blank lines, so spacing stays exact.
+  opt_in="$(opt_in_section)"
+  if [[ -z "$opt_in" ]]; then
+    printf "Missing '%s' section in %s/AGENTS.md\n" '## Opt-in Alien Science Ideation' "$source_dir" >&2
+    return 1
+  fi
+  cat <<'POLICY'
+# Quintet | cross-project policy
+
+This file is installed in every project you open, so it carries cross-project policy only. The Quintet coordinator contract is not installed here.
+POLICY
+  printf '\n%s\n\n' "$opt_in"
+  cat <<'POLICY'
+## Coordinator role: project opt-in required
+
+The Quintet coordinator role applies only in a project that opts in by declaring it in that project's `AGENTS.md` or `CLAUDE.md`. In every other project act as a normal assistant: no coordinator role, no dispatch to Nora/Felix/Vera/Iris, and no verification protocol.
+
+The Quintet worker definitions and skills are installed globally but inactive without that project opt-in; the full contract is `AGENTS.md` in the Quintet repository, and a project-scope install writes it into `PROJECT/AGENTS.md`, `PROJECT/CLAUDE.md`, or `PROJECT/.agents/rules/AGENTS.md`.
+POLICY
+}
+
+# Scope decides the content: global policy, or the full contract for a project that installs it.
+render_instructions() {
+  if [[ "$scope" == global ]]; then render_global_policy; else render_coordinator; fi
+}
+
 # Generate compact, harness-native subagent frontmatter from a single canonical body.
 install_role() {
   local tool="$1" role="$2" dst="$3" tools desc color
@@ -252,33 +295,73 @@ managed_outside_text() {
   fi
 }
 
+# Append text between the managed markers of a file, or nothing when it has none.
+# The same extraction feeds both the comparison and the shrink check below.
+managed_block_text() {
+  local src="$1"
+  awk -v b="$managed_begin" -v e="$managed_end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$src"
+}
+
+# Write the managed block around rendered content, after any text already in the file. One blank
+# line separates them, and none is added when that text already ends with a blank line, so the
+# outside layout survives exactly.
+append_managed_block() {
+  local dst="$1" rendered="$2"
+  if [[ -s "$dst" ]] && [[ "$(tail -c 2 -- "$dst" | od -An -tx1 | tr -d ' \n')" != '0a0a' ]]; then
+    printf '\n' >> "$dst"
+  fi
+  printf '%s\n' "$managed_begin" >> "$dst"
+  cat -- "$rendered" >> "$dst"
+  printf '%s\n' "$managed_end" >> "$dst"
+}
+
 # Add/update only our clearly delimited section. Never discard project instructions.
+# One rendered copy feeds the idempotence comparison and the write, so a global re-install
+# and a project re-install are both exact no-ops after the first run.
 install_instructions() {
-  local dst="$1"
+  local dst="$1" rendered temp shrink=0
+  rendered="$(mktemp)"
+  if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
   if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst"; then
-    if awk -v b="$managed_begin" -v e="$managed_end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$dst" | cmp -s <(render_coordinator) -; then
-      return 0
+    if managed_block_text "$dst" | cmp -s "$rendered" -; then
+      rm -f -- "$rendered"; return 0
+    fi
+    # An older global block still holds the contract. Reducing it is intended, so say so
+    # instead of shrinking the file silently.
+    if [[ "$scope" == global ]] && managed_block_text "$dst" | grep -Eq '^## (Dispatch|Delegation gate|Reporting)$|^## Main-agent personality'; then
+      shrink=1
     fi
   fi
-  local temp; temp="$(mktemp)"
+  temp="$(mktemp)"
   if [[ -f "$dst" ]]; then
-    if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp"; return 1; fi
+    if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
   fi
-  { printf '\n%s\n' "$managed_begin"; render_coordinator; printf '%s\n' "$managed_end"; } >> "$temp"
+  append_managed_block "$temp" "$rendered"
   put "$temp" "$dst"
-  rm -f -- "$temp"
+  rm -f -- "$temp" "$rendered"
+  if ((shrink)); then
+    if ((dry)); then
+      report "SHRINK $dst (dry run; global instructions would be reduced to cross-project policy; the coordinator contract applies only in a project that opts in, where a project-scope install writes PROJECT/AGENTS.md, CLAUDE.md, or .agents/rules/AGENTS.md)"
+    else
+      report "SHRINK $dst (global instructions reduced to cross-project policy; the coordinator contract applies only in a project that opts in, where a project-scope install writes PROJECT/AGENTS.md, CLAUDE.md, or .agents/rules/AGENTS.md)"
+    fi
+  fi
 }
 
 # Fold text carried from a legacy tree into freshly written instructions, keeping the same
 # "user text outside the managed block" contract as install_instructions.
 merge_carried_instructions() {
-  local dst="$1" carried="$2" temp
+  local dst="$1" carried="$2" rendered temp
+  # Carry text into whichever renderer this scope selects: migration is global, so the merged
+  # block is policy and never resurrects the contract into a global document.
+  rendered="$(mktemp)"
+  if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
   temp="$(mktemp)"
-  if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp"; return 1; fi
+  if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
   cat -- "$carried" >> "$temp"
-  { printf '\n%s\n' "$managed_begin"; render_coordinator; printf '%s\n' "$managed_end"; } >> "$temp"
+  append_managed_block "$temp" "$rendered"
   put "$temp" "$dst"
-  rm -f -- "$temp"
+  rm -f -- "$temp" "$rendered"
 }
 
 install_skills() {

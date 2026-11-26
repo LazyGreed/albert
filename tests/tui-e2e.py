@@ -89,6 +89,26 @@ def test_dual_project(root: Path):
     assert (project / 'AGENTS.md').read_text().count('<!-- ALBERT MANAGED START -->') == 1
 
 
+def test_global_policy(root: Path):
+    """Global scope installs cross-project policy, not the coordinator contract."""
+    session = Session(root, '--tui', '--harness', 'pi', '--scope', 'global', '--no-web')
+    session.expect(b'Global')
+    # Pi and Global are already selected: walk down to Review and install.
+    session.send(ARROW_DOWN * 6 + ENTER)
+    session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Scope     global')
+    session.send(ENTER)
+    session.expect(b'DONE')
+    session.finish()
+    agents = Path(os.environ['PI_CODING_AGENT_DIR']) / 'AGENTS.md'
+    text = agents.read_text()
+    assert '# Quintet | cross-project policy' in text
+    assert '## Coordinator role: project opt-in required' in text
+    assert '## Opt-in Alien Science Ideation' in text
+    for contract in ('## Dispatch', '## Delegation gate', '## Reporting', 'Main-agent personality'):
+        assert contract not in text
+
+
 def test_web_disabled(root: Path, *, explicit: bool):
     project = root / ('explicit-no-web' if explicit else 'toggled-no-web')
     project.mkdir()
@@ -131,6 +151,7 @@ esac
         test_cancel(root)
         test_web_disabled(root, explicit=True)
         test_web_disabled(root, explicit=False)
+        test_global_policy(root)
         test_dual_project(root)
         assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
-    print('TUI E2E PASS: cancel, keyboard and review, dual install, web default and opt-out')
+    print('TUI E2E PASS: cancel, keyboard and review, dual install, global policy scope, web default and opt-out')

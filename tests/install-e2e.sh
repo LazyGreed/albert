@@ -25,6 +25,12 @@ assert_refs() {
     cmp -- "$ref" "$dest/${ref##*/}"
   done
 }
+# Byte-exact text before the managed block, so blank lines there are compared too.
+prefix_bytes() {
+  local file="$1" offset
+  offset="$(grep -b -m1 -F -- '<!-- ALBERT MANAGED START -->' "$file" | cut -d: -f1)"
+  head -c "$offset" -- "$file"
+}
 project="$tmp/kanade"
 mkdir -p "$project" "$tmp/bin"
 printf '# Kanade contract\nKeep this rule.\n' > "$project/AGENTS.md"
@@ -81,6 +87,10 @@ for tool in pi claude; do
 done
 for file in "$project/AGENTS.md" "$project/CLAUDE.md"; do
   grep -q '^## Opt-in Alien Science Ideation$' "$file"
+  grep -q '^## Dispatch$' "$file"
+  grep -q '^## Delegation gate$' "$file"
+  grep -q '^## Reporting$' "$file"
+  grep -q '^## Main-agent personality (user configuration)$' "$file"
   assert_absent 'Alien Science Ideation is always on' "$file"
   assert_absent 'Always-on Alien Science' "$file"
 done
@@ -135,6 +145,82 @@ assert_absent '^WRITE ' "$tmp/again"
 [[ ! -e "$PI_CODING_AGENT_DIR/pi-blackhole" && ! -e "$project/.pi/pi-blackhole" ]]
 assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
 [[ ! -e "$project/.mcp.json" && ! -e "$HOME/.claude.json" ]]
+
+# Scope separation: a global install carries cross-project policy only. The coordinator
+# contract, the persona, and the dispatch protocol belong to projects that declare the opt-in.
+for file in "$PI_CODING_AGENT_DIR/AGENTS.md" "$HOME/.claude/CLAUDE.md"; do
+  grep -q '^# Quintet | cross-project policy$' "$file"
+  grep -q '^## Coordinator role: project opt-in required$' "$file"
+  grep -q '^## Opt-in Alien Science Ideation$' "$file"
+  grep -Fq 'opts in by declaring it in that project' "$file"
+  grep -Fq 'no coordinator role, no dispatch to Nora/Felix/Vera/Iris, and no verification protocol' "$file"
+  grep -Fq 'installed globally but inactive without that project opt-in' "$file"
+  assert_absent '^## Dispatch$' "$file"
+  assert_absent '^## Delegation gate$' "$file"
+  assert_absent '^## Reporting$' "$file"
+  assert_absent 'Main-agent personality' "$file"
+  assert_absent 'Alien Science Ideation is always on' "$file"
+  assert_absent 'Always-on Alien Science' "$file"
+done
+
+# Both scopes re-install as exact no-ops; the global files stay byte-identical.
+cp "$PI_CODING_AGENT_DIR/AGENTS.md" "$tmp/global-pi-once"
+cp "$HOME/.claude/CLAUDE.md" "$tmp/global-claude-once"
+for attempt in 1 2; do
+  "$root/install.sh" --harness pi,claude --scope global > "$tmp/global-again-$attempt"
+  assert_absent '^WRITE ' "$tmp/global-again-$attempt"
+  assert_absent '^SHRINK ' "$tmp/global-again-$attempt"
+  cmp "$tmp/global-pi-once" "$PI_CODING_AGENT_DIR/AGENTS.md"
+  cmp "$tmp/global-claude-once" "$HOME/.claude/CLAUDE.md"
+done
+
+# An older global file keeps the contract inside the markers. Reducing it is intended, must be
+# announced, and must preserve every byte outside the markers, including blank-line layout,
+# while leaving sibling files alone.
+shrink_home="$tmp/shrink-home"
+shrink_agents="$shrink_home/.pi/agent/AGENTS.md"
+run_shrink_install() {
+  HOME="$shrink_home" XDG_CONFIG_HOME="$shrink_home/.config" PI_CODING_AGENT_DIR="$shrink_home/.pi/agent" \
+    "$root/install.sh" --harness pi --scope global "$@"
+}
+seed_old_global() {
+  {
+    printf "$1"
+    awk '$0=="<!-- ALBERT MANAGED START -->" {print; inside=1; next} $0=="<!-- ALBERT MANAGED END -->" {print; exit} inside {print}' "$project/AGENTS.md"
+  } > "$shrink_agents"
+}
+mkdir -p "$shrink_home/.pi/agent"
+printf '{ "model" : "user-owned" }\n' > "$shrink_home/.pi/agent/settings.json"
+cp "$shrink_home/.pi/agent/settings.json" "$tmp/shrink-settings"
+seed_old_global '\n# Machine notes\nKeep my global note.\n\n'
+grep -q '^## Dispatch$' "$shrink_agents"
+prefix_bytes "$shrink_agents" > "$tmp/shrink-prefix-before"
+run_shrink_install > "$tmp/shrink"
+grep -Fq "SHRINK $shrink_agents (global instructions reduced to cross-project policy" "$tmp/shrink"
+grep -q '^## Coordinator role: project opt-in required$' "$shrink_agents"
+assert_absent '^## Dispatch$' "$shrink_agents"
+assert_absent '^## Delegation gate$' "$shrink_agents"
+assert_absent '^## Reporting$' "$shrink_agents"
+assert_absent 'Main-agent personality' "$shrink_agents"
+prefix_bytes "$shrink_agents" > "$tmp/shrink-prefix-after"
+cmp "$tmp/shrink-prefix-before" "$tmp/shrink-prefix-after"
+grep -Fqx 'Keep my global note.' "$shrink_agents"
+cmp "$tmp/shrink-settings" "$shrink_home/.pi/agent/settings.json"
+cp "$shrink_agents" "$tmp/shrink-once"
+run_shrink_install > "$tmp/shrink-again"
+assert_absent '^WRITE ' "$tmp/shrink-again"
+assert_absent '^SHRINK ' "$tmp/shrink-again"
+cmp "$tmp/shrink-once" "$shrink_agents"
+
+# The same shrink from a file whose only outside text is blank lines keeps them byte-for-byte.
+seed_old_global '\n\n'
+prefix_bytes "$shrink_agents" | od -An -c > "$tmp/shrink-blank-before"
+run_shrink_install > "$tmp/shrink-blank"
+grep -Fq "SHRINK $shrink_agents (global instructions reduced to cross-project policy" "$tmp/shrink-blank"
+prefix_bytes "$shrink_agents" | od -An -c > "$tmp/shrink-blank-after"
+cmp "$tmp/shrink-blank-before" "$tmp/shrink-blank-after"
+grep -q '^## Coordinator role: project opt-in required$' "$shrink_agents"
+assert_absent '^## Dispatch$' "$shrink_agents"
 
 # Normal reinstalls must not replace unrelated settings or erase user-managed legacy config.
 printf '{ "model" : "user-owned" }\n\n' > "$tmp/claude-settings"
@@ -255,7 +341,16 @@ assert_absent 'Always-on Alien Science' "$agy_global/rules/AGENTS.md"
 grep -q '"name": "quintet"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
-grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
+# Global Antigravity rules apply to every project, like the global Pi/Claude instruction file,
+# so they carry the policy block. The coordinator agent definition keeps the full contract
+# because it is only read when that agent is explicitly used.
+grep -q '^# Quintet | cross-project policy$' "$agy_global/rules/AGENTS.md"
+grep -q '^## Coordinator role: project opt-in required$' "$agy_global/rules/AGENTS.md"
+assert_absent '^## Dispatch$' "$agy_global/rules/AGENTS.md"
+assert_absent '^## Delegation gate$' "$agy_global/rules/AGENTS.md"
+assert_absent 'Main-agent personality' "$agy_global/rules/AGENTS.md"
+grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$agy_global/agents/albert.md"
+grep -q '^## Delegation gate$' "$agy_global/agents/albert.md"
 for role in albert nora felix vera iris; do
   [[ -f "$agy_global/agents/$role.md" ]]
 done
@@ -317,7 +412,10 @@ grep -Fqx 'Keep our bespoke policy.' "$carry_quintet/rules/AGENTS.md"
 # The carried text must sit outside the managed block, which is rewritten in full.
 carry_outside="$(awk '$0=="<!-- ALBERT MANAGED START -->" {exit} {print}' "$carry_quintet/rules/AGENTS.md")"
 grep -Fq 'Keep our bespoke policy.' <<< "$carry_outside"
-grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$carry_quintet/rules/AGENTS.md"
+# The carried text lands in a policy block; migration never restores the contract globally.
+grep -q '^## Coordinator role: project opt-in required$' "$carry_quintet/rules/AGENTS.md"
+assert_absent '^## Dynamic workstreams, ownership, and acceptance$' "$carry_quintet/rules/AGENTS.md"
+assert_absent '^## Dispatch$' "$carry_quintet/rules/AGENTS.md"
 [[ ! -e "$carry_dir" ]]
 
 # (e) A dry run previews the carry-over and the removal and changes nothing.

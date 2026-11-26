@@ -41,6 +41,8 @@ pi install npm:@tintinweb/pi-subagents
 
 For one project, use `--scope project --target /path/to/project`. Add `--dry-run` to preview. The installer backs up files it replaces and does not copy bundled harness settings. Pi web access may add its package registration. Existing model and provider settings stay in place.
 
+**Global scope carries cross-project policy only.** The global instruction file holds the opt-in Alien Science Ideation rule and the gate that leaves coordinator work to projects that declare the opt-in. The coordinator contract and the personality section are installed into a project that opts in, by naming the contract in its `AGENTS.md` or `CLAUDE.md`; run a project-scope install there to write them into the project. When an older global install still holds the full contract inside the managed block, the next global install replaces that block with the policy, keeps every line you wrote outside the markers, and prints one `SHRINK` line naming the file.
+
 **Updating an older checkout?** Before pulling or switching revisions, save independent copies of any user configs symlinked into this repository, then point the harness at those copies. This matters if you linked to the repository's Pi `settings.json`, `claude-settings.json`, `antigravity-settings.json`, or bundled `pi-blackhole` config. Those repository files have been removed. The installer does not rewrite those links or remove user-managed Blackhole installs.
 
 ## Customize the main agent
@@ -56,13 +58,13 @@ Name: Kanade
 - Explain important choices, not routine steps.
 ```
 
-Rerun your install command to apply changes. Global installs use this file directly; there is no separate personality config directory.
+Rerun your install command to apply changes. Global installs read this file directly for the coordinator agent (Antigravity) and the plugin display name; no separate personality config directory exists. Global Pi and Claude Code instruction files carry cross-project policy only, so the personality section reaches a harness through a project-scope install.
 
 Project installs create `PROJECT/PERSONALITY.md` at the project root if it does not exist. Edit that file to override the repository template for the project. Reinstalling never overwrites it.
 
 Only the main agent uses the personality. Nora, Felix, Vera, and Iris remain unchanged. Personality changes style, **not** role, permissions, approvals, or verification.
 
-Changing the name updates the main prompt and the global Antigravity plugin display name. Antigravity installs register the coordinator agent as `quintet` in both scopes; global installs write `~/.gemini/config/plugins/quintet` and project installs write `PROJECT/.agents`. Albert was this project's previous name, so a global Antigravity install also replaces a legacy `plugins/albert` directory once the new tree is complete. Text you added to its `rules/AGENTS.md` outside the managed `<!-- ALBERT MANAGED START -->` / `<!-- ALBERT MANAGED END -->` block is carried into the new `rules/AGENTS.md` before the old directory is removed. Anything this installer does not write, such as a skill you added, an extra file, or a directory of your own, keeps the old directory in place, lists those entries, and prints the exact `rm -rf` command. Edits inside generated agent and skill files are not detected or carried: every install overwrites those files in place, which is true of any re-install with or without migration. `--dry-run` previews the carry-over and the removal without changing anything.
+Changing the name updates the project prompt and the global Antigravity plugin display name. Antigravity installs register the coordinator agent as `quintet` in both scopes; global installs write `~/.gemini/config/plugins/quintet` and project installs write `PROJECT/.agents`. Albert was this project's previous name, so a global Antigravity install also replaces a legacy `plugins/albert` directory once the new tree is complete. Text you added to its `rules/AGENTS.md` outside the managed `<!-- ALBERT MANAGED START -->` / `<!-- ALBERT MANAGED END -->` block is carried into the new `rules/AGENTS.md` before the old directory is removed. Anything this installer does not write, such as a skill you added, an extra file, or a directory of your own, keeps the old directory in place, lists those entries, and prints the exact `rm -rf` command. Edits inside generated agent and skill files are not detected or carried: every install overwrites those files in place, which is true of any re-install with or without migration. `--dry-run` previews the carry-over and the removal without changing anything.
 
 ## Workflow
 
