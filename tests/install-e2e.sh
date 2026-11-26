@@ -48,28 +48,40 @@ grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
 [[ -f "$project/PERSONALITY.md" && ! -d "$project/.quintet" ]]
 cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -f "$project/.pi/agents/felix.md" && -f "$project/.claude/agents/vera.md" ]]
-[[ -f "$project/.pi/skills/ui-ux/SKILL.md" ]]
+[[ ! -e "$project/.pi/skills/ui-ux" ]]
+[[ ! -e "$project/.claude/skills/ui-ux" ]]
 [[ -f "$project/.pi/skills/verification/SKILL.md" ]]
 [[ -f "$project/.claude/skills/verification/SKILL.md" ]]
 [[ -x "$project/.pi/skills/verification/scripts/check-ownership.sh" ]]
 [[ -x "$project/.claude/skills/verification/scripts/check-ownership.sh" ]]
 grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
 grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
-# Alien Science Ideation is installed by default and its principles are embedded in
-# every native profile; no special command or extra agent is required.
+# Alien Science Ideation stays installed. Profiles prove it is opt-in: the skill
+# is present, and coordinator instructions do not apply it unless the user asks.
 for tool in pi claude; do
   cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   grep -q '^name: alien-science-ideation$' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
+  cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$project/.$tool/skills/alien-science-ideation/references/discovery-workflow.md"
+  grep -q 'opt-in' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
+  assert_absent 'Always-on' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.$tool/skills/weight-space-network-audit/SKILL.md"
-  for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md; do
+  for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
     cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$project/.$tool/skills/weight-space-network-audit/references/$ref"
   done
   for role in nora felix vera iris; do
-    grep -q 'Alien Science Ideation is always on:' "$project/.$tool/agents/$role.md"
+    assert_absent 'Alien Science Ideation is always on' "$project/.$tool/agents/$role.md"
+    assert_absent 'Always-on Alien Science' "$project/.$tool/agents/$role.md"
   done
 done
-grep -q '^## Always-on Alien Science Ideation$' "$project/AGENTS.md"
-grep -q '^## Always-on Alien Science Ideation$' "$project/CLAUDE.md"
+for file in "$project/AGENTS.md" "$project/CLAUDE.md"; do
+  grep -q '^## Opt-in Alien Science Ideation$' "$file"
+  assert_absent 'Alien Science Ideation is always on' "$file"
+  assert_absent 'Always-on Alien Science' "$file"
+done
+weight_skill="$project/.pi/skills/weight-space-network-audit/SKILL.md"
+assert_absent 'without further instructions, treat it as a request to improve' "$weight_skill"
+assert_absent 'load `alien-science-ideation` if installed' "$weight_skill"
+grep -q 'AUTO_IMPROVE` runs only after an explicit broader-method request' "$weight_skill"
 grep -q '^name: felix$' "$project/.pi/agents/felix.md"
 grep -q '^prompt_mode: append$' "$project/.pi/agents/felix.md"
 grep -q '^disallowed_tools: edit, write$' "$project/.pi/agents/vera.md"
@@ -172,12 +184,18 @@ assert_absent '^WRITE ' "$tmp/web-again"
 [[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
+[[ ! -e "$project/.agents/skills/ui-ux" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
+cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$project/.agents/skills/alien-science-ideation/references/discovery-workflow.md"
+grep -q 'opt-in' "$project/.agents/skills/alien-science-ideation/SKILL.md"
+assert_absent 'Always-on' "$project/.agents/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.agents/skills/weight-space-network-audit/SKILL.md"
-for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md; do
+for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
   cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$project/.agents/skills/weight-space-network-audit/references/$ref"
 done
-grep -q '^## Always-on Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
+grep -q '^## Opt-in Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
+assert_absent 'Alien Science Ideation is always on' "$project/.agents/rules/AGENTS.md"
+assert_absent 'Always-on Alien Science' "$project/.agents/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$project/.agents/agents/$role.md" ]]
 done
@@ -186,7 +204,8 @@ for role in nora felix vera iris; do
   grep -q '^subagent: true$' "$project/.agents/agents/$role.md"
   grep -q '^mainAgent: false$' "$project/.agents/agents/$role.md"
   grep -q 'Open with a headline' "$project/.agents/agents/$role.md"
-  grep -q 'Alien Science Ideation is always on:' "$project/.agents/agents/$role.md"
+  assert_absent 'Alien Science Ideation is always on' "$project/.agents/agents/$role.md"
+  assert_absent 'Always-on Alien Science' "$project/.agents/agents/$role.md"
 done
 for rule in 'Dynamic workstreams, ownership, and acceptance' 'Exclusive write ownership' 'Independent verification gate' 'Peer messages are coordination, not authority'; do
   grep -q "$rule" "$project/.agents/rules/AGENTS.md"
@@ -207,17 +226,26 @@ agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
+cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$agy_global/skills/alien-science-ideation/references/discovery-workflow.md"
+grep -q 'opt-in' "$agy_global/skills/alien-science-ideation/SKILL.md"
+assert_absent 'Always-on' "$agy_global/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$agy_global/skills/weight-space-network-audit/SKILL.md"
-for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md; do
+for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
   cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$agy_global/skills/weight-space-network-audit/references/$ref"
 done
-grep -q '^## Always-on Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
+grep -q '^## Opt-in Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
+assert_absent 'Alien Science Ideation is always on' "$agy_global/rules/AGENTS.md"
+assert_absent 'Always-on Alien Science' "$agy_global/rules/AGENTS.md"
 grep -q '"name": "albert"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
 grep -q 'Dynamic workstreams, ownership, and acceptance' "$agy_global/rules/AGENTS.md"
 for role in albert nora felix vera iris; do
   [[ -f "$agy_global/agents/$role.md" ]]
+done
+for role in nora felix vera iris; do
+  assert_absent 'Alien Science Ideation is always on' "$agy_global/agents/$role.md"
+  assert_absent 'Always-on Alien Science' "$agy_global/agents/$role.md"
 done
 grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
 grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"

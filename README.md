@@ -14,7 +14,7 @@ Quintet coordinates coding tasks inside your existing AI coding harness. Customi
 
 Denia uses a dependency graph for multi-stream work, with exclusive file ownership, review tied to exact revisions, and a separate integration check. Routine single-stream work still uses risk-based review. The workflow runs through prompt rules for native subagents in the existing harness. The [`v1` branch](https://github.com/LazyGreed/quintet/tree/refs/heads/v1) carries the coordinator-centric edition. The [live Q0/Q1 comparison](docs/workflow.md#v2-evaluation) has not been run.
 
-**Alien Science Ideation is always on.** The coordinator and specialists consider evidence-backed unconventional alternatives by default, with effort proportional to the task. Routine fixes remain lightweight; exploratory research may compare coherent but overlooked approaches. No mode switch, new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
+**Alien Science Ideation is installed and opt-in.** It is used only when the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or the skill by name. Ordinary research, design, brainstorming, or an unconventional-looking task is not a request. No new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
 Quintet installs the [weight-space network audit skill](skills/weight-space-network-audit/SKILL.md) by default. The [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit) activates it only for audits or authorized repairs of small feed-forward ReLU decision networks with accessible weights and an explicit protocol. The skill file describes a broader method; that does not widen Quintet's default scope.
 
@@ -98,7 +98,7 @@ These CI checks cover installer output for all three harnesses (with Pi mocked),
 - [Model guide](docs/model-guide.md): choose model and effort
 - [Coordinator contract](AGENTS.md): authoritative rules
 - [Agent profiles](agents/): unchanged specialist roles
-- [Skills](skills/): architecture, domain modeling, UI/UX, documentation, research, verification, always-on Alien Science Ideation, weight-space network audit
+- [Skills](skills/): architecture, domain modeling, documentation, research, verification, opt-in Alien Science Ideation, weight-space network audit
 
 ## References
 

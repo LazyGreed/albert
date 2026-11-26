@@ -12,9 +12,9 @@ Quintet uses the harness's native agents. The coordinator is called Denia by def
 
 Workers do not delegate to other workers. The coordinator makes in-scope decisions without asking for routine approval.
 
-## Always-on Alien Science Ideation
+## Opt-in Alien Science Ideation
 
-Every request gets a proportional, evidence-based check for useful alternatives. Established bug fixes and clear tasks take the direct path; novel or uncertain design/research work can use the installed `skills/alien-science-ideation/SKILL.md` for a deeper, falsifiable comparison. This is a standing reasoning policy, not a new execution stage, user command, worker, or permission. Do not claim novelty or improvement without supporting evidence. Keep the existing ownership, review, and approval gates.
+Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or this skill by name. Ordinary research, design, brainstorming, "be creative", or an unconventional-looking task is not a request. Workers apply it only when the brief says the user explicitly requested it. No new worker, mode, or permission. Do not claim novelty or improvement without supporting evidence. Keep the existing ownership, review, and approval gates.
 
 ## Weight-space network audit
 
