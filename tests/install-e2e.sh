@@ -62,6 +62,8 @@ cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -f "$project/.claude/skills/verification/SKILL.md" ]]
 [[ -x "$project/.pi/skills/verification/scripts/check-ownership.sh" ]]
 [[ -x "$project/.claude/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$project/.pi/skills/verification/scripts/check-readonly.sh" ]]
+[[ -x "$project/.claude/skills/verification/scripts/check-readonly.sh" ]]
 grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
 grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
 # Alien Science Ideation stays installed. Profiles prove it is opt-in: the skill
@@ -190,6 +192,7 @@ assert_absent '^WRITE ' "$tmp/web-again"
 [[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$project/.agents/skills/verification/scripts/check-readonly.sh" ]]
 [[ ! -e "$project/.agents/skills/ui-ux" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$project/.agents/skills/alien-science-ideation/references/discovery-workflow.md"
@@ -229,6 +232,7 @@ HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harn
 agy_global="$mock_home/.gemini/config/plugins/albert"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$agy_global/skills/verification/scripts/check-readonly.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$agy_global/skills/alien-science-ideation/references/discovery-workflow.md"
 grep -q 'opt-in' "$agy_global/skills/alien-science-ideation/SKILL.md"

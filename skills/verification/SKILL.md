@@ -29,5 +29,6 @@ Use this skill when debugging, implementing a user-facing feature, or changing c
 
 - Run the most discriminating check after the last edit. Never infer runtime success from code inspection or a dispatch acknowledgement.
 - For parallel workstreams, verify `WRITE OWNERSHIP` mechanically before integration with `scripts/check-ownership.sh` (checking changed and untracked paths against the stream allowlist).
+- For read-only specialists (Nora, Vera, Iris), verify checkout integrity mechanically with `scripts/check-readonly.sh`: take `snapshot [repo-dir]` into a temporary snapshot file before running checks and run `verify <snapshot-file> [repo-dir]` afterward (`READONLY_OK` on unchanged state, `READONLY_VIOLATION` on any HEAD, tracked, or untracked change).
 - Report exact commands and outcomes. Mark missing checks `NOT RUN` or `BLOCKED`; state unverified acceptance conditions and material risks.
 - Stop after bounded, relevant retries. Do not weaken tests or expand scope merely to produce a green result.

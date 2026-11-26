@@ -16,7 +16,7 @@ Quintet uses native subagents. It can split independent work into parallel strea
 
 **Alien Science Ideation is installed and opt-in.** It is used only when the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or the skill by name. Ordinary research, design, brainstorming, or an unconventional-looking task is not a request. No new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
-[Weight-space network audit](skills/weight-space-network-audit/SKILL.md) is installed by default and used only for relevant small ReLU decision networks with explicit protocols. It supports evidence-based diagnosis and candidate weight repairs, not general LLM editing or safety-critical sign-off.
+[Weight-space network audit](skills/weight-space-network-audit/SKILL.md) is installed by default. Under the [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit), its three-mode activation contract covers: (1) default specialized audits or authorized repairs of small feed-forward ReLU decision networks with accessible weights and an explicit protocol (`references/relu-audit.md`); (2) read-only checkpoint audits (`AUDIT_ONLY`) when inspection is requested without asking for edits (a weight file alone never authorizes edits or `AUTO_IMPROVE`); and (3) explicit universal model improvement (`AUTO_IMPROVE`, `DIRECT_ONLY`, or `RESEARCH`) for broader cross-architecture weight-space diagnosis and reversible edits on a safe copy only when the user explicitly requests model improvement or the universal methodology—never unrequested general LLM weight editing, full-model training, or original-checkpoint mutation.
 
 ## Install
 
@@ -25,7 +25,7 @@ git clone --branch v1 https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
-Use `./install.sh` for the interactive Pi and Claude Code installer, or pick a harness directly:
+Use `./install.sh` for the interactive Pi, Claude Code, and Antigravity CLI installer, or pick a harness directly:
 
 ```sh
 # Pi: requires Pi 1.1.0+ and the subagents package
@@ -81,7 +81,7 @@ Parallel writers require isolated worktrees, exclusive owned paths, and independ
 | `--scope project --target PATH` | Install in one project |
 | `--with-web` / `--no-web` | Include or skip installer-managed web tools and Pi web package registration (included by default). `--no-web` does not uninstall packages or disable tools across the harness. |
 | `--dry-run` | Preview scripted changes |
-| `--tui` / `--no-tui` | Force the Pi/Claude Code TUI or run without it |
+| `--tui` / `--no-tui` | Force the Pi/Claude Code/Antigravity CLI TUI or run without it |
 
 ```sh
 bash tests/install-e2e.sh

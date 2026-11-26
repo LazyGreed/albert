@@ -18,7 +18,13 @@ Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user ex
 
 ## Weight-space network audit
 
-For small ReLU decision networks with known weights, input scaling and a written protocol, use `skills/weight-space-network-audit/SKILL.md`. Test behavior against the protocol before diagnosing weights; verify each proposed deviation on independently sampled requests. If edits are authorized, work on a copy, compare against the original and baseline, and check collateral damage and deployment precision. Use existing Nora/Felix/Vera/Iris roles and approval gates. Report inconclusive or unrun checks explicitly; do not interpret sampled agreement as clearance or use this method as general LLM editing.
+Under the [coordinator contract](../AGENTS.md#task-specific-weight-space-network-audit), [the weight-space network audit skill](../skills/weight-space-network-audit/SKILL.md) uses a three-mode activation contract:
+
+1. **Default specialized path (`references/relu-audit.md`):** audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol.
+2. **Read-only checkpoint audit (`AUDIT_ONLY`):** inspect or audit a model checkpoint when requested without asking for edits (a weight file alone never authorizes edits or `AUTO_IMPROVE`).
+3. **Explicit universal model improvement (`AUTO_IMPROVE` / `DIRECT_ONLY` / `RESEARCH`):** broader cross-architecture weight-space diagnosis and reversible edits on a safe copy only when the user explicitly requests model improvement or the universal methodology (never unrequested general LLM weight editing, full-model training, original-checkpoint mutation, or bypassing deployment validation and approval boundaries).
+
+Test behavior against the protocol before diagnosing weights; verify each proposed deviation on independently sampled requests. If edits are authorized, work on a copy, compare against the original and baseline, and check collateral damage and deployment precision. Use existing Nora/Felix/Vera/Iris roles and approval gates. Report inconclusive or unrun checks explicitly; do not interpret sampled agreement as clearance.
 
 ## Parallel work
 

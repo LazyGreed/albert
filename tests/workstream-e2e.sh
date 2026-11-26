@@ -5,7 +5,9 @@ set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="$root/skills/verification/scripts/check-ownership.sh"
+readonly_checker="$root/skills/verification/scripts/check-readonly.sh"
 [[ -x "$checker" ]] || { echo "Missing executable checker: $checker" >&2; exit 1; }
+[[ -x "$readonly_checker" ]] || { echo "Missing executable readonly checker: $readonly_checker" >&2; exit 1; }
 
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
@@ -262,4 +264,38 @@ fi
   src/a.py src/a_helper.py 'tests/test_a*.py' > "$tmp/bare-head.out"
 grep -q 'OWNERSHIP PASS: 4 path(s) verified' "$tmp/bare-head.out"
 
-echo 'workstream E2E PASS: isolated worktrees, ownership gate, out-of-scope blocking, integration branch, combined tests'
+# Mechanical read-only checkout-integrity verification (clean, tracked edit, untracked file, HEAD change, restored).
+ro_snap="$tmp/ro-snap.txt"
+"$readonly_checker" snapshot "$repo" > "$ro_snap"
+"$readonly_checker" verify "$ro_snap" "$repo" > "$tmp/ro-clean.out"
+grep -q '^READONLY_OK:' "$tmp/ro-clean.out"
+
+echo "# stray edit" >> "$repo/src/a.py"
+rc=0
+"$readonly_checker" verify "$ro_snap" "$repo" > "$tmp/ro-tracked.out" 2> "$tmp/ro-tracked.err" || rc=$?
+(( rc == 1 )) || { echo "Expected tracked edit to exit 1, got $rc" >&2; exit 1; }
+grep -q '^READONLY_VIOLATION:' "$tmp/ro-tracked.err"
+grep -q 'src/a.py' "$tmp/ro-tracked.err"
+git -C "$repo" checkout -- src/a.py
+
+echo "untracked" > "$repo/ro-stray.txt"
+rc=0
+"$readonly_checker" verify "$ro_snap" "$repo" > "$tmp/ro-untracked.out" 2> "$tmp/ro-untracked.err" || rc=$?
+(( rc == 1 )) || { echo "Expected untracked file to exit 1, got $rc" >&2; exit 1; }
+grep -q '^READONLY_VIOLATION:' "$tmp/ro-untracked.err"
+grep -q 'ro-stray.txt' "$tmp/ro-untracked.err"
+rm -f -- "$repo/ro-stray.txt"
+
+ro_prev_head="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" commit --allow-empty -q -m "chore: move HEAD"
+rc=0
+"$readonly_checker" verify "$ro_snap" "$repo" > "$tmp/ro-head.out" 2> "$tmp/ro-head.err" || rc=$?
+(( rc == 1 )) || { echo "Expected HEAD change to exit 1, got $rc" >&2; exit 1; }
+grep -q '^READONLY_VIOLATION:' "$tmp/ro-head.err"
+grep -q 'HEAD ' "$tmp/ro-head.err"
+git -C "$repo" reset --hard -q "$ro_prev_head"
+
+"$readonly_checker" verify "$ro_snap" "$repo" > "$tmp/ro-restored.out"
+grep -q '^READONLY_OK:' "$tmp/ro-restored.out"
+
+echo 'workstream E2E PASS: isolated worktrees, ownership gate, out-of-scope blocking, integration branch, combined tests, readonly integrity check'
