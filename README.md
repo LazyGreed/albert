@@ -61,7 +61,7 @@ pi install npm:@tintinweb/pi-subagents
 ./install.sh --harness antigravity --scope global
 ```
 
-In both `v1` and `v2`, `--scope global` puts me in charge across your projects right away (writing your harness's global instruction file and `PERSONALITY.md` configuration, plus the coordinator agent in Antigravity). For repo-specific rules or a per-project personality, run `--scope project --target /path/to/project`.
+In both `v1` and `v2`, `--scope global` puts me in charge across your projects right away (writing your harness's global instruction file and `PERSONALITY.md` configuration). For repo-specific rules or a per-project personality, run `--scope project --target /path/to/project`.
 
 Once installed, start a session in the project you want me to work on and describe the outcome in your usual chat. For project-scoped installs and dry runs, see the [v1 setup guide](https://github.com/LazyGreed/quintet/blob/refs/heads/v1/README.md#install) or the [v2 setup guide](https://github.com/LazyGreed/quintet/blob/refs/heads/v2/README.md#install).
 
