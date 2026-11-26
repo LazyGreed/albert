@@ -1,19 +1,24 @@
 # Peer messaging
 
-Quintet uses native peer messaging when available. **Denia is the hub.** Peer messages can report a changed `REF`, `READS` contract, or dependency, but do not advance graph state. Denia checks the current input closure, assigns re-verification, and owns the separate join gate and approval boundaries. A peer can share trial-check evidence; only the assigned Vera issues the bound verdict.
+Quintet uses native peer messaging when the host harness supports it. **Denia remains the coordinator hub:** peers can share a changed `REF`, `READS` contract, blocker, or trial finding, but never advance graph state on their own. Denia checks input closure, assigns re-verification, owns the join gate, and enforces approval boundaries.
 
-| Harness | Supported mechanism | Default |
+## Supported transports by harness
+
+| Harness | Supported mechanism | Default routing |
 | --- | --- | --- |
 | Antigravity CLI `/swarm` | Peer messages inside an active swarm | Use native messaging if enabled |
 | Antigravity ordinary subagents | Coordinator-to-worker tools; peer access differs | Relay through coordinator |
 | Claude Code agent teams | `SendMessage` when teams are enabled | Narrow direct handoffs |
 | Claude Code ordinary subagents | Version-dependent | Relay through coordinator |
-| Pi with `@tintinweb/pi-subagents` | Coordinator steering; use peer transport only if the session exposes it | Relay through coordinator |
+| Pi with `@tintinweb/pi-subagents` | Coordinator steering; peer transport if exposed | Relay through coordinator |
 | Oh My Pi | `agent://` in supported configurations | Check active route |
 
-Installing Quintet does not automatically start an Antigravity swarm or Claude agent team. Check actual runtime tools.
+> [!IMPORTANT]
+> Installing Quintet does not start an Antigravity swarm or Claude agent team automatically. Before using peer messaging, verify active runtime tools: Antigravity needs an active `/swarm` with peer tools, Claude needs agent teams/`SendMessage`, Pi's `Agent` tool alone does not imply peer messaging, and OMP requires a valid `agent://` route.
 
-Messages may share only a verified dependency, API contract, blocker, or review finding:
+## Message format and boundaries
+
+Messages may carry only a verified dependency, API contract, blocker, or review finding:
 
 ```text
 STREAM: api
@@ -23,10 +28,8 @@ FACT: Error field is code, not errorCode
 ACTION: Update mapping within assigned paths
 ```
 
-Peers cannot reassign file ownership, spawn workers, change acceptance, or approve actions. Relay scope or permission changes to the coordinator. Use native completion and steering if direct routing is unavailable. No extra message broker or polling service.
+Peers cannot reassign file ownership, spawn workers, change acceptance, or approve actions; relay any scope or permission changes to Denia. Only the assigned Vera issues a bound `VERDICT`. Use native completion and steering whenever direct routing is unavailable. No extra message broker or polling service is used.
 
-**Check before use:** Antigravity must have an active `/swarm` and peer tools; Claude must expose agent teams/`SendMessage`; Pi's `Agent` tool alone does not imply peer messaging; OMP needs a valid `agent://` route.
+Measure any peer-messaging benefit against serial execution and coordinator-relay parallel runs across accepted work, integration defects, tokens, and interventions.
 
-Measure any benefit against serial execution and coordinator-relay parallel tasks, including accepted work, integration defects, tokens, and interventions.
-
-References: [workflow](workflow.md), [Claude teams](https://code.claude.com/docs/en/agent-teams), [Claude subagents](https://code.claude.com/docs/en/sub-agents), [Pi subagents](https://github.com/tintinweb/pi-subagents).
+**References:** [workflow](workflow.md), [Claude teams](https://code.claude.com/docs/en/agent-teams), [Claude subagents](https://code.claude.com/docs/en/sub-agents), [Pi subagents](https://github.com/tintinweb/pi-subagents).

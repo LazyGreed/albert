@@ -1,6 +1,6 @@
 # Workflow
 
-Quintet uses the harness's native agents. The coordinator is called Denia by default; only its name and personality are customizable. Nora, Felix, Vera, and Iris retain their roles.
+Quintet uses your harness's native subagents. The coordinator is **Denia** by default; only its name and personality are customizable, while Nora, Felix, Vera, and Iris retain fixed roles.
 
 ## Task flow
 
@@ -8,29 +8,43 @@ Quintet uses the harness's native agents. The coordinator is called Denia by def
 2. **Investigate if needed:** Nora resolves a concrete missing fact or prerequisite.
 3. **Implement:** Felix edits code, tests, configuration, and documentation and runs focused checks. The coordinator handles authorized Git operations.
 4. **Verify:** Vera independently reviews consequential changes. Iris checks user-facing behavior when useful.
-5. **Report:** `DONE`, `PARTIAL`, or `BLOCKED` with exact observed checks. Label unrun checks `NOT RUN`.
+5. **Report:** Emit `DONE`, `PARTIAL`, or `BLOCKED` with exact observed checks. Mark unrun checks `NOT RUN`.
 
-Workers do not delegate to other workers. The coordinator makes in-scope decisions without asking for routine approval.
+Workers never delegate to other workers. Denia makes in-scope technical decisions without asking for routine approval.
 
 ## Opt-in Alien Science Ideation
 
-Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or this skill by name. Ordinary research, design, brainstorming, "be creative", or an unconventional-looking task is not a request. Workers apply it only when the brief says the user explicitly requested it. No new worker, mode, or permission. Do not claim novelty or improvement without supporting evidence. Keep the existing ownership, review, and approval gates.
+Do not load or apply `skills/alien-science-ideation/SKILL.md` unless the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or this skill by name. Ordinary research, design, brainstorming, "be creative", or an unconventional-looking task is not a request. Workers apply it only when the brief states the user explicitly requested it.
+
+No new worker, mode, or permission is added. Do not claim novelty or improvement without supporting evidence, and keep all ownership, review, and approval gates intact.
 
 ## Weight-space network audit
 
-Under the [coordinator contract](../AGENTS.md#task-specific-weight-space-network-audit), [the weight-space network audit skill](../skills/weight-space-network-audit/SKILL.md) uses a three-mode activation contract:
+Under the [coordinator contract](../AGENTS.md#task-specific-weight-space-network-audit), the [weight-space network audit skill](../skills/weight-space-network-audit/SKILL.md) uses a three-mode activation contract:
 
-1. **Default specialized path (`references/relu-audit.md`):** audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol.
-2. **Read-only checkpoint audit (`AUDIT_ONLY`):** inspect or audit a model checkpoint when requested without asking for edits (a weight file alone never authorizes edits or `AUTO_IMPROVE`).
-3. **Explicit universal model improvement (`AUTO_IMPROVE` / `DIRECT_ONLY` / `RESEARCH`):** broader cross-architecture weight-space diagnosis and reversible edits on a safe copy only when the user explicitly requests model improvement or the universal methodology (never unrequested general LLM weight editing, full-model training, original-checkpoint mutation, or bypassing deployment validation and approval boundaries).
+| Mode | Trigger | Scope |
+| --- | --- | --- |
+| **Specialized ReLU (`references/relu-audit.md`)** | Default for small feed-forward ReLU decision networks | Audit or authorized repair with accessible weights and an explicit protocol |
+| **Read-only audit (`AUDIT_ONLY`)** | User asks to inspect a checkpoint without edits | Architecture and weight audit only; a weight file alone never authorizes edits |
+| **Universal improvement (`AUTO_IMPROVE`, `DIRECT_ONLY`, `RESEARCH`)** | Explicit request for model improvement or universal methods | Cross-architecture diagnosis and reversible edits on safe copies only; never unrequested LLM editing, full training, or original-checkpoint mutation |
 
-Test behavior against the protocol before diagnosing weights. Check suspected deviations on independent samples. If edits are authorized, work on a copy, compare against the original and baseline, and check for regressions and effects of deployment precision. Keep the existing role and approval gates. Report inconclusive or unrun checks; sampled agreement is not safety-critical clearance.
+Test behavior against the protocol before diagnosing weights, and verify candidate deviations on independent samples. When edits are authorized, work on a copy, compare against the original and baseline, and check collateral regressions and deployment precision. Keep existing role and approval gates, report inconclusive or unrun checks, and never treat sampled agreement as safety-critical clearance.
 
 ## Dependency graph
 
-Denia uses one directed acyclic graph when there are two or more implementation streams or a verified stream changes. Single-stream work still uses risk-based review and no graph record by default. Add instances, not roles; aliases do not isolate checkouts.
+Denia builds one directed acyclic graph (DAG) whenever there are two or more implementation streams or a verified stream changes. Single-stream changes still use risk-based review with no graph overhead by default. Scale worker **instances** (`felix-api`, `felix-ui`), not permanent roles; aliases alone do not isolate checkouts.
 
-Every parallel writer needs a brief like:
+```mermaid
+flowchart LR
+  R["1. Ready: disjoint ownership, no cycles, clean worktrees"] --> E["2. Execute: isolated branches + check-ownership.sh"]
+  E --> V["3. Verify: Vera PASS bound to REF, BASE, VERIFIED_AGAINST"]
+  V -->|"Upstream REF moved?"| I["Invalidate affected streams via git diff -M -C"]
+  I -->|"Unchanged REF: re-verify in trial checkout"| V
+  I -->|"Edits needed: rerun owning Felix"| E
+  V -->|"All streams PASS"| J["4. Join: separate combined check bound to INTEGRATION_REF + INPUT_REFS"]
+```
+
+Every parallel writer receives a structured brief:
 
 ```text
 STREAM: api
@@ -47,15 +61,18 @@ READS: shared/schema/**
 REF: wt/api@<sha> (after Felix reports)
 ```
 
-Edges point from a provider/writer to its dependent/reader. `DEPENDENCIES` names hard prerequisites; `READS` lists narrow paths outside write ownership. Compare all proposed write scopes and reads, including paths not yet tracked. Assign a shared path to one writer or serialize. Reject cycles across both edge types, including mutual read/write edges; combine streams or revise the plan and its contracts. A worker reports a newly needed path instead of editing it.
+Edges point from provider/writer to dependent/reader. `DEPENDENCIES` lists hard prerequisites; `READS` lists narrow paths outside write ownership. Assign every shared or planned path (including lockfiles and generated outputs) to one writer or serialize. Reject cycles across both edge types, including mutual read/write edges. If a worker needs an unowned path, it reports the gap instead of editing out of scope.
 
 ### Ready, verify, join
 
-1. Confirm clean isolated worktrees, disjoint write scopes, and a landing plan. Hard dependencies require a current `PASS`; serialize read/write overlap by default. Allow a speculative start against an active writer only against a named verified frozen ref recorded in the brief; re-verify the reader after the writer's new `PASS`.
-2. Obtain per-stream mechanical ownership checks and independent Vera evidence. A verdict includes `REF wt/consumer@<sha>; BASE <target-sha>; VERIFIED_AGAINST api=wt/api@<sha>` (`none` with no upstream inputs). Denia verifies the actual branch, HEAD and cleanliness including untracked paths before landing. Hard inputs must exactly match their current verified refs. For `READS`-only inputs, check the incremental diff from the actually tested ref to current head (merge-base on first comparison): `git diff --name-status -z -M -C <old>..<new>`. Parse NUL-delimited fields, matching both sides of renames/copies and the old path for deletions. Without proven non-intersection, fail closed. A harmless change does not rewrite Vera's old evidence. A stale verdict is unverified, not failed.
-3. Land only verified streams on a dedicated integration branch. Run a separate combined check on its clean checkout. Its verdict binds `INTEGRATION_REF <branch@sha>; BASE <target-sha>; INPUT_REFS <stream=sha,...>`. Recheck those bindings before the final merge: if any moves, the verdict is stale. Route join failures to the owning Felix or serialize a narrow integration-fix stream with temporary seam ownership for cross-boundary repairs or conflicts. An integration pass does not authorize the final merge.
+1. **Ready:** Confirm clean isolated worktrees, disjoint write scopes, and a landing plan. Hard dependencies require a current `PASS`; serialize read/write overlap by default. Speculative starts against an active writer require a named verified frozen ref in the brief and re-verification after the writer's new `PASS`.
+2. **Verify & invalidate:** Run mechanical ownership checks (`skills/verification/scripts/check-ownership.sh`) and obtain independent Vera verdicts binding `REF`, `BASE`, and `VERIFIED_AGAINST`. Before landing, Denia confirms the branch, `HEAD`, and clean status (including untracked files). Read-only specialists can also verify checkout integrity with `skills/verification/scripts/check-readonly.sh`.
+   - Hard inputs must match their current verified refs exactly.
+   - For `READS`-only inputs, inspect `git diff --name-status -z -M -C <old>..<new>` (from merge-base on first check), matching both sides of renames/copies and old paths for deletions. Fail closed unless non-intersection is proven.
+   - A stale verdict is **unverified**, not failed. Re-verify stale streams in a clean trial checkout combining the stream and all intended upstream commits; only rerun Felix if the trial check fails. More than three invalidations from one change triggers a single contract/integration check or user confirmation.
+3. **Join:** Land verified streams onto a dedicated integration branch and run a separate combined check binding `INTEGRATION_REF <branch@sha>`, `BASE <target-sha>`, and `INPUT_REFS <stream=sha,...>`. Recheck bindings before final merge. Route failures to the owning Felix or serialize a narrow integration stream with temporary seam ownership. Integration `PASS` does not authorize final merge or push.
 
-Re-verify stale streams in a clean trial checkout combining the actual stream and all intended upstream commits. Vera reports the unchanged stream `REF` and new tested inputs if it passes; otherwise Felix updates the stream and Vera checks its new ref. A new verdict at the same stream `REF` does not invalidate its descendants unless they also depend on the changed upstream directly. More than three invalidations from one stream change calls for a single contract/integration check or a pause for confirmation, not waiving landing evidence.
+### Worked example & resume state
 
 ```text
 A (api) a1 FAIL -> fix round 1 -> a2 PASS -----+
@@ -67,41 +84,55 @@ B (consumer, frozen A contract) b1 STALE -> trial checkout a2+b1
 C (independent) c1 PASS, untouched ---------> JOIN(a2,b1,c1)
 ```
 
-B already expects `errorCode`, so fixing A's `code` field is enough. Any child depending solely on B keeps its verdict because B's own ref did not move. At the join, the full input set is new even though B and C kept their refs.
+Because B already expects `errorCode`, fixing A's `code` field resolves the mismatch without re-running `felix-b`. Any downstream stream depending solely on B keeps its verdict since B's `REF` stayed `b1`. At the join, the full `INPUT_REFS` tuple is evaluated together.
 
-On resume derive status from native sessions, Git, and verdicts: `pending`, `dispatched`, `reported`, `verified`, `stale`, `abandoned`, or `landed`. Skip unstarted work; preserve abandoned branches and worktrees. An existing issue or PR may carry `stream | owner | REF | verified_against | status`; never write a graph file in a worker checkout.
+On resume, derive stream states (`pending`, `dispatched`, `reported`, `verified`, `stale`, `abandoned`, `landed`) from native sessions, Git refs, and verdicts. Skip unstarted work and preserve abandoned worktrees. An existing issue or PR may track `stream | owner | REF | verified_against | status`; never write a tracking file inside a worker worktree.
 
 ## Blockers and recovery
 
-- Missing evidence or contract: Nora investigates the narrow question.
-- Implementation defect: Felix fixes it and reruns focused checks.
-- Missing tool, access, or permission: inspect and report the actual blocker.
-- User-only decision or action beyond authority: ask the user.
+| Blocker type | Owner & action |
+| --- | --- |
+| Missing evidence or contract | Nora investigates the narrow question |
+| Implementation defect | Felix fixes it and reruns focused checks |
+| Missing tool, access, or permission | Inspect and report the actual blocker |
+| User-only decision or authority boundary | Ask the user |
 
-Allow two automatic Felix edit plus Vera re-review rounds across the task, including join fixes. Stale rechecks alone do not consume a round. At cap report failed checks, stale streams, exact refs and worktree paths. Never retry an unchanged failing approach or invent a passing test.
+Allow at most two automatic Felix edit plus Vera re-review rounds across the task (including join fixes). Stale rechecks alone do not consume a round. At cap, report failed checks, stale streams, exact refs, and worktree paths; never retry an unchanged failing approach or weaken tests.
 
 ## v2 evaluation
 
-The graph-engineering edition is on the `v2` branch. The live Q0/Q1 comparison has not been run. The Claude Code benchmark pins Q0 to the original `v1` commit, `6715d8d52a1d69480be2f2bec778184fb7abd3cf`. Pass the clean source checkouts with `--q0` and `--q1`, and pin the exact candidate with `--q1-sha <full-40-character-commit-sha>`. By default Q1's HEAD must match that SHA and be a strict descendant of Q0; pass `--allow-diverged-q0` to compare a sibling branch checkout (such as current `v1`) against `Q1`, which records `merge_base` in the revision metadata. Compare at least five live trials per scenario per variant with the same harness, model, permissions, and budget. The driver records both full source SHAs and installs with `--no-web`. Run `python3 tests/live-graph.py --self-test` offline; `--help` lists the paid `--live` options. Set a per-invocation budget (up to three invocations for S5, two for S3 and S5b) and an output directory outside the source and runner checkouts.
+> [!NOTE]
+> The live Q0/Q1 comparison has not been run yet. Run `python3 tests/live-graph.py --self-test` offline, or pass `--help` to inspect the paid `--live` options.
 
-Keep raw JSONL, fixture Git repos, checkpoint snapshots, and per-run results. S3 checks the initial API failure and independent pass against clean worker heads, then matches the consumer's final API binding in one verdict. S4 starts without worker refs, audits observed worker and integration reflog transitions (including reset-away worker commits), and checks ownership on attributable patches without charging imported paths to the receiving stream. Missing, detectably truncated, or ambiguous logs leave attribution unknown. Reflogs are not authoritative: a fully erased or rewritten history may not be detectable, and they do not show uncommitted writes. S5 snapshots before mutation and again before landing, then checks integration reflog transitions; a repaired final head does not excuse premature landing. S5b pauses at the first join so the runner can test the exact joined commits before repair. A Q0 legacy claim can seed a scenario only when independently matched to the clean checkout, its exact HEAD, the fixture base, and the corresponding check result.
+### Benchmark configuration & CLI
 
-The driver captures observations, not verified worker provenance or proof of cleanliness at the instant of landing. Matching the S5 reflog to the pre-landing snapshot is not a measured zero for stale or dirty landings. The release assessment still needs exact rendered token counts, attribution of nested/reused workers and unnecessary calls, and trace review for verdict provenance, landing-time state, and S5b repair rounds. Report per-run evidence and medians; a proxy, missing checkpoint, or unknown metric is not a gate pass.
+- **Baselines:** `Q0` is pinned to the original `v1` commit (`6715d8d52a1d69480be2f2bec778184fb7abd3cf`). Pass clean source checkouts via `--q0` and `--q1`, pinning the candidate with `--q1-sha <40-char-sha>`.
+- **Ancestry vs sibling comparison:** By default `Q1`'s `HEAD` must match `--q1-sha` and be a strict descendant of `Q0`. Pass `--allow-diverged-q0` to compare a sibling branch checkout (such as current `v1`) against `Q1`, recording `merge_base` in the revision metadata.
+- **Live execution rules:** Run at least five trials per scenario per variant in Claude Code with matching model, permissions, `--no-web`, per-invocation budgets (up to 3 invocations for `S5`, 2 for `S3`/`S5b`), and an external output directory. Keep raw JSONL, fixture repos, checkpoint snapshots, and per-run results.
 
-- S1: accepted single-stream fix, zero extra workers, exact static rendered tokens no higher than Q0, median runtime tokens at most 115% of Q0. S2: no regression in accepted completion or worker count for disjoint parallel streams. S1 accepted completion must not regress either.
-- Across S1–S5, unsupported completion, ownership violations, and unnecessary invocations must not increase. S3: strictly improve clean invalidation (target +2/5, or at least 4/5 if Q0 is at most 2/5), or tie completion while reducing unnecessary C calls. S4: ownership violations must strictly decrease if Q0 had any (target zero in at least 4/5 trials). S5: zero stale/dirty landings and strictly fewer unsupported completion claims.
-- S5b diagnoses semantic join failure and routing within the two-round cap with refreshed inputs; required before a helper rollout. Keep a later overlap helper only if it detects S4 collisions or prevents rework Q1 misses. Competing experiment branches remain deferred.
+### Scenario gates & measurement scope
+
+| Scenario | Primary gate & evidence rule |
+| --- | --- |
+| **S1** | Accepted single-stream fix, zero extra workers, exact static tokens <= Q0, median runtime tokens <= 115% of Q0 |
+| **S2** | No regression in accepted completion or worker count for disjoint parallel streams |
+| **S3** | Strictly improve clean invalidation (+2/5, or >= 4/5 if Q0 <= 2/5), or tie while cutting unnecessary consumer calls; matches initial API fail, pass, and final binding |
+| **S4** | Strictly reduce ownership violations (target 0 in >= 4/5 trials); audits worker/integration reflog transitions and attributable patches without charging imported paths |
+| **S5** | Zero stale/dirty landings and strictly fewer unsupported completion claims; snapshots before mutation and landing (a repaired final head does not excuse premature landing) |
+| **S5b** | Diagnose semantic join failure and route within two rounds using refreshed inputs; pauses at first join to test exact joined commits |
+
+Across `S1`–`S5`, unsupported completion, ownership violations, and unnecessary invocations must not increase. Note that the driver records observations, not proof of worker provenance or landing-instant cleanliness; reflogs can miss uncommitted writes or rewritten history. Full release evaluation still requires exact rendered token counts, nested/reused call attribution, and trace review. Report per-run evidence and medians; proxies, missing checkpoints, or unknown metrics are not gate passes. Any later overlap helper is kept only if `S4`/`S5b` results show it detects collisions or avoids rework `Q1` misses; competing experiment branches remain deferred.
 
 ## Messaging
 
-Use native peer messaging only when supported and enabled. Peers may share a contract, dependency, blocker, or review finding but cannot grant ownership, change acceptance, or authorize actions. Otherwise, relay through the coordinator. See [peer messaging](peer-messaging.md).
+Use native peer messaging only when supported and enabled. Peers may share a contract, dependency, blocker, or review finding, but cannot grant ownership, change acceptance, or authorize actions. Otherwise, relay through Denia. See [peer messaging](peer-messaging.md).
 
 ## Pi specifics
 
-Requires Pi 1.1.0+ and `npm:@tintinweb/pi-subagents`. Use native `Agent`, `steer_subagent`, and `get_subagent_result`. Inspect workers using FleetView or `/agents`. Worker profiles use `prompt_mode: append` and retain their own boundaries.
-
-`defaultJoinMode: group` in `subagents.json` can group parallel completion notices, but delays early results. The installer does not change it.
+- Requires Pi 1.1.0+ and `npm:@tintinweb/pi-subagents` (`Agent`, `steer_subagent`, `get_subagent_result`).
+- Inspect workers via FleetView or `/agents`; worker profiles use `prompt_mode: append`.
+- `defaultJoinMode: group` in `subagents.json` batches parallel completion notices, which delays early results; the installer leaves it untouched.
 
 ## Limits
 
-Quintet has no daemon, supervisor, status database, or guaranteed background execution after parent exit. Recheck live state on resume. Record long-running task decisions in an existing issue or PR. Pushing, merging to the final target branch, deploying to production, irreversible cleanup, and changing credentials or permissions require explicit authorization. See [coordinator contract](../AGENTS.md).
+Quintet has no daemon, supervisor, status database, or guaranteed background execution after parent exit. Recheck live state on resume and record long-running task decisions in an existing issue or PR. Pushing, final branch merges, production deployment, irreversible cleanup, and credential/permission changes require explicit authorization. See the [coordinator contract](../AGENTS.md).

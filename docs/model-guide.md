@@ -1,13 +1,15 @@
 # Model and effort guide
 
-Quintet does not change model settings. Pick models and thinking effort in your harness.
+Quintet leaves your harness's model and provider configuration untouched. Pick models and thinking effort directly in your harness.
 
-| Role | Useful capability | Effort |
+| Role | Best-fit capability | Recommended effort |
 | --- | --- | --- |
-| Main agent (Denia by default) | Planning, delegation, judgment | High |
-| Nora | Research, reading | Medium/high |
-| Felix | Coding and focused checks | High |
-| Vera | Independent review, ideally a different model family | High |
-| Iris | Tool use and acceptance checks | Medium |
+| **Main agent** (Denia by default) | Planning, delegation, judgment | High |
+| **Nora** | Research, codebase tracing | Medium / high |
+| **Felix** | Implementation and focused checks | High |
+| **Vera** | Independent review (ideally a different model family) | High |
+| **Iris** | Tool use and acceptance checks | Medium |
 
-Pi supports agent-level model/thinking overrides via `@tintinweb/pi-subagents`. Claude Code agents may inherit the current model or specify one. Avoid hardcoded model IDs that become outdated. Choose cheaper settings for routine work, stronger reasoning for risky changes.
+- **Pi:** Configure per-agent model and thinking overrides via `@tintinweb/pi-subagents`.
+- **Claude Code:** Subagents can inherit the session model or pin a dedicated one.
+- **General tip:** Avoid hardcoded model IDs that age out quickly; use lighter settings for routine work and stronger reasoning for risky changes.
