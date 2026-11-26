@@ -13,7 +13,7 @@ explicit_args=0
 
 usage() {
   cat <<'USAGE'
-Usage: ./install.sh                       # interactive Pi/Claude Code TUI
+Usage: ./install.sh                       # interactive Pi/Claude Code/Antigravity CLI TUI
        ./install.sh --tui                 # force interactive TUI
        ./install.sh --harness pi|claude|antigravity|pi,claude,antigravity --scope global|project
                     [--target PROJECT_DIR] [--with-web|--no-web] [--dry-run] [--no-tui]
@@ -25,8 +25,9 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 ~/.gemini/config/plugins/quintet. Project: installs in PROJECT/.pi or PROJECT/.claude
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Global instructions carry cross-project policy only: the opt-in Alien Science Ideation rule and
-the gate that leaves the coordinator contract to projects that declare it in AGENTS.md or
-CLAUDE.md. A project-scope install writes the full contract and personality there.
+the gate that leaves the coordinator contract to projects that declare it in AGENTS.md,
+CLAUDE.md, or .agents/rules/AGENTS.md. A project-scope install writes the full contract and
+personality there.
 Antigravity names the coordinator agent quintet in both scopes. A global install replaces a
 legacy ~/.gemini/config/plugins/albert (the previous project name) once the new plugin is
 written: text you added to its rules/AGENTS.md outside the managed block is carried into the
@@ -182,9 +183,9 @@ POLICY
   cat <<'POLICY'
 ## Coordinator role: project opt-in required
 
-The Quintet coordinator role applies only in a project that opts in by declaring it in that project's `AGENTS.md` or `CLAUDE.md`. In every other project act as a normal assistant: no coordinator role, no dispatch to Nora/Felix/Vera/Iris, and no verification protocol.
+The Quintet coordinator role applies only in a project that opts in by declaring it in that project's `AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md` (or when you explicitly invoke the global `quintet` agent in Antigravity, which uses its full coordinator contract for that session). In every other project act as a normal assistant: no coordinator role, no dispatch to Nora/Felix/Vera/Iris, and no verification protocol.
 
-The Quintet worker definitions and skills are installed globally but inactive without that project opt-in; the full contract is `AGENTS.md` in the Quintet repository, and a project-scope install writes it into `PROJECT/AGENTS.md`, `PROJECT/CLAUDE.md`, or `PROJECT/.agents/rules/AGENTS.md`.
+The Quintet worker definitions and skills are installed globally but inactive without that project opt-in; the full contract is `AGENTS.md` in the Quintet repository, and a project-scope install writes it into `PROJECT/AGENTS.md`, `PROJECT/CLAUDE.md`, or `PROJECT/.agents/rules/AGENTS.md`. For global Antigravity, `rules/AGENTS.md` stays cross-project policy only, while explicitly invoking the global `quintet` agent uses its full coordinator contract for that session.
 POLICY
 }
 
@@ -443,10 +444,8 @@ migrate_legacy_antigravity_plugin() {
   while IFS= read -r -d '' entry; do
     total=$((total + 1))
     rel="${entry#"$legacy"/}"
-    # rm -rf unlinks a symlink itself; data behind the link is never touched, so a link is
-    # not user content that blocks migration.
-    [[ -L "$legacy/$rel" ]] && continue
-    if ! grep -Fqx -- "$rel" <(generated_antigravity_paths); then
+    # Preserve any symlink inside the legacy tree rather than unlinking it automatically.
+    if [[ -L "$legacy/$rel" ]] || ! grep -Fqx -- "$rel" <(generated_antigravity_paths); then
       extras+=("$rel")
       extra_count=$((extra_count + 1))
     fi

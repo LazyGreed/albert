@@ -9,12 +9,16 @@ albert_tui() {
   fi
   exec 3<>/dev/tty || return 2
 
-  local ti_pi=0 ti_claude=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_web="$with_web"
-  case ",$harness," in
-    ,pi,) ti_pi=1 ;;
-    ,claude,) ti_claude=1 ;;
-    ,pi,claude,|,claude,pi,) ti_pi=1; ti_claude=1 ;;
-  esac
+  local ti_pi=0 ti_claude=0 ti_agy=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_web="$with_web"
+  local _ti_h _ti_list=()
+  IFS=',' read -r -a _ti_list <<< "$harness"
+  for _ti_h in "${_ti_list[@]}"; do
+    case "$_ti_h" in
+      pi) ti_pi=1 ;;
+      claude) ti_claude=1 ;;
+      antigravity|agy) ti_agy=1 ;;
+    esac
+  done
   local ti_focus=0 ti_message='' ti_preview='' ti_preview_file='' ti_key='' ti_next=''
   local ti_bold='' ti_reset='' ti_reverse=''
   if [[ -z "${NO_COLOR:-}" && "${TERM:-dumb}" != dumb ]]; then
@@ -43,23 +47,24 @@ albert_tui() {
   _albert_tui_draw() {
     printf '\033[?25l\033[H\033[J' >&3
     printf '%sQUINTET  /  INSTALL%s\n' "$ti_bold" "$ti_reset" >&3
-    printf 'Native Pi + Claude Code agents. No extra TUI dependencies.\n\n' >&3
-    printf '%sHARNESS%s  (select one or both)\n' "$ti_bold" "$ti_reset" >&3
+    printf 'Native Pi, Claude Code, and Antigravity CLI agents. No extra TUI dependencies.\n\n' >&3
+    printf '%sHARNESS%s  (select one or more)\n' "$ti_bold" "$ti_reset" >&3
     _albert_tui_line 0 "[$([[ $ti_pi -eq 1 ]] && echo x || echo ' ')] Pi"
     _albert_tui_line 1 "[$([[ $ti_claude -eq 1 ]] && echo x || echo ' ')] Claude Code"
+    _albert_tui_line 2 "[$([[ $ti_agy -eq 1 ]] && echo x || echo ' ')] Antigravity CLI"
     printf '\n%sSCOPE%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 2 "($([[ "$ti_scope" == global ]] && echo '*' || echo ' ')) Global    (~/.pi/agent, ~/.claude)"
-    _albert_tui_line 3 "($([[ "$ti_scope" == project ]] && echo '*' || echo ' ')) Project   (repo-local .pi, .claude)"
+    _albert_tui_line 3 "($([[ "$ti_scope" == global ]] && echo '*' || echo ' ')) Global    (~/.pi/agent, ~/.claude, Antigravity)"
+    _albert_tui_line 4 "($([[ "$ti_scope" == project ]] && echo '*' || echo ' ')) Project   (repo-local .pi, .claude, .agents)"
     if [[ "$ti_scope" == project ]]; then
-      _albert_tui_line 4 "Project directory: $ti_target"
+      _albert_tui_line 5 "Project directory: $ti_target"
     else
       printf '   Project directory: (choose Project to edit)\n' >&3
     fi
     printf '\n%sOPTIONAL%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 5 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude native tools)"
+    _albert_tui_line 6 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude & Antigravity native tools)"
     printf '\n' >&3
-    _albert_tui_line 6 'Review installation →'
-    _albert_tui_line 7 'Cancel'
+    _albert_tui_line 7 'Review installation →'
+    _albert_tui_line 8 'Cancel'
     printf '\n↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit\n' >&3
     [[ -z "$ti_message" ]] || printf '\n%s\n' "$ti_message" >&3
   }
@@ -83,9 +88,12 @@ albert_tui() {
     fi
   }
   _albert_tui_harness() {
-    if ((ti_pi && ti_claude)); then printf 'pi,claude';
-    elif ((ti_pi)); then printf 'pi';
-    else printf 'claude'; fi
+    local hs=()
+    ((ti_pi)) && hs+=(pi)
+    ((ti_claude)) && hs+=(claude)
+    ((ti_agy)) && hs+=(antigravity)
+    local IFS=','
+    printf '%s' "${hs[*]}"
   }
   _albert_tui_args() {
     ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope")
@@ -93,7 +101,7 @@ albert_tui() {
     if ((ti_web)); then ti_args+=(--with-web); else ti_args+=(--no-web); fi
   }
   _albert_tui_review() {
-    if (( !ti_pi && !ti_claude )); then
+    if (( !ti_pi && !ti_claude && !ti_agy )); then
       ti_message='Select at least one harness.'; return 1
     fi
     if [[ "$ti_scope" == project && ! -d "$ti_target" ]]; then
@@ -139,16 +147,17 @@ albert_tui() {
     _albert_tui_readkey || return 2
     ti_message=''
     case "$ti_key" in
-      up|k) ti_focus=$(((ti_focus+7)%8)) ;;
-      down|j) ti_focus=$(((ti_focus+1)%8)) ;;
+      up|k) ti_focus=$(((ti_focus+8)%9)) ;;
+      down|j) ti_focus=$(((ti_focus+1)%9)) ;;
       escape) return 0 ;;
       enter|' ')
         case "$ti_focus" in
           0) ti_pi=$((1-ti_pi)) ;;
           1) ti_claude=$((1-ti_claude)) ;;
-          2) ti_scope=global ;;
-          3) ti_scope=project ;;
-          4)
+          2) ti_agy=$((1-ti_agy)) ;;
+          3) ti_scope=global ;;
+          4) ti_scope=project ;;
+          5)
             if [[ "$ti_scope" == project ]]; then
               printf '\033[?25h\nProject directory [%s]: ' "$ti_target" >&3
               local new_target=''
@@ -157,8 +166,8 @@ albert_tui() {
               elif [[ "$new_target" == '~/'* ]]; then new_target="$HOME/${new_target:2}"; fi
               [[ -z "$new_target" ]] || ti_target="$new_target"
             fi ;;
-          5) ti_web=$((1-ti_web)) ;;
-          6)
+          6) ti_web=$((1-ti_web)) ;;
+          7)
             local review_status=0
             _albert_tui_review || review_status=$?
             if ((review_status == 0)); then
@@ -166,7 +175,7 @@ albert_tui() {
               printf '\033[?25h\033[H\033[J%sQUINTET  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;
-          7) return 0 ;;
+          8) return 0 ;;
         esac ;;
     esac
   done

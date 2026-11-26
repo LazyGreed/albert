@@ -68,6 +68,8 @@ cmp -s "$root/PERSONALITY.md" "$project/PERSONALITY.md"
 [[ -f "$project/.claude/skills/verification/SKILL.md" ]]
 [[ -x "$project/.pi/skills/verification/scripts/check-ownership.sh" ]]
 [[ -x "$project/.claude/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$project/.pi/skills/verification/scripts/check-readonly.sh" ]]
+[[ -x "$project/.claude/skills/verification/scripts/check-readonly.sh" ]]
 grep -q 'regression check' "$project/.pi/skills/verification/SKILL.md"
 grep -q 'vertical slice' "$project/.claude/skills/verification/SKILL.md"
 # Alien Science Ideation stays installed. Profiles prove it is opt-in: the skill
@@ -153,6 +155,7 @@ for file in "$PI_CODING_AGENT_DIR/AGENTS.md" "$HOME/.claude/CLAUDE.md"; do
   grep -q '^## Coordinator role: project opt-in required$' "$file"
   grep -q '^## Opt-in Alien Science Ideation$' "$file"
   grep -Fq 'opts in by declaring it in that project' "$file"
+  grep -Fq 'AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md`' "$file"
   grep -Fq 'no coordinator role, no dispatch to Nora/Felix/Vera/Iris, and no verification protocol' "$file"
   grep -Fq 'installed globally but inactive without that project opt-in' "$file"
   assert_absent '^## Dispatch$' "$file"
@@ -276,6 +279,7 @@ assert_absent '^WRITE ' "$tmp/web-again"
 [[ -f "$project/.agents/rules/AGENTS.md" && ! -e "$project/.agents/plugin.json" ]]
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$project/.agents/skills/verification/scripts/check-readonly.sh" ]]
 [[ ! -e "$project/.agents/skills/ui-ux" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$project/.agents/skills/alien-science-ideation/references/discovery-workflow.md"
@@ -329,6 +333,7 @@ agy_global="$mock_home/.gemini/config/plugins/quintet"
 [[ -f "$agy_global/plugin.json" && -f "$agy_global/rules/AGENTS.md" ]]
 [[ ! -e "$mock_home/.gemini/config/plugins/albert" ]]
 [[ -x "$agy_global/skills/verification/scripts/check-ownership.sh" ]]
+[[ -x "$agy_global/skills/verification/scripts/check-readonly.sh" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$agy_global/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$agy_global/skills/alien-science-ideation/references/discovery-workflow.md"
 grep -q 'opt-in' "$agy_global/skills/alien-science-ideation/SKILL.md"
@@ -346,6 +351,8 @@ grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
 # because it is only read when that agent is explicitly used.
 grep -q '^# Quintet | cross-project policy$' "$agy_global/rules/AGENTS.md"
 grep -q '^## Coordinator role: project opt-in required$' "$agy_global/rules/AGENTS.md"
+grep -Fq 'AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md`' "$agy_global/rules/AGENTS.md"
+grep -Fq 'explicitly invoking the global `quintet` agent' "$agy_global/rules/AGENTS.md"
 assert_absent '^## Dispatch$' "$agy_global/rules/AGENTS.md"
 assert_absent '^## Delegation gate$' "$agy_global/rules/AGENTS.md"
 assert_absent 'Main-agent personality' "$agy_global/rules/AGENTS.md"
@@ -450,7 +457,7 @@ assert_absent '^CARRY ' "$tmp/agy-keep"
 [[ "$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)" == "$keep_sum" ]]
 [[ -d "$keep_dir/skills/empty-dir" && -f "$keep_quintet/plugin.json" ]]
 
-# A symlinked subdirectory is unlinked with the tree; the data behind it survives.
+# Any symlink inside the legacy tree stops migration, is named as EXTRA, and survives intact.
 link_home="$tmp/link-home"
 link_dir="$link_home/.gemini/config/plugins/albert"
 link_target="$tmp/link-target"
@@ -459,8 +466,10 @@ mkdir -p "$link_target"
 printf 'outside data\n' > "$link_target/keep.txt"
 ln -s "$link_target" "$link_dir/skills/linked"
 HOME="$link_home" XDG_CONFIG_HOME="$link_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-link"
-grep -q "^REMOVE '$link_dir' (legacy Antigravity plugin, previous project name:" "$tmp/agy-link"
-[[ ! -e "$link_dir" ]]
+grep -q "^KEEP '$link_dir': legacy Antigravity plugin kept because it holds entries this installer does not write.$" "$tmp/agy-link"
+grep -q "^  EXTRA '$link_dir/skills/linked'$" "$tmp/agy-link"
+assert_absent '^REMOVE ' "$tmp/agy-link"
+[[ -L "$link_dir/skills/linked" ]]
 [[ -f "$link_target/keep.txt" && "$(cat "$link_target/keep.txt")" == 'outside data' ]]
 
 # Unmergeable markers keep the tree and name the file instead of dropping text.

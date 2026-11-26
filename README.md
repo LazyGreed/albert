@@ -16,7 +16,7 @@ Denia uses a dependency graph for multi-stream work, with exclusive file ownersh
 
 **Alien Science Ideation is installed and opt-in.** It is used only when the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or the skill by name. Ordinary research, design, brainstorming, or an unconventional-looking task is not a request. No new worker, model download, or additional service is required. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
 
-Quintet installs the [weight-space network audit skill](skills/weight-space-network-audit/SKILL.md) by default. The [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit) activates it only for audits or authorized repairs of small feed-forward ReLU decision networks with accessible weights and an explicit protocol. The skill file describes a broader method; that does not widen Quintet's default scope.
+Quintet installs the [weight-space network audit skill](skills/weight-space-network-audit/SKILL.md) by default. Under the [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit), its three-mode activation contract covers: (1) default specialized audits or authorized repairs of small feed-forward ReLU decision networks with accessible weights and an explicit protocol (`references/relu-audit.md`); (2) read-only checkpoint audits (`AUDIT_ONLY`) when inspection is requested without asking for edits (a weight file alone never authorizes edits or `AUTO_IMPROVE`); and (3) explicit universal model improvement (`AUTO_IMPROVE`, `DIRECT_ONLY`, or `RESEARCH`) for broader cross-architecture weight-space diagnosis and reversible edits on a safe copy only when the user explicitly requests model improvement or the universal methodology—never unrequested general LLM weight editing, full-model training, or original-checkpoint mutation.
 
 ## Install
 
@@ -25,7 +25,7 @@ git clone --branch v2 https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
-Use `./install.sh` for the interactive Pi and Claude Code installer, or pick a harness directly:
+Use `./install.sh` for the interactive Pi, Claude Code, and Antigravity CLI installer, or pick a harness directly:
 
 ```sh
 # Pi: requires Pi 1.1.0+ and the subagents package
@@ -41,7 +41,7 @@ pi install npm:@tintinweb/pi-subagents
 
 For one project, use `--scope project --target /path/to/project`. Add `--dry-run` to preview. The installer backs up files it replaces and does not copy bundled harness settings. Pi web access may add its package registration. Existing model and provider settings stay in place.
 
-**Global scope carries cross-project policy only.** The global instruction file holds the opt-in Alien Science Ideation rule and the gate that leaves coordinator work to projects that declare the opt-in. The coordinator contract and the personality section are installed into a project that opts in, by naming the contract in its `AGENTS.md` or `CLAUDE.md`; run a project-scope install there to write them into the project. When an older global install still holds the full contract inside the managed block, the next global install replaces that block with the policy, keeps every line you wrote outside the markers, and prints one `SHRINK` line naming the file.
+**Global scope carries cross-project policy only.** The global instruction file holds the opt-in Alien Science Ideation rule and the gate that leaves coordinator work to projects that declare the opt-in. The coordinator contract and the personality section are installed into a project that opts in, by naming the contract in its `AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md`; run a project-scope install there to write them into the project. Global Antigravity `rules/AGENTS.md` stays cross-project policy only, while explicitly invoking the global `quintet` agent uses its full coordinator contract for that session. When an older global install still holds the full contract inside the managed block, the next global install replaces that block with the policy, keeps every line you wrote outside the markers, and prints one `SHRINK` line naming the file.
 
 **Updating an older checkout?** Before pulling or switching revisions, save independent copies of any user configs symlinked into this repository, then point the harness at those copies. This matters if you linked to the repository's Pi `settings.json`, `claude-settings.json`, `antigravity-settings.json`, or bundled `pi-blackhole` config. Those repository files have been removed. The installer does not rewrite those links or remove user-managed Blackhole installs.
 
@@ -83,7 +83,7 @@ Parallel writers need isolated worktrees and exclusive write scopes. Each stream
 | `--scope project --target PATH` | Install in one project |
 | `--with-web` / `--no-web` | Include or skip installer-managed web tools and Pi web package registration (included by default). `--no-web` does not uninstall packages or disable tools across the harness. |
 | `--dry-run` | Preview scripted changes |
-| `--tui` / `--no-tui` | Force the Pi/Claude Code TUI or run without it |
+| `--tui` / `--no-tui` | Force the Pi/Claude Code/Antigravity CLI TUI or run without it |
 
 ```sh
 bash tests/install-e2e.sh
@@ -91,7 +91,7 @@ python3 tests/tui-e2e.py
 bash tests/workstream-e2e.sh
 ```
 
-These CI checks cover installer output for all three harnesses (with Pi mocked), the Pi/Claude Code installer TUI, and deterministic Git worktree integration. They do not run live agents. The opt-in `tests/live-parallel-smoke.sh` uses Antigravity CLI by default or Claude Code; the separate [Q0/Q1 benchmark](docs/workflow.md#v2-evaluation) uses Claude Code.
+These CI checks cover installer output for all three harnesses (with Pi mocked), the Pi, Claude Code, and Antigravity CLI installer TUI, and deterministic Git worktree integration. They do not run live agents. The opt-in `tests/live-parallel-smoke.sh` uses Antigravity CLI by default or Claude Code; the separate [Q0/Q1 benchmark](docs/workflow.md#v2-evaluation) uses Claude Code.
 
 ## Documentation
 

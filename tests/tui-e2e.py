@@ -68,7 +68,7 @@ def test_dual_project(root: Path):
     session = Session(root)
     session.expect(b'QUINTET  /  INSTALL')
     # Toggle Claude (Pi selected initially); select Project; edit project path.
-    session.send(ARROW_DOWN + SPACE + ARROW_DOWN * 2 + ENTER + ARROW_DOWN + ENTER)
+    session.send(ARROW_DOWN + SPACE + ARROW_DOWN * 3 + ENTER + ARROW_DOWN + ENTER)
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
     # Leave the default web access enabled, then review.
@@ -89,12 +89,34 @@ def test_dual_project(root: Path):
     assert (project / 'AGENTS.md').read_text().count('<!-- ALBERT MANAGED START -->') == 1
 
 
+def test_antigravity_project(root: Path):
+    project = root / 'antigravity-tui'
+    project.mkdir()
+    session = Session(root)
+    session.expect(b'QUINTET  /  INSTALL')
+    # Deselect Pi (focus 0), select Antigravity CLI (focus 2), select Project (focus 4), edit project path (focus 5).
+    session.send(SPACE + ARROW_DOWN * 2 + SPACE + ARROW_DOWN * 2 + ENTER + ARROW_DOWN + ENTER)
+    session.expect(b'Project directory [')
+    session.send(str(project).encode() + ENTER)
+    # Walk to Review (focus 7).
+    session.send(ARROW_DOWN * 2 + ENTER)
+    session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Harness   antigravity')
+    session.expect(b'Scope     project')
+    session.send(ENTER)
+    session.expect(b'DONE')
+    session.finish()
+    assert (project / '.agents/rules/AGENTS.md').is_file()
+    assert 'name: quintet' in (project / '.agents/agents/albert.md').read_text()
+    assert not (project / '.pi').exists()
+
+
 def test_global_policy(root: Path):
     """Global scope installs cross-project policy, not the coordinator contract."""
     session = Session(root, '--tui', '--harness', 'pi', '--scope', 'global', '--no-web')
     session.expect(b'Global')
-    # Pi and Global are already selected: walk down to Review and install.
-    session.send(ARROW_DOWN * 6 + ENTER)
+    # Pi and Global are already selected: walk down to Review (index 7) and install.
+    session.send(ARROW_DOWN * 7 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Scope     global')
     session.send(ENTER)
@@ -118,8 +140,8 @@ def test_web_disabled(root: Path, *, explicit: bool):
     initial = b'[ ]' if explicit else b'[x]'
     assert initial + b' Web search and fetch' in session.read_buffer
     if not explicit:
-        session.send(ARROW_DOWN * 5 + SPACE)
-    session.send(b'j' * (6 if explicit else 1) + ENTER)
+        session.send(ARROW_DOWN * 6 + SPACE)
+    session.send(b'j' * (7 if explicit else 1) + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       disabled')
     session.send(ENTER)
@@ -153,5 +175,6 @@ esac
         test_web_disabled(root, explicit=False)
         test_global_policy(root)
         test_dual_project(root)
+        test_antigravity_project(root)
         assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
-    print('TUI E2E PASS: cancel, keyboard and review, dual install, global policy scope, web default and opt-out')
+    print('TUI E2E PASS: cancel, keyboard and review, dual install, Antigravity install, global policy scope, web default and opt-out')

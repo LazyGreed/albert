@@ -807,6 +807,41 @@ def self_test():
         git(repo, 'checkout', BRANCH)
         put(repo, 'untracked', 'dirty checkout')
         reject_source(q1, 'not a clean Git source checkout')
+        (repo / 'untracked').unlink()
+        # Diverged Q0 (e.g. sibling v1 vs v2): rejected by default, allowed with --allow-diverged-q0.
+        sibling = Path(tmp) / 'Q0-sibling'
+        git(repo, 'worktree', 'add', '-b', 'q0-sibling', str(sibling), base)
+        put(sibling, 'sibling.txt', 'v1 sibling change\n')
+        q0_sibling = commit(sibling, 'Sibling Q0 commit')
+        diverged_sources = {'Q0': sibling, 'Q1': repo}
+        try:
+            source_revisions(diverged_sources, q1, baseline=base)
+        except ValueError as exc:
+            assert 'Q0 checkout must be' in str(exc), str(exc)
+        else:
+            raise AssertionError('diverged Q0 accepted without --allow-diverged-q0')
+        try:
+            source_revisions(diverged_sources, q1, baseline=q0_sibling)
+        except ValueError as exc:
+            assert 'strict descendant' in str(exc), str(exc)
+        else:
+            raise AssertionError('non-descendant Q1 accepted without --allow-diverged-q0')
+        assert source_revisions(diverged_sources, q1, baseline=base, allow_diverged_q0=True) == {
+            'Q0': q0_sibling, 'Q1': q1, 'merge_base': base,
+        }
+        try:
+            source_revisions({'Q0': repo, 'Q1': repo}, q1, baseline=base, allow_diverged_q0=True)
+        except ValueError as exc:
+            assert 'must differ from Q0' in str(exc), str(exc)
+        else:
+            raise AssertionError('identical Q0/Q1 accepted with --allow-diverged-q0')
+        git(sibling, 'checkout', '--detach', unrelated)
+        try:
+            source_revisions(diverged_sources, q1, baseline=base, allow_diverged_q0=True)
+        except ValueError as exc:
+            assert 'merge base' in str(exc), str(exc)
+        else:
+            raise AssertionError('unrelated Q0/Q1 accepted with --allow-diverged-q0')
         repo = Path(tmp) / 'S3'
         base = ref(repo, 'main')
         api = Path(tmp) / 'api'
@@ -851,17 +886,33 @@ def source_head(source):
     return git(source, 'rev-parse', '--verify', 'HEAD')
 
 
-def source_revisions(sources, expected_q1, baseline=Q0):
+def merge_base(repo, other_repo, a, b):
+    env = os.environ.copy()
+    alt_objects = git(other_repo, 'rev-parse', '--path-format=absolute', '--git-path', 'objects')
+    existing_alt = env.get('GIT_ALTERNATE_OBJECT_DIRECTORIES')
+    env['GIT_ALTERNATE_OBJECT_DIRECTORIES'] = f'{alt_objects}:{existing_alt}' if existing_alt else alt_objects
+    p = run(repo, 'git', 'merge-base', a, b, check=False, text=True, env=env)
+    return p.stdout.strip() if p.returncode == 0 else None
+
+
+def source_revisions(sources, expected_q1, baseline=Q0, allow_diverged_q0=False):
     if not expected_q1 or not re.fullmatch(r'[a-f0-9]{40}', expected_q1):
         raise ValueError('--q1-sha must be a full lowercase 40-character commit SHA')
     revisions = {variant: source_head(source) for variant, source in sources.items()}
-    if revisions['Q0'] != baseline:
-        raise ValueError(f'Q0 checkout must be at {baseline}, found {revisions["Q0"]}')
     if revisions['Q1'] != expected_q1:
         raise ValueError(f'Q1 checkout must be at {expected_q1}, found {revisions["Q1"]}')
-    if expected_q1 == revisions['Q0'] or not ancestor(sources['Q1'], revisions['Q0'], expected_q1):
-        raise ValueError('Q1 must be a strict descendant of Q0')
-    return revisions
+    if not allow_diverged_q0:
+        if revisions['Q0'] != baseline:
+            raise ValueError(f'Q0 checkout must be at {baseline}, found {revisions["Q0"]}')
+        if expected_q1 == revisions['Q0'] or not ancestor(sources['Q1'], revisions['Q0'], expected_q1):
+            raise ValueError('Q1 must be a strict descendant of Q0')
+        return revisions
+    if expected_q1 == revisions['Q0']:
+        raise ValueError('Q1 must differ from Q0 when --allow-diverged-q0 is set')
+    mb = merge_base(sources['Q1'], sources['Q0'], revisions['Q0'], expected_q1)
+    if not mb:
+        raise ValueError('Q0 and Q1 must share a merge base')
+    return {**revisions, 'merge_base': mb}
 
 
 def main():
@@ -871,6 +922,8 @@ def main():
     for name in ('q0', 'q1', 'out'):
         parser.add_argument('--' + name, type=Path)
     parser.add_argument('--q1-sha', help='required for --live: exact full commit SHA of the Q1 candidate')
+    parser.add_argument('--allow-diverged-q0', action='store_true',
+                        help='allow Q0 to be a diverged sibling branch checkout (such as v1) and record merge_base')
     parser.add_argument('--model', help='same pinned model for both variants')
     parser.add_argument('--budget', type=float, help='USD per invocation (up to three for S5, two for S3 and S5b)')
     parser.add_argument('--timeout', type=int, default=600)
@@ -887,7 +940,7 @@ def main():
     if any(root.is_relative_to(source) for source in (HERE, *sources.values())):
         parser.error('--out must be outside the runner and both source checkouts')
     try:
-        revisions = source_revisions(sources, args.q1_sha)
+        revisions = source_revisions(sources, args.q1_sha, allow_diverged_q0=args.allow_diverged_q0)
     except (ValueError, OSError, subprocess.CalledProcessError) as exc:
         parser.error(str(exc))
     version = run(HERE, 'claude', '--version', text=True).stdout.strip()
