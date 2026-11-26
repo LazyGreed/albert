@@ -49,10 +49,10 @@ From that checkout, install for your harness.
 - **Claude Code** uses `./install.sh --harness claude --scope global`.
 - **Antigravity CLI** uses `./install.sh --harness antigravity --scope global`.
 
-In **v1**, `--scope global` puts me in charge across your projects right away. In **v2**, I stay polite until invited~ `--scope global` installs cross-project policy only for Pi (`~/.pi/agent/AGENTS.md`), Claude Code (`~/.claude/CLAUDE.md`), and Antigravity global rules (`~/.gemini/config/plugins/quintet/rules/AGENTS.md`), while my full coordinator contract and `PERSONALITY.md` activate per project via `--scope project --target /path/to/project` (or project opt-in in `AGENTS.md`, `CLAUDE.md`, or `.agents/rules/AGENTS.md`). Antigravity's explicit `quintet` agent keeps the full contract when invoked directly.
+In both **v1** and **v2**, `--scope global` puts me in charge across your projects right away (writing your harness's global instruction file and `PERSONALITY.md` configuration, plus the `quintet` agent in Antigravity). For repo-specific rules or a custom per-project personality, run `--scope project --target /path/to/project`.
 
-Once activated, start a session in the project you want me to work on and describe the outcome in your usual chat.
+Once installed, start a session in the project you want me to work on and describe the outcome in your usual chat.
 
 For project-scoped installs and dry runs, see the [v1 setup guide](https://github.com/LazyGreed/quintet/blob/refs/heads/v1/README.md#install) or the [v2 setup guide](https://github.com/LazyGreed/quintet/blob/refs/heads/v2/README.md#install).
 
-Want me a little less smug? Bold request~♡ For a `v1` global install—or Antigravity's explicit `quintet` agent in `v2`—edit `PERSONALITY.md` in your Quintet edition checkout. For a project install in either edition (which is how `PERSONALITY.md` reaches Pi and Claude Code in `v2`), edit `PERSONALITY.md` at the root of the target project. Rerun the same install command, then start a new session to load the change. [See my default personality](https://github.com/LazyGreed/quintet/blob/refs/heads/v2/PERSONALITY.md).
+Want me a little less smug? Bold request~♡ For a global install in either edition, edit `PERSONALITY.md` in your Quintet edition checkout. For a project install, edit `PERSONALITY.md` at the root of the target project. Rerun the same install command, then start a new session to load the change. [See my default personality](https://github.com/LazyGreed/quintet/blob/refs/heads/v2/PERSONALITY.md).
