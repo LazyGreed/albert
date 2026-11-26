@@ -17,6 +17,14 @@ assert_absent() {
     fi
   fi
 }
+# Weight-audit references ship byte-for-byte. Enumerate the source tree so a new
+# reference cannot be silently skipped; a missing installed copy fails the cmp.
+assert_refs() {
+  local dest="$1" ref
+  for ref in "$root"/skills/weight-space-network-audit/references/*.md; do
+    cmp -- "$ref" "$dest/${ref##*/}"
+  done
+}
 project="$tmp/kanade"
 mkdir -p "$project" "$tmp/bin"
 printf '# Kanade contract\nKeep this rule.\n' > "$project/AGENTS.md"
@@ -65,9 +73,7 @@ for tool in pi claude; do
   grep -q 'opt-in' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   assert_absent 'Always-on' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.$tool/skills/weight-space-network-audit/SKILL.md"
-  for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
-    cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$project/.$tool/skills/weight-space-network-audit/references/$ref"
-  done
+  assert_refs "$project/.$tool/skills/weight-space-network-audit/references"
   for role in nora felix vera iris; do
     assert_absent 'Alien Science Ideation is always on' "$project/.$tool/agents/$role.md"
     assert_absent 'Always-on Alien Science' "$project/.$tool/agents/$role.md"
@@ -190,9 +196,7 @@ cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$
 grep -q 'opt-in' "$project/.agents/skills/alien-science-ideation/SKILL.md"
 assert_absent 'Always-on' "$project/.agents/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.agents/skills/weight-space-network-audit/SKILL.md"
-for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
-  cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$project/.agents/skills/weight-space-network-audit/references/$ref"
-done
+assert_refs "$project/.agents/skills/weight-space-network-audit/references"
 grep -q '^## Opt-in Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
 assert_absent 'Alien Science Ideation is always on' "$project/.agents/rules/AGENTS.md"
 assert_absent 'Always-on Alien Science' "$project/.agents/rules/AGENTS.md"
@@ -230,9 +234,7 @@ cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$
 grep -q 'opt-in' "$agy_global/skills/alien-science-ideation/SKILL.md"
 assert_absent 'Always-on' "$agy_global/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$agy_global/skills/weight-space-network-audit/SKILL.md"
-for ref in alien-experiments.md architecture-playbook.md relu-audit.md research.md checkpoint-io.md; do
-  cmp -s "$root/skills/weight-space-network-audit/references/$ref" "$agy_global/skills/weight-space-network-audit/references/$ref"
-done
+assert_refs "$agy_global/skills/weight-space-network-audit/references"
 grep -q '^## Opt-in Alien Science Ideation$' "$agy_global/rules/AGENTS.md"
 assert_absent 'Alien Science Ideation is always on' "$agy_global/rules/AGENTS.md"
 assert_absent 'Always-on Alien Science' "$agy_global/rules/AGENTS.md"
