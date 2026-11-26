@@ -25,10 +25,11 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 ~/.gemini/config/plugins/quintet. Project: installs in PROJECT/.pi or PROJECT/.claude
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Both global and project scopes install the full coordinator contract and personality.
-Antigravity names the coordinator agent quintet in both scopes. A global install replaces a
-legacy ~/.gemini/config/plugins/albert (the previous project name) once the new plugin is
-written: text you added to its rules/AGENTS.md outside the managed block is carried into the
-new file first. An entry this installer does not write keeps the old directory and is listed.
+Antigravity installs the quintet plugin (rules/AGENTS.md, worker agents, and skills). A global
+install replaces a legacy ~/.gemini/config/plugins/albert (the previous project name) once the
+new plugin is written: text you added to its rules/AGENTS.md outside the managed block is
+carried into the new file first. An entry this installer does not write keeps the old directory
+and is listed.
 Web research is enabled by default for eligible workers (use --no-web to disable).
 No bundled settings files are copied. Existing model/provider settings are preserved.
 USAGE
@@ -160,7 +161,6 @@ render_instructions() {
 install_role() {
   local tool="$1" role="$2" dst="$3" tools desc color
   case "$role" in
-    albert) desc='Quintet coordinator; delegates to Nora/Felix/Vera/Iris, verifies, and reports.' ;;
     nora) desc='Read-only investigation, architecture, research, root-cause analysis.' ;;
     felix) desc='Implement one bounded code change; perform targeted verification.' ;;
     vera) desc='Independent, read-only consequential-change review.' ;;
@@ -177,14 +177,12 @@ install_role() {
   elif [[ "$tool" == antigravity || "$tool" == agy ]]; then
     if ((with_web)); then
       case "$role" in
-        albert) tools='read_file, run_command, manage_task, search_web, invoke_subagent, send_message, manage_subagents, ask_question' ;;
         felix) tools='read_file, edit_file, write_file, run_command, manage_task, search_web' ;;
         iris) tools='read_file, run_command, manage_task' ;;
         *) tools='read_file, run_command, manage_task, search_web' ;;
       esac
     else
       case "$role" in
-        albert) tools='read_file, run_command, manage_task, invoke_subagent, send_message, manage_subagents, ask_question' ;;
         felix) tools='read_file, edit_file, write_file, run_command, manage_task' ;;
         iris) tools='read_file, run_command, manage_task' ;;
         *) tools='read_file, run_command, manage_task' ;;
@@ -209,15 +207,8 @@ install_role() {
   temp="$(mktemp)"
   {
     if [[ "$tool" == antigravity || "$tool" == agy ]]; then
-      # Antigravity exposes the agent name to the user, so the coordinator is Quintet.
-      # Other harnesses keep the internal `albert` agent key their installs depend on.
-      if [[ "$role" == albert ]]; then
-        printf -- '---\nname: quintet\ndescription: %s\n' "$desc"
-        printf 'mainAgent: true\nsubagent: true\n'
-      else
-        printf -- '---\nname: %s\ndescription: %s\n' "$role" "$desc"
-        printf 'subagent: true\nmainAgent: false\n'
-      fi
+      printf -- '---\nname: %s\ndescription: %s\n' "$role" "$desc"
+      printf 'subagent: true\nmainAgent: false\n'
       printf 'tools: [%s]\n' "$tools"
       printf -- '---\n\n'
     else
@@ -227,11 +218,7 @@ install_role() {
       if [[ "$tool" == pi && "$role" != felix ]]; then printf 'disallowed_tools: edit, write\n'; fi
       printf -- '---\n\n'
     fi
-    if [[ "$role" == albert ]]; then
-      render_coordinator
-    else
-      cat -- "$source_dir/agents/$role.md"
-    fi
+    cat -- "$source_dir/agents/$role.md"
   } > "$temp"
   put "$temp" "$dst"
   rm -f -- "$temp"
@@ -355,6 +342,7 @@ generated_antigravity_paths() {
   {
     _generated_path plugin.json
     _generated_path rules/AGENTS.md
+    # Legacy plugins/albert installs include agents/albert.md, so recognize it during migration.
     for role in albert nora felix vera iris; do _generated_path "agents/$role.md"; done
     for skill in "${installable_skills[@]}"; do
       while IFS= read -r -d '' file; do
@@ -481,7 +469,7 @@ EOF
       rm -f -- "$temp_manifest"
     fi
     install_instructions "$instruction"
-    for role in albert nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
+    for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
     install_skills "$root"
     # Migrate only after the replacement tree is fully written and verified above.
     if [[ "$scope" == global ]]; then migrate_legacy_antigravity_plugin "$root"; fi

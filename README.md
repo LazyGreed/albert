@@ -71,13 +71,13 @@ Name: Kanade
 - Explain important choices, not routine steps.
 ```
 
-Rerun your install command to apply changes. Global installs read `PERSONALITY.md` directly across Pi, Claude Code, and Antigravity (including the coordinator agent and plugin display name). Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if missing and never overwrite it on reinstall.
+Rerun your install command to apply changes. Global installs read `PERSONALITY.md` directly across Pi, Claude Code, and Antigravity (including the plugin display name). Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if missing and never overwrite it on reinstall.
 
 Only the main agent uses `PERSONALITY.md`. Nora, Felix, Vera, and Iris keep their fixed roles, permissions, approval gates, and verification standards.
 
 ### Antigravity naming and legacy migration
 
-- **Plugin identity:** Antigravity installs register the coordinator agent as `quintet` in both scopes (`~/.gemini/config/plugins/quintet` globally; `PROJECT/.agents` per project).
+- **Plugin identity:** Antigravity installs register the `quintet` plugin (`~/.gemini/config/plugins/quintet` globally; `PROJECT/.agents` per project), loading the coordinator via `rules/AGENTS.md` and the four specialists under `agents/`.
 - **Legacy `plugins/albert` migration:** Global Antigravity installs replace an older `plugins/albert` directory only after the new `plugins/quintet` tree is complete.
 - **Preserved user content:** Text outside `<!-- ALBERT MANAGED START -->` / `<!-- ALBERT MANAGED END -->` in `rules/AGENTS.md` is carried into the new `rules/AGENTS.md` before removal. Any unrecognized file, directory, or symlink inside `plugins/albert` keeps the old directory in place, lists those entries, and prints the exact `rm -rf` command.
 - **Generated files:** Re-installing overwrites generated agent and skill files in place; use `--dry-run` to preview carry-over and migration output safely.

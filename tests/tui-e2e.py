@@ -107,7 +107,9 @@ def test_antigravity_project(root: Path):
     session.expect(b'DONE')
     session.finish()
     assert (project / '.agents/rules/AGENTS.md').is_file()
-    assert 'name: quintet' in (project / '.agents/agents/albert.md').read_text()
+    assert '## Dynamic workstreams, ownership, and acceptance' in (project / '.agents/rules/AGENTS.md').read_text()
+    assert (project / '.agents/agents/nora.md').is_file()
+    assert not (project / '.agents/agents/albert.md').exists()
     assert not (project / '.pi').exists()
 
 

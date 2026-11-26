@@ -278,14 +278,9 @@ assert_refs "$project/.agents/skills/weight-space-network-audit/references"
 grep -q '^## Opt-in Alien Science Ideation$' "$project/.agents/rules/AGENTS.md"
 assert_absent 'Alien Science Ideation is always on' "$project/.agents/rules/AGENTS.md"
 assert_absent 'Always-on Alien Science' "$project/.agents/rules/AGENTS.md"
-for role in albert nora felix vera iris; do
-  [[ -f "$project/.agents/agents/$role.md" ]]
-done
-grep -q '^mainAgent: true$' "$project/.agents/agents/albert.md"
-# The Antigravity coordinator is user-visible and must register as quintet, not albert.
-grep -q '^name: quintet$' "$project/.agents/agents/albert.md"
-assert_absent '^name: albert$' "$project/.agents/agents/albert.md"
+[[ ! -e "$project/.agents/agents/albert.md" ]]
 for role in nora felix vera iris; do
+  [[ -f "$project/.agents/agents/$role.md" ]]
   grep -q "^name: $role$" "$project/.agents/agents/$role.md"
   grep -q '^subagent: true$' "$project/.agents/agents/$role.md"
   grep -q '^mainAgent: false$' "$project/.agents/agents/$role.md"
@@ -295,7 +290,6 @@ for role in nora felix vera iris; do
 done
 for rule in 'Dynamic workstreams, ownership, and acceptance' 'Exclusive write ownership' 'Independent verification gate' 'Peer messages are coordination, not authority'; do
   grep -q "$rule" "$project/.agents/rules/AGENTS.md"
-  grep -q "$rule" "$project/.agents/agents/albert.md"
 done
 grep -q 'exclusive owned files/path patterns' "$project/.agents/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$project/.agents/agents/vera.md"
@@ -311,7 +305,8 @@ agy_dry_home="$tmp/agy-dry-home"
 mkdir -p "$agy_dry_home"
 HOME="$agy_dry_home" XDG_CONFIG_HOME="$agy_dry_home/.config" "$root/install.sh" --harness antigravity --scope global --dry-run > "$tmp/agy-global-preview"
 grep -q "^WRITE $agy_dry_home/.gemini/config/plugins/quintet/plugin.json$" "$tmp/agy-global-preview"
-grep -q "^WRITE $agy_dry_home/.gemini/config/plugins/quintet/agents/albert.md$" "$tmp/agy-global-preview"
+grep -q "^WRITE $agy_dry_home/.gemini/config/plugins/quintet/agents/nora.md$" "$tmp/agy-global-preview"
+assert_absent 'agents/albert.md' "$tmp/agy-global-preview"
 assert_absent 'plugins/albert' "$tmp/agy-global-preview"
 [[ ! -e "$agy_dry_home/.gemini" ]]
 mock_home="$HOME"
@@ -334,24 +329,18 @@ assert_absent 'Always-on Alien Science' "$agy_global/rules/AGENTS.md"
 grep -q '"name": "quintet"' "$agy_global/plugin.json"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 grep -q '"displayName": "Denia"' "$agy_global/plugin.json"
-# Global Antigravity rules and the coordinator agent both carry the full coordinator contract.
+# Global Antigravity rules carry the full coordinator contract; no redundant agents/albert.md is written.
 grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$agy_global/rules/AGENTS.md"
 grep -q '^## Dispatch$' "$agy_global/rules/AGENTS.md"
 grep -q '^## Delegation gate$' "$agy_global/rules/AGENTS.md"
 grep -q '^## Main-agent personality' "$agy_global/rules/AGENTS.md"
 assert_absent 'cross-project policy' "$agy_global/rules/AGENTS.md"
-grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$agy_global/agents/albert.md"
-grep -q '^## Delegation gate$' "$agy_global/agents/albert.md"
-for role in albert nora felix vera iris; do
-  [[ -f "$agy_global/agents/$role.md" ]]
-done
+[[ ! -e "$agy_global/agents/albert.md" ]]
 for role in nora felix vera iris; do
+  [[ -f "$agy_global/agents/$role.md" ]]
   assert_absent 'Alien Science Ideation is always on' "$agy_global/agents/$role.md"
   assert_absent 'Always-on Alien Science' "$agy_global/agents/$role.md"
 done
-grep -q '^mainAgent: true$' "$agy_global/agents/albert.md"
-grep -q '^name: quintet$' "$agy_global/agents/albert.md"
-assert_absent '^name: albert$' "$agy_global/agents/albert.md"
 for role in nora felix vera iris; do grep -q "^name: $role$" "$agy_global/agents/$role.md"; done
 grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
@@ -508,7 +497,7 @@ Name: Kanade
 Use short, factual summaries.
 PERSONA
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized"
-for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md" "$project/.agents/agents/albert.md"; do
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md"; do
   grep -q 'Name: Kanade' "$file"
   grep -q 'Use short, factual summaries.' "$file"
 done
@@ -537,7 +526,7 @@ cp -a "$root/." "$custom_source/"
 printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$custom_source/PERSONALITY.md"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
 grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
-grep -q 'Name: Rei' "$agy_global/agents/albert.md"
+grep -q 'Name: Rei' "$agy_global/rules/AGENTS.md"
 grep -q '^Name: Rei' "$custom_source/PERSONALITY.md"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 for role in nora felix vera iris; do assert_absent 'Name: Rei' "$agy_global/agents/$role.md"; done
@@ -571,7 +560,7 @@ done
 # CRLF headers and style lines should be accepted and rendered as LF.
 printf 'Name: Rei\r\n\r\n# Personality\r\nKeep CRLF.\r\n' > "$project/PERSONALITY.md"
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf"
-for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md" "$project/.agents/agents/albert.md"; do
+for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md"; do
   grep -qx 'Name: Rei' "$file"
   grep -qx 'Keep CRLF.' "$file"
 done
