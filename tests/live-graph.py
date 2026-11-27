@@ -2,6 +2,8 @@
 """Opt-in Q0/Q1 or same-revision workflow trials using Claude Code; no provider call in self-test."""
 
 import argparse
+from contextlib import redirect_stdout
+from io import StringIO
 import json
 import os
 from pathlib import Path
@@ -11,6 +13,7 @@ import sys
 import tempfile
 import time
 import uuid
+from unittest.mock import patch
 
 
 HERE = Path(__file__).resolve().parents[1]
@@ -890,7 +893,7 @@ def self_test():
         first = initial_join_failure(repo, base, seed, snap, '')
         assert first['observed'] and first['inputs'] == {'api': api_head, 'consumer': consumer_head}
         assert not first['reported_binding']
-    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources, same-revision split')
+    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources, same-revision split and pair order')
 
 
 def source_head(source):
@@ -943,8 +946,13 @@ def comparison_plan(scenarios, trials, *, same_revision):
     if not isinstance(trials, int) or trials < 1:
         raise ValueError('trials must be positive')
     variants = (('v1', 'v1'), ('v2', 'v2')) if same_revision else (('Q0', None), ('Q1', None))
-    return [{'scenario': scenario, 'trial': index, 'variant': variant, 'workflow': workflow}
-            for scenario in scenarios for index in range(1, trials + 1) for variant, workflow in variants]
+    plan = []
+    for scenario in scenarios:
+        for index in range(1, trials + 1):
+            ordered = variants[::-1] if same_revision and index % 2 == 0 else variants
+            for variant, workflow in ordered:
+                plan.append({'scenario': scenario, 'trial': index, 'variant': variant, 'workflow': workflow})
+    return plan
 
 
 def prove_same_revision():
@@ -1002,9 +1010,9 @@ def prove_same_revision():
             '--target', str(plain), '--no-tui', '--no-web')
         run(plain, *historical)
         assert '--workflow' not in (plain / 'install-argv').read_text().splitlines()
-        assert comparison_plan(('S1',), 1, same_revision=False) == [
-            {'scenario': 'S1', 'trial': 1, 'variant': 'Q0', 'workflow': None},
-            {'scenario': 'S1', 'trial': 1, 'variant': 'Q1', 'workflow': None}]
+        assert comparison_plan(('S1', 'S2'), 3, same_revision=False) == [
+            {'scenario': scenario, 'trial': index, 'variant': variant, 'workflow': None}
+            for scenario in ('S1', 'S2') for index in (1, 2, 3) for variant in ('Q0', 'Q1')]
 
         repo = root / 'checkout'
         repo.mkdir()
@@ -1014,6 +1022,39 @@ def prove_same_revision():
         put(repo, 'a.txt', 'shared\n')
         sha = commit(repo, 'Shared revision')
         assert same_revision(repo, sha) == sha
+        out = root / 'benchmark'
+        out.mkdir()
+        args = argparse.Namespace(scenario=['S1'], trials=3, same_revision=True,
+                                  model='fixture-model', budget=1, timeout=60)
+        sources = {'v1': repo, 'v2': repo}
+        revisions = {'v1': sha, 'v2': sha}
+        observed = []
+
+        def fixture_trial(source, trial_out, config, scenario, *, legacy, workflow):
+            observed.append((trial_out.name, workflow, legacy))
+            assert (source, source_head(source), scenario) == (repo, sha, 'S1')
+            assert (config.model, config.budget, config.timeout) == ('fixture-model', 1, 60)
+            if trial_out.name == 'S1-2-v2':
+                raise RuntimeError('fixture blocked')
+            return {'accepted': True}
+
+        stdout = StringIO()
+        with patch(f'{__name__}.trial', side_effect=fixture_trial), redirect_stdout(stdout):
+            run_comparison(args, sources, revisions, out, 'fixture-claude')
+        expected = [(1, 'v1', 1), (1, 'v2', 2), (2, 'v2', 1), (2, 'v1', 2),
+                    (3, 'v1', 1), (3, 'v2', 2)]
+        assert observed == [(f'S1-{index}-{variant}', variant, variant == 'v1')
+                            for index, variant, _ in expected]
+        results = [json.loads(line) for line in stdout.getvalue().splitlines()]
+        assert [(row['trial'], row['variant'], row['pair_position']) for row in results] == expected
+        for row in results:
+            result_path = out / f"S1-{row['trial']}-{row['variant']}" / 'result.json'
+            assert json.loads(result_path.read_text()) == row
+            assert row['workflow'] == row['variant']
+            assert row['source_revisions'] == revisions
+            assert row['model'] == args.model
+        assert results[2]['accepted'] is False and results[2]['blocked'] == 'fixture blocked'
+        assert all(row['accepted'] for row in results[:2] + results[3:])
         put(repo, 'dirty.txt', 'dirty\n')
         try:
             same_revision(repo, sha)
@@ -1088,7 +1129,12 @@ def main():
         parser.error(f'--out must be outside the runner and {outside}')
     version = run(HERE, 'claude', '--version', text=True).stdout.strip()
     root.mkdir(parents=True, exist_ok=False)
-    for item in comparison_plan(args.scenario or SCENARIOS, args.trials, same_revision=args.same_revision):
+    run_comparison(args, sources, revisions, root, version)
+
+
+def run_comparison(args, sources, revisions, root, version):
+    plan = comparison_plan(args.scenario or SCENARIOS, args.trials, same_revision=args.same_revision)
+    for position, item in enumerate(plan):
         scenario, index, variant, workflow = item['scenario'], item['trial'], item['variant'], item['workflow']
         source = sources[variant]
         out = root / f'{scenario}-{index}-{variant}'
@@ -1104,6 +1150,7 @@ def main():
                       source_revisions=revisions)
         if workflow:
             result['workflow'] = workflow
+            result['pair_position'] = position % 2 + 1
         put(out, 'result.json', json.dumps(result, indent=2) + '\n')
         print(json.dumps(result), flush=True)
 
