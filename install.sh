@@ -617,15 +617,42 @@ relocate_antigravity_rule_backups() {
   done
 }
 
+put_relinked_markdown() {
+  local src="$1" dst="$2" scratch rendered status=0
+  shift 2
+  scratch="$(mktemp -d)" || return 1
+  rendered="$scratch/${src##*/}"
+  if ! sed "$@" "$src" > "$rendered" || ! put "$rendered" "$dst"; then
+    status=1
+  fi
+  rm -f -- "$rendered"
+  rmdir -- "$scratch"
+  return "$status"
+}
+
 install_skills() {
-  local root="$1" skill file rel
+  local root="$1" skill file rel references="$1/skills/verification/references"
+  local upstream='https://github.com/LazyGreed/quintet/blob/main'
   for skill in "${installable_skills[@]}"; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
-      put "$file" "$root/skills/$rel" || return 1
+      if [[ "$rel" == verification/SKILL.md ]]; then
+        put_relinked_markdown "$file" "$root/skills/$rel" \
+          -e 's|](\.\./\.\./docs/|](references/|g' || return 1
+      else
+        put "$file" "$root/skills/$rel" || return 1
+      fi
     done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
   done
-  put "$source_dir/docs/workflow.md" "$root/skills/verification/references/workflow.md"
+  # Keep workflow and harness references with the installed checkers.
+  for rel in workflows/v1.md workflows/v2.md docs/read-only-verification.md docs/peer-messaging.md; do
+    put "$source_dir/$rel" "$references/${rel##*/}" || return 1
+  done
+  put_relinked_markdown "$source_dir/docs/workflow.md" "$references/workflow.md" \
+    -e 's|](\.\./workflows/|](|g' \
+    -e 's|](\.\./skills/|](../../|g' \
+    -e "s|](\.\./AGENTS\.md)|]($upstream/AGENTS.md)|g" \
+    -e "s|](\.\./README\.md#|]($upstream/README.md#|g"
 }
 
 # Older installs wrote the Antigravity coordinator to plugins/albert.

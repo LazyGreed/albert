@@ -355,7 +355,6 @@ for tool in pi claude; do
   grep -Fq 'The coordinator runs the v2 graph gates.' "$verification/SKILL.md"
   grep -Fq 'scripts/check-graph.sh --help' "$verification/SKILL.md"
   grep -Fq 'references/workflow.md#dependency-graph' "$verification/SKILL.md"
-  cmp -- "$root/docs/workflow.md" "$verification/references/workflow.md"
   for role in nora felix vera iris; do
     assert_absent 'Alien Science Ideation is always on' "$project/.$tool/agents/$role.md"
     assert_absent 'Always-on Alien Science' "$project/.$tool/agents/$role.md"
@@ -1179,12 +1178,12 @@ diff -u "$tmp/legacy-block-before" "$tmp/legacy-block-after"
 cmp -- <(printf 'old rule\n') "$legacy_block_quintet/rules/AGENTS.md"
 cmp -- <(printf 'block verification\n') "$legacy_block_quintet/skills/verification"
 
-# Pi packages are still installed before project writes. A blocked skill rolls
-# the project tree back and does not publish subagents.json for the failed run.
+# Pi packages are installed before project writes. A blocked workflow reference
+# rolls back the project tree and the Pi settings registered in this run.
 pi_block="$tmp/pi-block"
 pi_block_home="$tmp/pi-block-home"
-mkdir -p "$pi_block/.pi/skills" "$pi_block_home"
-printf 'block\n' > "$pi_block/.pi/skills/verification"
+mkdir -p "$pi_block/.pi/skills/verification" "$pi_block_home"
+printf 'block\n' > "$pi_block/.pi/skills/verification/references"
 printf '# Pi contract\nKeep the pi rule.\n' > "$pi_block/AGENTS.md"
 snapshot_tree "$pi_block" "$tmp/pi-block-before"
 : > "$MOCK_PI_LOG"
@@ -1193,6 +1192,8 @@ HOME="$pi_block_home" PI_CODING_AGENT_DIR="$pi_block_home/.pi/agent" \
   "$root/install.sh" --harness pi --scope project --target "$pi_block" --workflow v2 --no-tui --no-web \
   > "$tmp/pi-block-out" 2> "$tmp/pi-block-err" || rc=$?
 [[ "$rc" -ne 0 ]]
+grep -Fxq "WRITE $pi_block/.pi/skills/verification/references/v1.md" "$tmp/pi-block-out"
+grep -Fxq 'Install failed; undid writes from this run.' "$tmp/pi-block-err"
 grep -Fxq "pi install $subagents_pin --no-approve" "$MOCK_PI_LOG"
 grep -Fxq "pi install $web_pin --no-approve" "$MOCK_PI_LOG"
 [[ ! -e "$pi_block_home/.pi/agent/subagents.json" && ! -e "$pi_block_home/.pi/agent/settings.json" ]]
@@ -1321,17 +1322,12 @@ for role, desc in expected.items():
         raise SystemExit(f"agent mismatch: {role}")
 PY
 }
-# The installer bundles the workflow guide alongside the source verification skill.
-cp -R -- "$root/skills/verification" "$tmp/expected-verification"
-mkdir -p "$tmp/expected-verification/references"
-cp -- "$root/docs/workflow.md" "$tmp/expected-verification/references/workflow.md"
 assert_codex_skills() {
   local skills_dir="$1" skill tool
   for skill in architecture domain-modeling documentation research alien-science-ideation weight-space-network-audit; do
     diff -r -- "$root/skills/$skill" "$skills_dir/$skill"
   done
-  cmp -- "$root/docs/workflow.md" "$skills_dir/verification/references/workflow.md"
-  diff -r -- "$tmp/expected-verification" "$skills_dir/verification"
+  diff -r -- "$root/skills/verification/scripts" "$skills_dir/verification/scripts"
   for tool in check-graph.sh check-ownership.sh check-readonly.sh; do
     [[ -x "$skills_dir/verification/scripts/$tool" ]] || return 1
   done
@@ -1361,6 +1357,9 @@ diff -u "$tmp/codex-dry-before" "$tmp/codex-dry-after"
 grep -Fxq "WRITE $codex_project/AGENTS.md" "$tmp/codex-dry"
 grep -Fxq "WRITE $codex_project/.codex/agents/nora.toml" "$tmp/codex-dry"
 grep -Fxq "WRITE $codex_project/.agents/skills/verification/SKILL.md" "$tmp/codex-dry"
+for ref in workflow.md v1.md v2.md read-only-verification.md peer-messaging.md; do
+  grep -Fxq "WRITE $codex_project/.agents/skills/verification/references/$ref" "$tmp/codex-dry"
+done
 assert_absent 'pi install\|subagents.json' "$tmp/codex-dry"
 : > "$MOCK_PI_CALLS"
 "$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --no-web \
@@ -1425,6 +1424,64 @@ assert_codex_skills "$codex_alt/skills"
 [[ ! -e "$codex_alt_parent/.agents" ]]
 cmp -- <(printf 'alt config\n') "$codex_alt/config.toml"
 [[ ! -e "$codex_alt_parent/.codex" && ! -e "$codex_alt_parent/.pi" && ! -e "$codex_alt_parent/.claude" ]]
+
+# Check relocated Markdown in both scopes of every harness, including the peer
+# guide's backlink and anchors such as the verification skill's dependency graph.
+python3 - "$root" \
+  "$project/.pi/skills" "$PI_CODING_AGENT_DIR/skills" \
+  "$project/.claude/skills" "$HOME/.claude/skills" \
+  "$project/.agents/skills" "$agy_global/skills" \
+  "$codex_project/.agents/skills" "$codex_global_home/.codex/skills" "$codex_alt/skills" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+root, *installations = map(Path, sys.argv[1:])
+upstream = 'https://github.com/LazyGreed/quintet/blob/main/'
+link = re.compile(r'(?<=\]\()[^\s)]+(?=\))')
+
+
+def check_anchor(path, anchor):
+    headings = re.findall(r'^#{1,6} +(.+)$', path.read_text(), re.MULTILINE)
+    slugs = {re.sub(r'[^\w -]', '', heading.lower()).replace(' ', '-') for heading in headings}
+    assert anchor in slugs, f'{path}: missing #{anchor}'
+
+
+for skills in installations:
+    for source, installed in (
+        ('docs/workflow.md', 'verification/references/workflow.md'),
+        ('skills/verification/SKILL.md', 'verification/SKILL.md'),
+        ('docs/peer-messaging.md', 'verification/references/peer-messaging.md'),
+    ):
+        source_file, installed_file = root / source, skills / installed
+        original, relocated = source_file.read_text(), installed_file.read_text()
+        assert link.sub('', relocated) == link.sub('', original), f'{installed_file}: changed content'
+        for source_link, installed_link in zip(link.findall(original), link.findall(relocated), strict=True):
+            if source_link.startswith('https://'):
+                assert installed_link == source_link, (installed_file, installed_link)
+                continue
+            source_path, _, source_anchor = source_link.partition('#')
+            installed_path, _, anchor = installed_link.partition('#')
+            source_target = (source_file.parent / source_path).resolve()
+            assert anchor == source_anchor, (installed_file, installed_link)
+            if source_target in (root / 'AGENTS.md', root / 'README.md'):
+                assert installed_path == upstream + source_target.name, (installed_file, installed_link)
+                target = source_target
+            else:
+                target = (installed_file.parent / installed_path).resolve()
+                assert target.is_relative_to(skills), (installed_file, installed_link)
+                assert target.is_file(), f'{installed_file}: missing {installed_link}'
+                if source_target == root / 'docs/workflow.md':
+                    assert target == skills / 'verification/references/workflow.md', (installed_file, installed_link)
+                else:
+                    assert target.read_bytes() == source_target.read_bytes(), (installed_file, installed_link)
+            if anchor:
+                check_anchor(target, anchor)
+    for edition in ('v1', 'v2'):
+        bundled = skills / f'verification/references/{edition}.md'
+        assert bundled.read_bytes() == (root / f'workflows/{edition}.md').read_bytes(), bundled
+print(f'installed workflow links PASS: {len(installations)} layouts')
+PY
 
 # A coordinator file over the harness limit is not published. Antigravity and
 # Codex use different limits. The message must not claim a tail cut.
