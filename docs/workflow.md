@@ -24,7 +24,7 @@ Pi honors `$PI_CODING_AGENT_DIR/AGENTS.md` when configured. Antigravity's
 global `rules/AGENTS.md` is inside `~/.gemini/config/plugins/quintet`.
 
 When working directly in Quintet with no project installation, the root
-`AGENTS.md` points to the default [v2 workflow](../workflows/v2.md).
+[AGENTS.md](../AGENTS.md) points to the default [v2 workflow](../workflows/v2.md).
 The coordinator puts `WORKFLOW: v1` or `WORKFLOW: v2` in workstream briefs so
 Felix and Vera use the task's evidence rules even if both scopes are loaded.
 
@@ -164,8 +164,9 @@ research directions, or the skill. The worker brief must confirm the request.
 The [weight-space audit skill](../skills/weight-space-network-audit/SKILL.md)
 has three activation modes.
 
-- `references/relu-audit.md` is the specialized path for small feed-forward
-  ReLU decision networks with accessible weights and an explicit protocol.
+- [skills/weight-space-network-audit/references/relu-audit.md](../skills/weight-space-network-audit/references/relu-audit.md)
+  is the specialized path for small feed-forward ReLU decision networks with
+  accessible weights and an explicit protocol.
 - `AUDIT_ONLY` inspects checkpoints without editing weights.
 - `AUTO_IMPROVE`, `DIRECT_ONLY`, and `RESEARCH` require an explicit request for
   model improvement or the universal methodology. Authorized reversible edits
@@ -232,10 +233,11 @@ shows it detects collisions or avoids rework that Q1 misses.
 
 ## Harness notes
 
-- Pi requires Pi 1.1.0 or later and `npm:@tintinweb/pi-subagents`. Inspect
-  workers in FleetView or `/agents`. Worker profiles use `prompt_mode: append`.
-  `defaultJoinMode: group` in `subagents.json` batches completion notices and
-  delays early results. Manage that setting in Pi.
+- Pi requires Pi 1.1.0 or later. The installer registers
+  `npm:@tintinweb/pi-subagents` and `npm:pi-web-access` when they are absent,
+  and writes `subagents.json` with `"defaultJoinMode": "group"`. That setting
+  batches completion notices and delays early results. Inspect workers in
+  FleetView or `/agents`. Worker profiles use `prompt_mode: append`.
 - Use native peer messaging only when the host exposes it. Otherwise relay
   through the coordinator. [Peer messaging by harness](peer-messaging.md)
 - Background work may stop when the parent session exits. Check native state

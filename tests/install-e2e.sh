@@ -30,8 +30,9 @@ assert_workflow() {
     grep -Fq 'INTEGRATION_REF' "$file"
     assert_absent 'sequences work using' "$file"
   fi
-  [[ "$(grep -Fxc '<!-- ALBERT MANAGED START -->' "$file")" -eq 1 ]]
-  [[ "$(grep -Fxc '<!-- ALBERT MANAGED END -->' "$file")" -eq 1 ]]
+  [[ "$(grep -Fxc '<!-- QUINTET MANAGED START -->' "$file")" -eq 1 ]]
+  [[ "$(grep -Fxc '<!-- QUINTET MANAGED END -->' "$file")" -eq 1 ]]
+  assert_absent '<!-- ALBERT MANAGED' "$file"
 }
 # Weight-audit references ship byte-for-byte. Enumerate the source tree so a new
 # reference cannot be silently skipped; a missing installed copy fails the cmp.
@@ -44,7 +45,7 @@ assert_refs() {
 # Byte-exact text before the managed block, so blank lines there are compared too.
 prefix_bytes() {
   local file="$1" offset
-  offset="$(grep -b -m1 -F -- '<!-- ALBERT MANAGED START -->' "$file" | cut -d: -f1)"
+  offset="$(grep -b -m1 -F -e '<!-- QUINTET MANAGED START -->' -e '<!-- ALBERT MANAGED START -->' "$file" | head -n1 | cut -d: -f1)"
   head -c "$offset" -- "$file"
 }
 project="$tmp/kanade"
@@ -53,15 +54,21 @@ printf '# Kanade contract\nKeep this rule.\n' > "$project/AGENTS.md"
 printf '# Claude contract\nKeep this too.\n' > "$project/CLAUDE.md"
 cat > "$tmp/bin/pi" <<'PI'
 #!/usr/bin/env bash
+if [[ -n "${MOCK_PI_CALLS:-}" ]]; then printf '%s\n' "$*" >> "$MOCK_PI_CALLS"; fi
 case "$1" in
   --version) printf 'pi %s\n' "${MOCK_PI_VERSION:-1.1.0}" ;;
-  list) printf '%s\n' "${MOCK_PI_PACKAGES:-npm:@tintinweb/pi-subagents}" ;;
+  list)
+    [[ "${MOCK_PI_LIST_STATUS:-0}" == 0 ]] || exit "$MOCK_PI_LIST_STATUS"
+    printf '%s\n' "${MOCK_PI_PACKAGES:-npm:@tintinweb/pi-subagents}"
+    ;;
   install) printf 'pi %s\n' "$*" >> "$MOCK_PI_LOG" ;;
   *) exit 1 ;;
 esac
 PI
 chmod +x "$tmp/bin/pi"
-export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
+export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_CALLS="$tmp/pi-calls" MOCK_PI_VERSION=1.1.0
+export MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access'
+both_pi_packages="$MOCK_PI_PACKAGES"
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
 mkdir -p "$HOME"
 
@@ -77,14 +84,81 @@ for bad_workflow in '' v3 ../v1; do
   [[ ! -e "$project/PERSONALITY.md" && ! -e "$project/.agents" && ! -e "$MOCK_PI_LOG" ]]
 done
 
+"$root/install.sh" --help > "$tmp/help"
+assert_absent '[Aa]lbert' "$tmp/help"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
 [[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
+[[ ! -e "$PI_CODING_AGENT_DIR/subagents.json" && ! -e "$MOCK_PI_LOG" && ! -e "$MOCK_PI_CALLS" ]]
+grep -Fxq 'CHECK Pi >=1.1.0 before install' "$tmp/dry"
+grep -Fxq 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents' "$tmp/dry"
+grep -Fxq 'INSTALL IF ABSENT: pi install npm:pi-web-access' "$tmp/dry"
+grep -Fxq "WRITE $PI_CODING_AGENT_DIR/subagents.json" "$tmp/dry"
+"$root/install.sh" --harness claude --scope project --target "$project" --dry-run > "$tmp/claude-dry"
+assert_absent 'pi install\|subagents.json' "$tmp/claude-dry"
 MOCK_PI_VERSION=0.87.1 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/version" 2>&1 && exit 1
 ! test -d "$project/.pi"
+[[ ! -e "$PI_CODING_AGENT_DIR/subagents.json" && ! -e "$project/PERSONALITY.md" ]]
 grep -q 'Pi >=1.1.0 required' "$tmp/version"
-MOCK_PI_PACKAGES='npm:some-other-package' "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/missing" 2>&1 && exit 1
-! test -d "$project/.pi"
-grep -q 'pi install npm:@tintinweb/pi-subagents' "$tmp/missing"
+PATH="/usr/bin:/bin" "$root/install.sh" --harness pi --scope project --target "$project" > "$tmp/no-pi" 2>&1 && exit 1
+[[ ! -e "$project/.pi" && ! -e "$PI_CODING_AGENT_DIR/subagents.json" && ! -e "$project/PERSONALITY.md" ]]
+grep -q 'Pi missing. Install Pi >=1.1.0 first.' "$tmp/no-pi"
+MOCK_PI_LIST_STATUS=1 "$root/install.sh" --harness pi --scope project --target "$project" > "$tmp/list-fail" 2>&1 && exit 1
+unset MOCK_PI_LIST_STATUS
+[[ ! -e "$project/.pi" && ! -e "$PI_CODING_AGENT_DIR/subagents.json" ]]
+grep -q 'Cannot inspect Pi packages' "$tmp/list-fail"
+[[ ! -s "$MOCK_PI_LOG" ]]
+
+# Missing packages are installed with the exact global commands, including project scope and --no-web.
+# A package already shown by pi list is not installed again. Claude-only installs do not run pi.
+pkg_home="$tmp/pkg-home"
+pkg_project="$tmp/pkg-project"
+mkdir -p "$pkg_home" "$pkg_project"
+cat > "$tmp/expected-subagents.json" <<'JSON'
+{
+  "maxSubagentDepth": 1,
+  "defaultJoinMode": "group",
+  "disableDefaultAgents": true,
+  "packageAgents": false,
+  "fallbackSubagent": "none",
+  "fleetView": false,
+  "widgetMode": "all"
+}
+JSON
+: > "$MOCK_PI_LOG"
+MOCK_PI_PACKAGES='npm:unrelated' HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+  "$root/install.sh" --harness pi --scope project --target "$pkg_project" --no-web > "$tmp/pkg-install"
+grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
+grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+grep -Fxq 'INSTALL: pi install npm:@tintinweb/pi-subagents' "$tmp/pkg-install"
+grep -Fxq 'INSTALL: pi install npm:pi-web-access' "$tmp/pkg-install"
+assert_absent 'install -l\|pi install -l' "$MOCK_PI_LOG"
+[[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 2 ]]
+assert_absent 'pi-web-access/' "$pkg_project/.pi/agents/nora.md"
+[[ ! -e "$pkg_project/.pi/subagents.json" ]]
+cmp -- "$tmp/expected-subagents.json" "$pkg_home/.pi/agent/subagents.json"
+[[ "$(tail -c 1 "$pkg_home/.pi/agent/subagents.json" | od -An -tx1 | tr -d ' ')" == 0a ]]
+printf '{ "defaultJoinMode": "wait", "extra": true }\n' > "$pkg_home/.pi/agent/subagents.json"
+: > "$MOCK_PI_LOG"
+MOCK_PI_PACKAGES="$both_pi_packages" HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+  "$root/install.sh" --harness pi --scope global --no-web > "$tmp/pkg-replace"
+assert_absent '^pi install ' "$MOCK_PI_LOG"
+grep -Fq 'SKIP PI PACKAGE: npm:@tintinweb/pi-subagents is already registered; unchanged.' "$tmp/pkg-replace"
+grep -Fq 'SKIP PI PACKAGE: npm:pi-web-access is already registered; unchanged.' "$tmp/pkg-replace"
+cmp -- "$tmp/expected-subagents.json" "$pkg_home/.pi/agent/subagents.json"
+assert_absent 'wait' "$pkg_home/.pi/agent/subagents.json"
+claude_only="$tmp/claude-only-home"
+mkdir -p "$claude_only"
+: > "$MOCK_PI_CALLS"
+HOME="$claude_only" PI_CODING_AGENT_DIR="$claude_only/.pi/agent" \
+  "$root/install.sh" --harness claude --scope global > "$tmp/claude-only"
+[[ ! -e "$claude_only/.pi/agent/subagents.json" && ! -s "$MOCK_PI_CALLS" ]]
+agy_only="$tmp/agy-only-home"
+mkdir -p "$agy_only"
+: > "$MOCK_PI_CALLS"
+HOME="$agy_only" PI_CODING_AGENT_DIR="$agy_only/.pi/agent" \
+  "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-only"
+[[ ! -e "$agy_only/.pi/agent/subagents.json" && ! -s "$MOCK_PI_CALLS" ]]
+MOCK_PI_PACKAGES="$both_pi_packages"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/initial"
 [[ -f "$project/PERSONALITY.md" && ! -d "$project/.quintet" ]]
@@ -159,14 +233,32 @@ done
 grep -q 'integration acceptance separately' "$project/.pi/agents/iris.md"
 grep -q 'coordinator authority' "$project/.claude/agents/nora.md"
 
-grep -q '^OPTIONAL (Pi): .*defaultJoinMode' "$tmp/initial"
-[[ -z "$(find "$project" -name subagents.json)" ]]  # installer never writes Pi extension settings
+assert_absent 'OPTIONAL (Pi):' "$tmp/initial"
+assert_absent 'defaultJoinMode' "$tmp/initial"
+[[ ! -e "$project/.pi/subagents.json" && ! -e "$project/.claude/subagents.json" ]]
+cmp -- "$tmp/expected-subagents.json" "$PI_CODING_AGENT_DIR/subagents.json"
+[[ -n "$(find "$project" -maxdepth 1 -name 'AGENTS.md.quintet-backup-*' -print -quit)" ]]
+[[ -n "$(find "$project" -maxdepth 1 -name 'CLAUDE.md.quintet-backup-*' -print -quit)" ]]
+[[ -z "$(find "$project" -maxdepth 1 -name '*.albert-backup-*' -print -quit)" ]]
 grep -q 'Keep this rule.' "$project/AGENTS.md"
 grep -q 'Keep this too.' "$project/CLAUDE.md"
-[[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/AGENTS.md")" -eq 1 ]]
-[[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/CLAUDE.md")" -eq 1 ]]
+[[ "$(grep -c '<!-- QUINTET MANAGED START -->' "$project/AGENTS.md")" -eq 1 ]]
+[[ "$(grep -c '<!-- QUINTET MANAGED START -->' "$project/CLAUDE.md")" -eq 1 ]]
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/again"
 assert_absent '^WRITE ' "$tmp/again"
+# Old markers are the same block: identical inner text is still rewritten, and outside text stays.
+cp -- "$project/AGENTS.md" "$tmp/agents-quintet"
+awk '
+  $0 == "<!-- QUINTET MANAGED START -->" { print "<!-- ALBERT MANAGED START -->"; next }
+  $0 == "<!-- QUINTET MANAGED END -->" { print "<!-- ALBERT MANAGED END -->"; next }
+  { print }
+' "$project/AGENTS.md" > "$tmp/agents-old-markers"
+cp -- "$tmp/agents-old-markers" "$project/AGENTS.md"
+"$root/install.sh" --harness pi --scope project --target "$project" > "$tmp/marker-rewrite"
+grep -Fxq "WRITE $project/AGENTS.md" "$tmp/marker-rewrite"
+[[ "$(grep -c '^WRITE ' "$tmp/marker-rewrite")" -eq 1 ]]
+cmp -- "$tmp/agents-quintet" "$project/AGENTS.md"
+grep -Fxq 'Keep this rule.' "$project/AGENTS.md"
 
 # No bundled settings or legacy package install on a fresh install in either scope.
 [[ ! -e "$project/.claude/settings.json" && ! -e "$project/.pi/settings.json" ]]
@@ -225,6 +317,8 @@ grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$upgrade_agents"
 grep -q '^## Dispatch$' "$upgrade_agents"
 grep -q '^## Main-agent personality' "$upgrade_agents"
 assert_absent 'cross-project policy' "$upgrade_agents"
+[[ "$(grep -Fxc '<!-- QUINTET MANAGED START -->' "$upgrade_agents")" -eq 1 ]]
+assert_absent '<!-- ALBERT MANAGED' "$upgrade_agents"
 prefix_bytes "$upgrade_agents" > "$tmp/upgrade-prefix-after"
 cmp "$tmp/upgrade-prefix-before" "$tmp/upgrade-prefix-after"
 grep -Fqx 'Keep my global note.' "$upgrade_agents"
@@ -268,14 +362,17 @@ cmp "$tmp/mcp-registration" "$project/.mcp.json"
 cmp "$tmp/mcp-registration" "$HOME/.claude.json"
 assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
 
-# Web access: dry-run is side-effect free, Pi installs only when absent, and
-# both harnesses expose the right tools without granting them to Iris.
+# Web access: dry-run writes nothing and does not run pi. Registered packages are not installed again.
+# Both harnesses expose the right tools without granting them to Iris.
 : > "$MOCK_PI_LOG"
+: > "$MOCK_PI_CALLS"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web --dry-run > "$tmp/web-dry"
-grep -q '^CHECK Pi web: ' "$tmp/web-dry"
-[[ ! -s "$MOCK_PI_LOG" ]]
+grep -Fxq 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents' "$tmp/web-dry"
+grep -Fxq 'INSTALL IF ABSENT: pi install npm:pi-web-access' "$tmp/web-dry"
+[[ ! -s "$MOCK_PI_LOG" && ! -s "$MOCK_PI_CALLS" ]]
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-initial"
-grep -q '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG"
+assert_absent '^pi install \|^WRITE ' "$tmp/web-initial"
+assert_absent '^pi install ' "$MOCK_PI_LOG"
 for role in nora felix vera; do
   grep -q 'ext:pi-web-access/web_search' "$project/.pi/agents/$role.md"
   grep -q 'ext:pi-web-access/fetch_content' "$project/.pi/agents/$role.md"
@@ -285,11 +382,17 @@ done
 assert_absent 'pi-web-access/' "$project/.pi/agents/iris.md"
 assert_absent 'WebSearch' "$project/.claude/agents/iris.md"
 grep -q '## Web research' "$project/AGENTS.md"
-MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access' \
+: > "$MOCK_PI_LOG"
+MOCK_PI_PACKAGES='npm:@tintinweb/pi-subagents' HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+  "$root/install.sh" --harness pi --scope project --target "$pkg_project" --no-web > "$tmp/web-one"
+grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+assert_absent 'pi install npm:@tintinweb/pi-subagents\|install -l' "$MOCK_PI_LOG"
+[[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 1 ]]
+MOCK_PI_PACKAGES="$both_pi_packages" \
   "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-again"
-grep -q '^SKIP PI WEB:' "$tmp/web-again"
-assert_absent '^WRITE ' "$tmp/web-again"
-[[ "$(grep -c '^pi install -l npm:pi-web-access$' "$MOCK_PI_LOG")" -eq 1 ]]
+grep -Fq 'SKIP PI PACKAGE: npm:pi-web-access is already registered; unchanged.' "$tmp/web-again"
+assert_absent '^WRITE \|^pi install ' "$tmp/web-again"
+[[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 1 ]]
 
 # Antigravity CLI project-scope install, parallel workstream contracts, and idempotence.
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project"
@@ -324,7 +427,7 @@ grep -q 'exclusive owned files/path patterns' "$project/.agents/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$project/.agents/agents/vera.md"
 grep -q 'integration acceptance separately' "$project/.agents/agents/iris.md"
 grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
-[[ "$(grep -c '<!-- ALBERT MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
+[[ "$(grep -c '<!-- QUINTET MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-again"
 assert_absent '^WRITE ' "$tmp/agy-project-again"
 
@@ -555,7 +658,7 @@ awk '
   fenced { next }
   $0 == "<!-- QUINTET LEGACY CARRY START -->" { if (managed) exit 1; carry=1; next }
   $0 == "<!-- QUINTET LEGACY CARRY END -->" { carry=0; next }
-  $0 == "<!-- ALBERT MANAGED START -->" { managed=1 }
+  $0 == "<!-- QUINTET MANAGED START -->" { managed=1 }
   carry && $0 == "Keep our bespoke policy." { rules++ }
   END { if (rules != 1) exit 1 }
 ' "$carry_dest"
@@ -587,7 +690,7 @@ grep -Fxq 'simulated cross-filesystem rename refusal' "$tmp/agy-retry"
 grep -Fq "KEEP '$retry_dir': could not move the legacy plugin" "$tmp/agy-retry"
 diff -r -- "$tmp/retry-original" "$retry_dir"
 grep -Fxq 'Keep this on retry.' "$retry_dest"
-awk '$0 == "<!-- ALBERT MANAGED START -->" { print "User rule after the carry.\n" } { print }' \
+awk '$0 == "<!-- QUINTET MANAGED START -->" { print "User rule after the carry.\n" } { print }' \
   "$retry_dest" > "$tmp/retry-dest-before"
 cp -- "$tmp/retry-dest-before" "$retry_dest"
 REAL_MV="$(command -v mv)" PATH="$tmp/fail-rename:$PATH" HOME="$retry_home" \
@@ -691,7 +794,7 @@ grep -Fxq "KEEP '$guard_dir': the legacy plugin directory could not be enumerate
 [[ -f "$guard_dir/plugin.json" ]]
 chmod 700 "$guard_dir/skills/locked"
 
-# (c) A third-party plugin named Albert is neither claimed nor reported.
+# A third-party plugin in plugins/albert is neither claimed nor reported.
 foreign_home="$tmp/foreign-home"
 foreign_dir="$foreign_home/.gemini/config/plugins/albert"
 mkdir -p "$foreign_dir/agents" "$foreign_dir/rules"
@@ -772,8 +875,8 @@ printf 'Name: Kanade\n\n# Personality\nNo final newline' > "$project/PERSONALITY
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/no-newline"
 for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md"; do
   grep -Fqx 'No final newline' "$file"
-  [[ "$(grep -Fxc '<!-- ALBERT MANAGED END -->' "$file")" -eq 1 ]]
-  assert_absent 'No final newline<!-- ALBERT MANAGED END -->' "$file"
+  [[ "$(grep -Fxc '<!-- QUINTET MANAGED END -->' "$file")" -eq 1 ]]
+  assert_absent 'No final newline<!-- QUINTET MANAGED END -->' "$file"
 done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" --dry-run > "$tmp/no-newline-preview"
 assert_absent '^WRITE ' "$tmp/no-newline-preview"
@@ -781,8 +884,8 @@ assert_absent '^WRITE ' "$tmp/no-newline-preview"
 assert_absent '^WRITE ' "$tmp/no-newline-again"
 
 # Reject both reserved marker lines, including CRLF, before writing anything.
-for marker in START END; do
-  printf 'Name: Kanade\r\n\r\n<!-- ALBERT MANAGED %s -->\r\nMore style.\r\n' "$marker" > "$project/PERSONALITY.md"
+for marker in 'QUINTET MANAGED START' 'QUINTET MANAGED END' 'ALBERT MANAGED START' 'ALBERT MANAGED END'; do
+  printf 'Name: Kanade\r\n\r\n<!-- %s -->\r\nMore style.\r\n' "$marker" > "$project/PERSONALITY.md"
   if "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/reserved" 2>&1; then
     echo "Accepted reserved marker: $marker" >&2
     exit 1
