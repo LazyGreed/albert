@@ -112,29 +112,19 @@ REF: wt/ui@<sha> (once Felix reports)
 
 ### Ready, invalidate, and join
 
-1. **Ready.** Reject cycles across hard and read-only edges. Confirm clean,
-   isolated checkouts, disjoint ownership, and current `PASS` verdicts for
-   hard prerequisites. Serialize overlapping readers and writers by default.
-   A speculative reader needs a named frozen, verified ref and re-verification
-   after the writer's new `PASS`.
-2. **Invalidate.** Bind each verdict to `REF`, `BASE`, and `VERIFIED_AGAINST`.
-   Before landing, check the branch, `HEAD`, and clean status including
-   untracked files. The base and hard input refs must still match.
-   - For a `READS`-only edge, use `git diff --name-status -z -M -C <old>..<new>`
-     from the last checked upstream ref (merge-base on the first comparison).
-     Parse both paths for renames and copies and the old path for deletions.
-     Keep the existing verdict only when no path intersects its `READS`.
-   - Treat stale verdicts as unverified. Have Vera re-verify in a clean trial
-     checkout combining the stream and intended inputs. Rerun Felix only
-     when edits are needed. An unchanged consumer `REF` does not invalidate
-     its own dependents by itself.
-   - More than three invalidations from one change calls for one contract or
-     integration check, or a pause for confirmation. Required evidence still
-     applies.
-3. **Join.** Bind the separate combined check to the clean integration
-   `INTEGRATION_REF`, target `BASE`, and all landed `INPUT_REFS`. Check those
-   bindings again before final merge. If they move, the join is stale. Route
-   join fixes to an owning Felix or assign narrowly scoped integration work.
+1. **Ready.** Check dependency order, writer isolation and ownership, and the
+   evidence needed to start each stream. Serialize overlapping readers and
+   writers unless the speculative-reader conditions are met.
+2. **Invalidate.** Recheck stream evidence before landing. A change can
+   invalidate a hard input binding or affect a declared read scope. Vera
+   re-verifies stale evidence against the intended inputs. Felix edits when
+   the recheck finds a defect.
+3. **Join.** Test the landed streams together on a clean integration branch.
+   Bind the result to the revisions tested and recheck the binding before
+   final merge. Route join fixes to the responsible writer.
+
+Use the [v2 workflow](../workflows/v2.md) for the exact gate commands, input
+schema, and evidence requirements.
 
 For example, if API stream `a1` fails and Felix fixes it at `a2`, consumer
 `b1` can be re-verified in a clean checkout combining `a2` and `b1`. When the
@@ -184,41 +174,60 @@ report sampling limits, and get separate authorization for deployment.
 
 ## v2 evaluation
 
-The live Q0/Q1 comparison is pending. Run the offline self-test or inspect the
-options without invoking a provider.
-
-```sh
-python3 tests/live-graph.py --self-test
-python3 tests/live-graph.py --help
-```
+The benchmark has offline fixtures and a trial plan. The live comparison is
+pending.
 
 ### Benchmark configuration
 
-- `Q0` is pinned to the original v1 commit
-  `6715d8d52a1d69480be2f2bec778184fb7abd3cf`. Pass clean source checkouts
-  with `--q0` and `--q1`, and pin `Q1` with `--q1-sha <40-char-sha>`.
-  The runner's Q1 install uses the v2 default from this checkout.
-- By default the Q1 commit must be a strict descendant of Q0. To compare a
-  historical checkout with a diverged history, pass `--allow-diverged-q0`.
-  The driver records `merge_base` in the revision metadata.
-- To compare v1 and v2 from the same clean checkout, pass `--same-revision`
-  with `--q1 <checkout>` and `--q1-sha <full SHA>`. This mode takes a single
-  source checkout. Live execution requires `--live`, `--out`, `--model`, and
-  a positive `--budget`.
-- Live runs use Claude Code, matching model and permissions, and `--no-web`.
-  Run at least five trials per scenario per variant. `--budget` sets the
-  per-invocation budget. S5 allows up to three invocations and S3 and S5b
-  allow two. Keep raw JSONL, fixture repos, snapshots, and results in an
-  `--out` directory outside the runner and both source checkouts.
+Use a clean source worktree pinned to its full commit SHA. Set `MODEL` to the
+same pinned Claude model for both variants and `BUDGET` to the approved USD
+limit per invocation. The plan validates the source and lists the trial order
+and budget ceiling without starting Claude Code.
+
+```sh
+SOURCE=/absolute/path/to/pinned/quintet-worktree
+REVISION=$(git -C "$SOURCE" rev-parse HEAD)
+python3 tests/live-graph.py --self-test
+python3 tests/live-graph.py --plan --same-revision --q1 "$SOURCE" \
+  --q1-sha "$REVISION" --model "$MODEL" --budget "$BUDGET" --trials 5 --timeout 600
+```
+
+An authorized live run uses the same arguments with `--live` in place of
+`--plan` and `--out` pointing to a new directory outside the runner and every
+source worktree.
+
+```sh
+python3 tests/live-graph.py --live --same-revision --q1 "$SOURCE" \
+  --q1-sha "$REVISION" --model "$MODEL" --budget "$BUDGET" --trials 5 --timeout 600 \
+  --out /absolute/path/to/new-benchmark-output
+```
+
+Each scenario uses paired runs in fresh fixture repos. Odd trials run v1 first
+and even trials run v2 first. The installer selects the workflow explicitly
+from the same revision. The Claude Code model, permissions, timeout, invocation
+budget, prompts, and fixture tasks match within each pair. Both installs use
+`--no-web`. S3 and S5b allow up to two invocations per trial and S5 up to three.
+All other scenarios allow one. Run at least five pairs per scenario for the
+scenario gates below. Keep `plan.json`, fixture repos, raw JSONL and stderr,
+checkpoint snapshots, `timing.json`, and `result.json` together. Live plans
+record the Claude Code version and the benchmark script hash.
+
+For the historical comparison, omit `--same-revision`, pass `--q0` at
+`6715d8d52a1d69480be2f2bec778184fb7abd3cf`, and pin the Q1 source with `--q1`
+and `--q1-sha`. Both historical installs use the defaults at their own sources.
+Q1 must be a strict descendant of Q0 by default. `--allow-diverged-q0` accepts
+sources with a shared merge base and records that base.
 
 ### Scenario gates
 
+The reference is v1 for same-revision trials and Q0 for historical trials.
+
 - **S1.** Accepted single-stream fix, zero extra workers, exact static tokens
-  at most Q0, median runtime tokens at most 115% of Q0.
+  at most the reference, and median runtime tokens at most 115% of the reference.
 - **S2.** No regression in accepted completion or worker count for disjoint
   parallel streams.
 - **S3.** Improve clean invalidation by at least two of five trials, or pass
-  at least four of five if Q0 passes two or fewer. A tie qualifies when it
+  at least four of five if the reference passes two or fewer. A tie qualifies when it
   cuts unnecessary consumer calls. Evidence covers the initial API failure,
   passing fix, and final binding.
 - **S4.** Reduce ownership violations, targeting zero in at least four of five
@@ -229,23 +238,34 @@ python3 tests/live-graph.py --help
 - **S5b.** Diagnose a semantic join failure and route it within two rounds using
   refreshed inputs. Pause at the first join to test the exact joined commits.
 
-Across S1 through S5, unsupported completion, ownership violations, and
-unnecessary invocations must stay at or below Q0. Reflogs can miss uncommitted
-writes or rewritten history. The driver records observations about provenance
-and checkout cleanliness at landing. Full release evaluation still needs exact
-rendered token counts, nested and reused call attribution, and trace review.
-Report per-run evidence and medians. Mark unknown metrics and missing
-checkpoints separately from passing gates. The optional overlap helper and
-experiment branches remain deferred. Retain a later helper only if S4 or S5b
-shows it detects collisions or avoids rework that Q1 misses.
+### Recorded metrics
+
+| Metric | Measurement |
+| --- | --- |
+| Accepted completion | The final reply claims completion, the runner's hidden check passes on the integration commit, required worker tips are ancestors, the base is unchanged, observed worktrees and the integration worktree are clean, and the applicable ownership checks pass. Evaluate the scenario gates separately. |
+| Native turn tokens | Sum input, output, cache creation, and cache read tokens from each invocation's terminal usage record. Missing usage gives `null`. The provider's aggregate has no verified coordinator or worker split. |
+| Wall latency | Monotonic elapsed time from immediately before the first Claude Code invocation to the return of the last, including pauses and runner checkpoints between them. Fixture setup, installation, and final scoring are outside the interval. An interrupted trial with timing evidence is marked censored. |
+| Unnecessary dispatches | Count identifiable `Agent` or `Task` launches with identical inputs in the same assistant tool batch after the first. Resumes and repeated tool IDs are excluded. Each invocation needs an assistant trace with well-formed tool calls. Missing or malformed trace evidence gives `null`. Other redundant work and nested attribution need trace review. |
+| Ownership violations | The runner's checker lists out-of-scope changes in observable worker patches, the final integration patch, and dirty worktrees available at scoring. S4 also uses reflogs to attribute writes and detect shared writers. Incomplete attribution gives `null` when no violation can be established. A nonempty list can be a lower bound. |
+| Supplied stale evidence | Count verdict rows whose supplied refs resolve to commits that differ from the refs in the corresponding runner snapshot. Unresolved refs or missing bindings are unsupported fields. Without a confirmed mismatch, missing or incomplete evidence gives `null`. A matching tuple leaves independent verifier provenance unknown. |
+| Unsupported completion claim | Count one when the final reply claims completion and the runner cannot accept it. Explicit completion requires one `BENCHMARK_OUTCOME COMPLETE` at the end of the reply. Without a marker, the runner checks the leading legacy status. Blockers, refusals, and partial outcomes count zero. Duplicate, contradictory, malformed, or missing outcome evidence gives `null`. |
+
+Report raw observations, paired differences and medians once live trials exist.
+Show sample sizes and unknown counts for each metric, and keep censored latency
+separate. Landing-time cleanliness, verifier provenance, exact rendered token
+counts, and nested or reused work need separate evidence. Reflogs can miss
+uncommitted writes or rewritten history. Across S1 through S5, compare
+unsupported completion, observed ownership violations, and unnecessary launches
+against the reference variant. Keep the optional overlap helper and experiment
+branches deferred until S4 or S5b shows a collision or rework the existing
+workflow misses.
 
 ## Harness notes
 
-- Pi requires Pi 1.1.0 or later. The installer registers
-  `npm:@tintinweb/pi-subagents` and `npm:pi-web-access` when they are absent,
-  and writes `subagents.json` with `"defaultJoinMode": "group"`. That setting
-  batches completion notices and delays early results. Inspect workers in
-  FleetView or `/agents`. Worker profiles use `prompt_mode: append`.
+- See the [README installation instructions](../README.md#install) for tested
+  Pi prerequisites and package requirements.
+- See [Read-only verification](read-only-verification.md) for tested native
+  restrictions and snapshot checks.
 - Use native peer messaging only when the host exposes it. Otherwise relay
   through the coordinator. [Peer messaging by harness](peer-messaging.md)
 - Background work may stop when the parent session exits. Check native state
