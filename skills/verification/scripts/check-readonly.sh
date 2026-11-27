@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Mechanical checkout-integrity snapshot and verification for read-only specialists.
+# Checkout integrity checks and opt-in command isolation for read-only specialists.
 set -euo pipefail
 
 usage() {
@@ -7,6 +7,7 @@ usage() {
 Usage:
   check-readonly.sh snapshot [repo-dir]
   check-readonly.sh verify <snapshot-file> [repo-dir]
+  check-readonly.sh run-codex <repo-dir> -- <command> [args ...]
 
 Commands:
   snapshot [repo-dir]               Write a deterministic checkout snapshot to stdout
@@ -15,6 +16,9 @@ Commands:
   verify <snapshot-file> [repo-dir] Compare current checkout state against <snapshot-file>.
                                     Exits 0 with READONLY_OK if unchanged, or exits 1 with
                                     READONLY_VIOLATION and status details if modified.
+  run-codex <repo-dir> -- <command> [args ...]
+                                    Run a command at the Git root in the Codex sandbox.
+                                    Only its private TMPDIR is writable. Network is disabled.
 USAGE
 }
 
@@ -45,13 +49,56 @@ resolve_worktree() {
 }
 
 tmp_files=()
+run_dir=''
 cleanup() {
   local f
   for f in "${tmp_files[@]+"${tmp_files[@]}"}"; do
     rm -f -- "$f"
   done
+  if [[ -n "$run_dir" ]]; then
+    rm -rf -- "$run_dir" || printf 'check-readonly: could not remove %s\n' "$run_dir" >&2
+  fi
 }
 trap cleanup EXIT
+
+run_codex() {
+  local repo_dir="$1" top temp_base scratch
+  shift
+  if ! command -v codex >/dev/null 2>&1; then
+    echo 'check-readonly: run-codex requires Codex CLI with sandbox -P support (tested with 0.172.0)' >&2
+    return 2
+  fi
+
+  top="$(resolve_worktree "$repo_dir")"
+  top="$(cd -P -- "$top" && pwd -P)"
+  temp_base="$(cd -P -- /tmp && pwd -P)"
+  if [[ "$temp_base/" == "${top%/}/"* ]]; then
+    echo 'check-readonly: the Git root contains the system temporary directory' >&2
+    return 2
+  fi
+  if [[ ! "$temp_base" =~ ^/[a-zA-Z0-9_./-]+$ ]]; then
+    echo 'check-readonly: unsupported physical path for the system temporary directory' >&2
+    return 2
+  fi
+
+  run_dir="$(mktemp -d "$temp_base/quintet-readonly.XXXXXXXX")"
+  scratch="$run_dir/scratch"
+  mkdir -m 700 -- "$scratch"
+  cat > "$run_dir/config.toml" <<TOML
+[permissions.quintet_readonly.filesystem]
+":root" = "read"
+"$scratch" = "write"
+[permissions.quintet_readonly.network]
+enabled = false
+TOML
+
+  # Resolve the native profile away from the target. Enter the tree after sandboxing.
+  (
+    cd -- "$run_dir"
+    CODEX_HOME="$run_dir" TMPDIR="$scratch" codex sandbox -P quintet_readonly -- \
+      "$BASH" -c 'cd -- "$1" && shift && exec -- "$@"' check-readonly "$top" "$@"
+  )
+}
 
 emit_snapshot() {
   local top="$1"
@@ -170,6 +217,15 @@ case "$1" in
     repo_dir="${3:-.}"
     top="$(resolve_worktree "$repo_dir")"
     verify_snapshot "$snap_file" "$top"
+    ;;
+  run-codex)
+    if (($# < 4)) || [[ "$3" != -- ]]; then
+      echo 'check-readonly: run-codex requires <repo-dir> -- <command> [args ...]' >&2
+      exit 2
+    fi
+    repo_dir="$2"
+    shift 3
+    run_codex "$repo_dir" "$@"
     ;;
   *)
     echo "check-readonly: unknown command: $1" >&2
