@@ -38,9 +38,11 @@ once the new plugin is written. User rules outside the managed block are carried
 the new file first. Unrecognized entries keep the old plugin in place and are listed.
 The installer refuses Antigravity rules over 24000 bytes and checks Codex
 AGENTS.md against the default Codex budget of 32768 bytes.
-Selecting Pi requires Pi >=1.1.0. The installer runs pi install npm:@tintinweb/pi-subagents
-and pi install npm:pi-web-access when pi list does not already show them, and writes
-subagents.json in the Pi agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent).
+Selecting Pi requires Pi >=1.1.0 and Python 3. The installer validates the pinned
+Pi packages and installs absent pins in the Pi agent directory
+(PI_CODING_AGENT_DIR or ~/.pi/agent). The effective subagent fallback must be
+"none". The installer preserves existing subagents.json files and creates a
+strict global default if absent.
 Use --no-web to omit web tool grants the installer adds to worker profiles.
 Codex uses its own web settings.
 --no-web does not skip the Pi package installs. No bundled settings files are copied.
@@ -110,6 +112,9 @@ instruction_refused=0
 agy_rule_max_bytes=24000
 codex_agents_max_bytes=32768
 rule_backup_saved=''
+pi_packages=('npm:@tintinweb/pi-subagents@0.26.3' 'npm:pi-web-access@0.48.0')
+pi_agent_dir=''
+pi_settings_backup=''
 note_rollback() {
   rb_op+=("$1")
   rb_a+=("$2")
@@ -343,26 +348,18 @@ install_role() {
   if [[ "$tool" == pi ]]; then
     case "$role" in
       felix) tools='read, grep, find, ls, bash, edit, write' ;;
-      *) tools='read, grep, find, ls, bash' ;;
+      *) tools='read, grep, find, ls' ;;
     esac
   elif [[ "$tool" == antigravity || "$tool" == agy ]]; then
-    if ((with_web)); then
-      case "$role" in
-        felix) tools='read_file, edit_file, write_file, run_command, manage_task, search_web' ;;
-        iris) tools='read_file, run_command, manage_task' ;;
-        *) tools='read_file, run_command, manage_task, search_web' ;;
-      esac
-    else
-      case "$role" in
-        felix) tools='read_file, edit_file, write_file, run_command, manage_task' ;;
-        iris) tools='read_file, run_command, manage_task' ;;
-        *) tools='read_file, run_command, manage_task' ;;
-      esac
-    fi
+    case "$role" in
+      felix) tools='read_file, edit_file, write_file, run_command, manage_task' ;;
+      *) tools='read_file' ;;
+    esac
+    if ((with_web)) && [[ "$role" != iris ]]; then tools+=', search_web'; fi
   else
     case "$role" in
       felix) tools='Read, Grep, Glob, Bash, Edit, Write' ;;
-      *) tools='Read, Grep, Glob, Bash' ;;
+      *) tools='Read, Grep, Glob' ;;
     esac
   fi
   # Expose research tools to the named specialists; Iris remains minimal.
@@ -384,9 +381,19 @@ install_role() {
       printf -- '---\n\n'
     else
       printf -- '---\nname: %s\ndescription: %s\ntools: %s\n' "$role" "$desc" "$tools"
-      if [[ "$tool" == pi ]]; then printf 'prompt_mode: append\ncolor: %s\n' "$color"; fi
-      if [[ "$tool" == claude && "$role" != felix ]]; then printf 'disallowedTools: Write, Edit, NotebookEdit\n'; fi
-      if [[ "$tool" == pi && "$role" != felix ]]; then printf 'disallowed_tools: edit, write\n'; fi
+      if [[ "$tool" == pi ]]; then
+        printf 'prompt_mode: append\ncolor: %s\n' "$color"
+        if [[ "$role" != felix ]]; then
+          if ((with_web)) && [[ "$role" != iris ]]; then
+            printf 'extensions: pi-web-access\n'
+          else
+            printf 'extensions: false\n'
+          fi
+        fi
+      fi
+      if [[ "$tool" == claude && "$role" != felix ]]; then
+        printf 'disallowedTools: Bash, Write, Edit, NotebookEdit\n'
+      fi
       printf -- '---\n\n'
     fi
     cat -- "$source_dir/agents/$role.md"
@@ -610,14 +617,42 @@ relocate_antigravity_rule_backups() {
   done
 }
 
+put_relinked_markdown() {
+  local src="$1" dst="$2" scratch rendered status=0
+  shift 2
+  scratch="$(mktemp -d)" || return 1
+  rendered="$scratch/${src##*/}"
+  if ! sed "$@" "$src" > "$rendered" || ! put "$rendered" "$dst"; then
+    status=1
+  fi
+  rm -f -- "$rendered"
+  rmdir -- "$scratch"
+  return "$status"
+}
+
 install_skills() {
-  local root="$1" skill file rel
+  local root="$1" skill file rel references="$1/skills/verification/references"
+  local upstream='https://github.com/LazyGreed/quintet/blob/main'
   for skill in "${installable_skills[@]}"; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
-      put "$file" "$root/skills/$rel" || return 1
+      if [[ "$rel" == verification/SKILL.md ]]; then
+        put_relinked_markdown "$file" "$root/skills/$rel" \
+          -e 's|](\.\./\.\./docs/|](references/|g' || return 1
+      else
+        put "$file" "$root/skills/$rel" || return 1
+      fi
     done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
   done
+  # Keep workflow and harness references with the installed checkers.
+  for rel in workflows/v1.md workflows/v2.md docs/read-only-verification.md docs/peer-messaging.md; do
+    put "$source_dir/$rel" "$references/${rel##*/}" || return 1
+  done
+  put_relinked_markdown "$source_dir/docs/workflow.md" "$references/workflow.md" \
+    -e 's|](\.\./workflows/|](|g' \
+    -e 's|](\.\./skills/|](../../|g' \
+    -e "s|](\.\./AGENTS\.md)|]($upstream/AGENTS.md)|g" \
+    -e "s|](\.\./README\.md#|]($upstream/README.md#|g"
 }
 
 # Older installs wrote the Antigravity coordinator to plugins/albert.
@@ -644,8 +679,7 @@ _generated_path() {
   done
 }
 
-# Every relative path a global Antigravity install generates. Compared against a legacy
-# tree, so anything else is user content that automatic migration must not destroy.
+# Managed paths from legacy Antigravity installs. Other paths are treated as user content.
 generated_antigravity_paths() {
   local role skill file rel
   {
@@ -793,7 +827,7 @@ EOF
     return 0
   fi
   if [[ "$scope" == global ]]; then
-    if [[ "$tool" == pi ]]; then root="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; else root="$HOME/.claude"; fi
+    if [[ "$tool" == pi ]]; then root="$pi_agent_dir"; else root="$HOME/.claude"; fi
     if [[ "$tool" == pi ]]; then instruction="$root/AGENTS.md"; else instruction="$root/CLAUDE.md"; fi
   else
     root="$target/.$tool"
@@ -807,30 +841,182 @@ EOF
   if [[ "$tool" == pi ]]; then install_pi_subagents_config || return 1; fi
 }
 
-# Verify Pi and install its runtime packages before touching user files. Dry-run stays offline.
+# Pi installs global package registrations from either scope. Inspect project settings
+# separately since an untrusted project is omitted from `pi list --no-approve`.
 pi_in_scope() {
-  if [[ "$scope" == project ]]; then (cd "$target" && pi "$@");
-  else (cd "$HOME" && pi "$@"); fi
+  (cd -- "${target:-$HOME}" && NO_COLOR=1 FORCE_COLOR=0 PI_CODING_AGENT_DIR="$pi_agent_dir" pi "$@" --no-approve)
 }
-pi_package_listed() {
-  local packages="$1" spec="$2"
-  case "$spec" in
-    npm:@tintinweb/pi-subagents)
-      grep -Fq '@tintinweb/pi-subagents' <<< "$packages" ;;
-    npm:pi-web-access)
-      grep -Eq '(^|[^[:alnum:]_-])pi-web-access([^[:alnum:]_-]|$)' <<< "$packages" ;;
-    *) return 1 ;;
-  esac
+
+pi_missing_packages() {
+  local listing project_settings=''
+  if ! listing="$(pi_in_scope list)"; then
+    echo 'Cannot inspect Pi packages (`pi list --no-approve`).' >&2
+    return 1
+  fi
+  if [[ "$scope" == project ]]; then project_settings="$target/.pi/settings.json"; fi
+  python3 - "$pi_agent_dir/settings.json" "$project_settings" "$listing" "${pi_packages[@]}" <<'PY'
+import json
+import os
+from pathlib import Path
+import re
+import sys
+
+user_settings, project_settings, listing, *pins = sys.argv[1:]
+# Match JavaScript String.trim() in Pi and pi-subagents.
+js_whitespace = '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
+resolved = {}
+source = None
+for line in listing.splitlines():
+    if line.startswith('    ') and source is not None:
+        resolved[source] = Path(line[4:])
+    elif line.startswith('  '):
+        source = re.sub(r' \(filtered\)$', '', line[2:])
+    else:
+        source = None
+
+
+def read_json(path):
+    with path.open(encoding='utf-8-sig') as stream:
+        data = json.load(stream)
+    if not isinstance(data, dict):
+        raise ValueError(f'expected a JSON object in {path}')
+    return data
+
+
+def parse_npm_spec(spec):
+    spec = spec.strip(js_whitespace)
+    match = re.fullmatch(r'(@?[^@]+(?:/[^@]+)?)(?:@(.+))?', spec)
+    return match.groups() if match else (spec, None)
+
+
+def reject_json_constant(value):
+    raise ValueError(f'{value} is not a JSON value')
+
+
+def check_subagent_fallback():
+    paths = [Path(user_settings).with_name('subagents.json')]
+    if project_settings:
+        paths.append(Path(project_settings).with_name('subagents.json'))
+    effective, source = 'none', paths[0]  # The installer creates this default when absent.
+    for path in paths:
+        try:
+            config = json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_json_constant)
+        except FileNotFoundError:
+            if path.is_symlink():
+                raise ValueError(f'cannot read Pi subagent settings from {path}. Repair the link before retrying.')
+            continue
+        except (OSError, ValueError) as error:
+            raise ValueError(f'cannot read Pi subagent settings from {path}. Repair the file before retrying. {error}') from error
+        value = config.get('fallbackSubagent') if isinstance(config, dict) else None
+        if isinstance(value, str):
+            value = value.strip(js_whitespace).lower()
+        if value is False:
+            effective, source = 'none', path
+        elif isinstance(value, str) and value:
+            effective, source = value, path
+        elif path == paths[0]:
+            effective, source = None, path
+    if effective != 'none':
+        raise ValueError(f'set "fallbackSubagent": "none" in {source} before retrying. Pi must reject unresolved worker names.')
+
+
+def registrations(filename, user):
+    if not filename:
+        return
+    path = Path(filename)
+    try:
+        packages = read_json(path).get('packages', [])
+    except FileNotFoundError:
+        return
+    if not isinstance(packages, list):
+        raise ValueError(f'expected an array of packages in {path}')
+    for entry in packages:
+        source = entry.get('source') if isinstance(entry, dict) else entry
+        if not isinstance(source, str) or not source or '\n' in source or '\r' in source:
+            raise ValueError(f'invalid package source in {path}')
+        npm_name, npm_version = parse_npm_spec(source[4:]) if source.startswith('npm:') else (None, None)
+        installed = resolved.get(source) if user else None
+        if npm_name and not user:
+            installed = path.parent / 'npm' / 'node_modules' / npm_name
+        elif npm_name is None and not installed and not re.match(r'^(git:|https?://|ssh://)', source):
+            installed = path.parent / os.path.expanduser(source)
+        manifest = None
+        if installed is not None:
+            module_dir = installed.parent if installed.is_file() else installed
+            manifest_path = module_dir / 'package.json'
+            try:
+                manifest = read_json(manifest_path)
+            except (FileNotFoundError, NotADirectoryError):
+                pass
+        alias = parse_npm_spec(npm_version[4:])[0] if npm_version and npm_version.startswith('npm:') else None
+        yield path, source, entry, npm_name, alias, manifest
+
+
+try:
+    entries = [*registrations(user_settings, True), *registrations(project_settings, False)]
+    missing = []
+    for pin in pins:
+        name, version = pin[4:].rsplit('@', 1)
+        short_name = name.rsplit('/', 1)[-1]
+        matches = []
+        for path, source, entry, npm_name, alias, manifest in entries:
+            basename = re.split(r'[@#]', Path(source.rstrip('/')).name, maxsplit=1)[0]
+            alternate = npm_name is None and basename in (short_name, f'{short_name}.git')
+            if name in (npm_name, alias, (manifest or {}).get('name')) or alternate:
+                matches.append((path, source, entry, manifest))
+        if not matches:
+            missing.append(pin)
+        elif len(matches) > 1:
+            locations = ', '.join(f'{source} in {path}' for path, source, _, _ in matches)
+            raise ValueError(f'ambiguous registrations for {pin}: {locations}')
+        else:
+            path, source, entry, manifest = matches[0]
+            if source != pin or isinstance(entry, dict) and set(entry) != {'source'}:
+                raise ValueError(f'{source} in {path} needs an unfiltered exact {pin} registration')
+            if not manifest or (manifest.get('name'), manifest.get('version')) != (name, version):
+                actual = f"{manifest.get('name')}@{manifest.get('version')}" if manifest else 'missing package manifest'
+                raise ValueError(f'{pin} in {path} resolves to {actual}. Repair that installation before retrying.')
+except (OSError, ValueError) as error:
+    sys.exit(f'Cannot inspect Pi packages: {error}')
+
+try:
+    check_subagent_fallback()
+except ValueError as error:
+    sys.exit(f'Cannot verify strict Pi subagent fallback: {error}')
+print('\n'.join(missing))
+PY
 }
+
+protect_pi_settings() {
+  local settings="$pi_agent_dir/settings.json"
+  if [[ -L "$settings" || ( -e "$settings" && ! -f "$settings" ) ]]; then
+    printf 'Cannot safely register Pi packages in %s\n' "$settings" >&2
+    return 1
+  fi
+  if [[ -f "$settings" ]]; then
+    pi_settings_backup="$(mktemp)" || return 1
+    if ! cp -p -- "$settings" "$pi_settings_backup"; then
+      rm -f -- "$pi_settings_backup"
+      return 1
+    fi
+    note_rollback replace "$settings" "$pi_settings_backup"
+  else
+    note_rollback create_file "$settings"
+  fi
+}
+
 install_pi_runtime() {
-  local spec packages version
+  local spec missing version
+  pi_agent_dir="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"
+  if [[ "$pi_agent_dir" == '~/'* ]]; then pi_agent_dir="$HOME/${pi_agent_dir:2}"; fi
+  if [[ "$pi_agent_dir" != /* ]]; then pi_agent_dir="$PWD/$pi_agent_dir"; fi
   if ((dry)); then
     report 'CHECK Pi >=1.1.0 before install'
-    report 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents'
-    report 'INSTALL IF ABSENT: pi install npm:pi-web-access'
+    for spec in "${pi_packages[@]}"; do report "INSTALL IF ABSENT: pi install $spec --no-approve"; done
     return 0
   fi
   command -v pi >/dev/null || { echo 'Pi missing. Install Pi >=1.1.0 first.' >&2; return 1; }
+  command -v python3 >/dev/null || { echo 'Python 3 is required to inspect Pi packages.' >&2; return 1; }
   version="$(pi --version 2>/dev/null)" || { echo 'Cannot check Pi version.' >&2; return 1; }
   if [[ ! "$version" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
     printf 'Cannot parse Pi version: %s\n' "$version" >&2; return 1
@@ -838,19 +1024,31 @@ install_pi_runtime() {
   if (( 10#${BASH_REMATCH[1]} < 1 || (10#${BASH_REMATCH[1]} == 1 && 10#${BASH_REMATCH[2]} < 1) )); then
     printf 'Pi >=1.1.0 required (found %s).\n' "$version" >&2; return 1
   fi
-  packages="$(pi_in_scope list 2>/dev/null)" || { echo 'Cannot inspect Pi packages (`pi list`).' >&2; return 1; }
-  for spec in 'npm:@tintinweb/pi-subagents' 'npm:pi-web-access'; do
-    if pi_package_listed "$packages" "$spec"; then
+  missing="$(pi_missing_packages)" || return 1
+  for spec in "${pi_packages[@]}"; do
+    if ! grep -Fxq -- "$spec" <<< "$missing"; then
       report "SKIP PI PACKAGE: $spec is already registered; unchanged."
-    else
-      report "INSTALL: pi install $spec"
-      pi_in_scope install "$spec" || return 1
     fi
   done
+  [[ -n "$missing" ]] || return 0
+  protect_pi_settings || return 1
+  while IFS= read -r spec; do
+    report "INSTALL: pi install $spec --no-approve"
+    pi_in_scope install "$spec" || return 1
+  done <<< "$missing"
+  missing="$(pi_missing_packages)" || return 1
+  if [[ -n "$missing" ]]; then
+    printf 'Pi did not register required packages:\n%s\n' "$missing" >&2
+    return 1
+  fi
 }
 install_pi_subagents_config() {
-  local dst="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/subagents.json" temp
-  temp="$(mktemp)"
+  local dst="$pi_agent_dir/subagents.json" temp
+  if [[ -e "$dst" || -L "$dst" ]]; then
+    [[ -f "$dst" ]] || { printf 'Not a regular Pi subagent config: %s\n' "$dst" >&2; return 1; }
+    return 0
+  fi
+  temp="$(mktemp)" || return 1
   cat > "$temp" <<'EOF'
 {
   "maxSubagentDepth": 1,
@@ -906,6 +1104,9 @@ install_codex_role() {
     printf "developer_instructions = '''\n" || status=1
     cat -- "$body" || status=1
     printf "'''\n" || status=1
+    if [[ "$role" != felix ]]; then
+      printf '\n[features]\nshell_tool = false\nrequest_permissions_tool = false\n' || status=1
+    fi
   } > "$temp" || status=1
   if (( status != 0 )); then
     rm -f -- "$temp"
@@ -947,6 +1148,7 @@ if has_harness codex; then install_codex || abort_install $?; fi
 if has_harness antigravity || has_harness agy; then install_one antigravity || abort_install $?; fi
 # Summary lines are not part of the tree. Do not undo a finished install if one fails.
 rollback_armed=0
+if [[ -n "$pi_settings_backup" ]]; then rm -f -- "$pi_settings_backup"; fi
 
 if ((with_web)) && { has_harness pi || has_harness claude || has_harness antigravity || has_harness agy; }; then
   report 'WEB: added worker tool grants for Nora/Felix/Vera. Runtime access depends on the harness and provider configuration.'

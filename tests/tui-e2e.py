@@ -236,13 +236,42 @@ if __name__ == '__main__':
         bin_dir = root / 'bin'
         bin_dir.mkdir()
         pi = bin_dir / 'pi'
-        pi.write_text('''#!/bin/sh
-case "$1" in
-    --version) echo 1.1.0;;
-    list) echo npm:@tintinweb/pi-subagents;;
-    install) printf '%s\\n' "$*" >> "$HOME/pi-installs";;
-    *) exit 1;;
-esac
+        pi.write_text('''#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+agent_dir = Path(os.environ['PI_CODING_AGENT_DIR'])
+settings = agent_dir / 'settings.json'
+config = json.loads(settings.read_text()) if settings.exists() else {'packages': []}
+args = sys.argv[1:]
+
+
+def manifest(source):
+    name, version = source[4:].rsplit('@', 1)
+    return agent_dir / 'npm' / 'node_modules' / name / 'package.json', name, version
+
+
+if args == ['--version']:
+    print('1.6.1')
+elif args == ['list', '--no-approve']:
+    print('User packages:')
+    for source in config['packages']:
+        package, _, _ = manifest(source)
+        print(f'  {source}')
+        print(f'    {package.parent}')
+elif len(args) == 3 and args[0] == 'install' and args[-1] == '--no-approve':
+    source = args[1]
+    package, name, version = manifest(source)
+    package.parent.mkdir(parents=True, exist_ok=True)
+    package.write_text(json.dumps({'name': name, 'version': version}))
+    config['packages'].append(source)
+    settings.write_text(json.dumps(config))
+    with (Path(os.environ['HOME']) / 'pi-installs').open('a') as log:
+        print(' '.join(args), file=log)
+else:
+    sys.exit(1)
 ''')
         pi.chmod(0o755)
         os.environ['PATH'] = f"{bin_dir}:{os.environ['PATH']}"
@@ -257,8 +286,10 @@ esac
         test_legacy_archive_review(root)
         test_rule_relocation_review(root)
         installs = (root / 'pi-installs').read_text().splitlines()
-        assert installs == ['install npm:pi-web-access'] * 4
-        assert all('-l' not in line for line in installs)
+        assert installs == [
+            'install npm:@tintinweb/pi-subagents@0.26.3 --no-approve',
+            'install npm:pi-web-access@0.48.0 --no-approve',
+        ]
         subagents = Path(os.environ['PI_CODING_AGENT_DIR']) / 'subagents.json'
         assert subagents.read_text() == (
             '{\n'

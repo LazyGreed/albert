@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Checkout integrity checks and opt-in command isolation for read-only specialists.
+# Checkout integrity checks and Codex command isolation for read-only specialists.
 set -euo pipefail
 
 usage() {
@@ -11,8 +11,8 @@ Usage:
 
 Commands:
   snapshot [repo-dir]               Write a deterministic checkout snapshot to stdout
-                                    (HEAD + staged binary diff sha256 + unstaged binary
-                                    diff sha256 + sorted untracked non-ignored files).
+                                    (HEAD commit and ref, tracked diff hashes, and
+                                    fingerprints of untracked non-ignored files).
   verify <snapshot-file> [repo-dir] Compare current checkout state against <snapshot-file>.
                                     Exits 0 with READONLY_OK if unchanged, or exits 1 with
                                     READONLY_VIOLATION and status details if modified.
@@ -62,10 +62,11 @@ cleanup() {
 trap cleanup EXIT
 
 run_codex() {
-  local repo_dir="$1" top temp_base scratch
+  local repo_dir="$1" top temp_base scratch profile startup
+  local startup_without_requirements='^\{"appServerVersion":"[0-9A-Za-z.+-]+","configRequirements":\{"supportsIndependentSpeedModes":(true|false),"requirements":null\}\}$'
   shift
   if ! command -v codex >/dev/null 2>&1; then
-    echo 'check-readonly: run-codex requires Codex CLI with sandbox -P support (tested with 0.172.0)' >&2
+    echo 'check-readonly: run-codex requires Codex CLI with sandbox -P support and startup configuration inspection (tested with 0.172.0)' >&2
     return 2
   fi
 
@@ -81,33 +82,47 @@ run_codex() {
     return 2
   fi
 
-  run_dir="$(mktemp -d "$temp_base/quintet-readonly.XXXXXXXX")"
+  if ! run_dir="$(mktemp -d "$temp_base/quintet-readonly.XXXXXXXX")"; then
+    echo 'check-readonly: cannot provision sandbox scratch. Ask the coordinator to run this check through run-codex.' >&2
+    return 2
+  fi
   scratch="$run_dir/scratch"
+  profile="quintet_readonly_${run_dir##*.}"
   mkdir -m 700 -- "$scratch"
   cat > "$run_dir/config.toml" <<TOML
-[permissions.quintet_readonly.filesystem]
+default_permissions = "$profile"
+[permissions.$profile.filesystem]
 ":root" = "read"
 "$scratch" = "write"
-[permissions.quintet_readonly.network]
+[permissions.$profile.network]
 enabled = false
 TOML
 
   # Resolve the native profile away from the target. Enter the tree after sandboxing.
   (
     cd -- "$run_dir"
-    CODEX_HOME="$run_dir" TMPDIR="$scratch" codex sandbox -P quintet_readonly -- \
+    export CODEX_HOME="$run_dir" TMPDIR="$scratch"
+    # A managed policy can silently replace an explicit -P selection with its default.
+    if ! startup="$(codex app-server --print-startup-config)" ||
+      [[ ! "$startup" =~ $startup_without_requirements ]]; then
+      echo 'check-readonly: cannot confirm the requested sandbox profile under Codex startup requirements. No command ran.' >&2
+      return 2
+    fi
+    codex sandbox --include-managed-config -P "$profile" -- \
       "$BASH" -c 'cd -- "$1" && shift && exec -- "$@"' check-readonly "$top" "$@"
   )
 }
 
 emit_snapshot() {
   local top="$1"
-  local head staged_sha unstaged_sha
+  local head head_ref staged_sha unstaged_sha
   head="$(git -C "$top" rev-parse --verify HEAD 2>/dev/null || echo 'UNBORN')"
+  head_ref="$(git -C "$top" symbolic-ref --quiet HEAD || echo 'DETACHED')"
   staged_sha="$(git -C "$top" -c core.quotePath=false diff --cached --binary --no-ext-diff | sha256_stream)"
   unstaged_sha="$(git -C "$top" -c core.quotePath=false diff --binary --no-ext-diff | sha256_stream)"
 
   printf 'HEAD %s\n' "$head"
+  printf 'HEAD_REF %s\n' "$head_ref"
   printf 'STAGED_DIFF_SHA256 %s\n' "$staged_sha"
   printf 'UNSTAGED_DIFF_SHA256 %s\n' "$unstaged_sha"
 
@@ -138,8 +153,9 @@ verify_snapshot() {
     echo "check-readonly: snapshot file not found: $snap_file" >&2
     return 2
   fi
-  if ! grep -q '^HEAD ' "$snap_file" || ! grep -q '^STAGED_DIFF_SHA256 ' "$snap_file" || ! grep -q '^UNSTAGED_DIFF_SHA256 ' "$snap_file"; then
-    echo "check-readonly: invalid snapshot file: $snap_file" >&2
+  if ! grep -q '^HEAD ' "$snap_file" || ! grep -q '^HEAD_REF ' "$snap_file" ||
+    ! grep -q '^STAGED_DIFF_SHA256 ' "$snap_file" || ! grep -q '^UNSTAGED_DIFF_SHA256 ' "$snap_file"; then
+    echo "check-readonly: invalid or outdated snapshot; take a new snapshot: $snap_file" >&2
     return 2
   fi
 
@@ -155,9 +171,11 @@ verify_snapshot() {
     return 0
   fi
 
-  local old_head new_head old_staged new_staged old_unstaged new_unstaged
+  local old_head new_head old_ref new_ref old_staged new_staged old_unstaged new_unstaged
   old_head="$(awk '/^HEAD /{print $2; exit}' "$snap_file")"
   new_head="$(awk '/^HEAD /{print $2; exit}' "$current_file")"
+  old_ref="$(awk '/^HEAD_REF /{print $2; exit}' "$snap_file")"
+  new_ref="$(awk '/^HEAD_REF /{print $2; exit}' "$current_file")"
   old_staged="$(awk '/^STAGED_DIFF_SHA256 /{print $2; exit}' "$snap_file")"
   new_staged="$(awk '/^STAGED_DIFF_SHA256 /{print $2; exit}' "$current_file")"
   old_unstaged="$(awk '/^UNSTAGED_DIFF_SHA256 /{print $2; exit}' "$snap_file")"
@@ -165,6 +183,7 @@ verify_snapshot() {
 
   local reasons=()
   [[ "$old_head" == "$new_head" ]] || reasons+=("HEAD ${old_head}->${new_head}")
+  [[ "$old_ref" == "$new_ref" ]] || reasons+=("HEAD ref ${old_ref}->${new_ref}")
   [[ "$old_staged" == "$new_staged" ]] || reasons+=("staged diff changed")
   [[ "$old_unstaged" == "$new_unstaged" ]] || reasons+=("unstaged diff changed")
 
@@ -200,6 +219,7 @@ case "$1" in
     exit 0
     ;;
   snapshot)
+    export GIT_OPTIONAL_LOCKS=0
     if (($# > 2)); then
       echo "check-readonly: snapshot accepts at most one [repo-dir] argument" >&2
       exit 2
@@ -209,6 +229,7 @@ case "$1" in
     emit_snapshot "$top"
     ;;
   verify)
+    export GIT_OPTIONAL_LOCKS=0
     if (($# < 2 || $# > 3)); then
       echo "check-readonly: verify requires <snapshot-file> [repo-dir]" >&2
       exit 2

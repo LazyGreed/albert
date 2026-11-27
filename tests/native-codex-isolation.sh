@@ -21,7 +21,8 @@ cat > "$caller_config/config.toml" <<'TOML'
 enabled = true
 TOML
 cp -- "$caller_config/config.toml" "$repo/.codex/config.toml"
-git -C "$repo" add -- tracked .codex/config.toml
+printf '*.log\n' > "$repo/.gitignore"
+git -C "$repo" add -- tracked .gitignore .codex/config.toml
 git -C "$repo" -c user.name=Test -c user.email=test@example.com commit -qm baseline
 printf 'candidate\n' > "$repo/index-candidate"
 "$checker" snapshot "$repo" > "$fixture/snapshot"
@@ -66,6 +67,28 @@ scratch="$(run_isolated "$BASH" -eu -c '
 cmp -- "$caller_config/config.toml" "$repo/.codex/config.toml"
 "$checker" verify "$fixture/snapshot" "$repo"
 
+head_ref="$(git -C "$repo" symbolic-ref --short HEAD)"
+printf 'ignored output\n' > "$repo/ignored.log"
+"$checker" verify "$fixture/snapshot" "$repo"
+for args in '-c other-branch' '--detach'; do
+  # These fixtures switch HEAD without changing the commit or tracked files.
+  read -r -a switch_args <<< "$args"
+  git -C "$repo" switch -q "${switch_args[@]}"
+  status=0
+  "$checker" verify "$fixture/snapshot" "$repo" > "$fixture/head-change.log" 2>&1 || status=$?
+  [[ "$status" == 1 ]]
+  grep -Fq 'HEAD ref ' "$fixture/head-change.log"
+  git -C "$repo" switch -q "$head_ref"
+done
+"$checker" verify "$fixture/snapshot" "$repo"
+
+status=0
+(cd -- "$repo" && CODEX_HOME="$caller_config" codex sandbox -P :read-only -- \
+  "$checker" run-codex "$repo" -- "$BASH" -c 'printf "ran\n"') \
+  > "$fixture/nested.out" 2> "$fixture/nested.err" || status=$?
+[[ "$status" == 2 && ! -s "$fixture/nested.out" ]]
+grep -Fq 'cannot provision sandbox scratch' "$fixture/nested.err"
+
 status=0
 scratch="$(run_isolated "$BASH" -c 'printf "%s\n" "$TMPDIR"; exit 37')" || status=$?
 [[ "$status" == 37 && -n "$scratch" && ! -e "${scratch%/*}" ]]
@@ -75,4 +98,22 @@ PATH="$fixture/missing-bin" "$BASH" "$checker" run-codex "$repo" -- \
   /bin/bash -c 'touch "$1"' test "$fixture/ran-without-codex" 2> "$fixture/no-codex.log" || status=$?
 [[ "$status" == 2 && ! -e "$fixture/ran-without-codex" ]]
 grep -q 'requires Codex CLI with sandbox -P support' "$fixture/no-codex.log"
+
+if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then
+  mkdir -p "$fixture/etc/codex" "$fixture/sandbox-tmp"
+  cp -- "$checker" "$fixture/check-readonly.sh"
+  cat > "$fixture/etc/codex/requirements.toml" <<'TOML'
+default_permissions = ":workspace"
+[allowed_permission_profiles]
+":workspace" = true
+TOML
+  status=0
+  bwrap --unshare-net --ro-bind / / --dev /dev --proc /proc \
+    --bind "$fixture/sandbox-tmp" /tmp --bind "$fixture" "$fixture" \
+    --ro-bind "$fixture/etc" /etc --chdir "$repo" \
+    -- "$fixture/check-readonly.sh" run-codex "$repo" -- touch "$fixture/ran-under-workspace" \
+    > "$fixture/managed.out" 2> "$fixture/managed.err" || status=$?
+  [[ "$status" == 2 && ! -e "$fixture/ran-under-workspace" ]]
+  grep -Fq 'cannot confirm the requested sandbox profile' "$fixture/managed.err"
+fi
 printf 'native Codex isolation PASS\n'
