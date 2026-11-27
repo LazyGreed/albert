@@ -226,7 +226,11 @@ collect_git_z_paths() {
 }
 
 if [[ -n "$worktree" ]]; then
+  # Union worktree-vs-base, index-vs-base, and untracked files. Index-vs-base is
+  # required when the worktree matches base but the index does not (status MM or AD).
+  # --no-renames keeps both paths of a rename; paths are de-duplicated below.
   collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false diff --name-only --no-renames -z "$base"
+  collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false diff --cached --name-only --no-renames -z "$base"
   collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false ls-files --others --exclude-standard -z
 else
   collect_git_z_paths git -C "$git_dir" -c core.quotePath=false diff --name-only --no-renames -z "$base" "$head_ref"
