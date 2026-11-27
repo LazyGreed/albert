@@ -18,11 +18,15 @@ jobs:
           while IFS= read -r -d '' file; do
             bash -n "$file"
           done < <(git ls-files -z -- '*.sh')
+      - name: Ownership checker E2E
+        run: bash tests/ownership-e2e.sh
+      - name: Dependency graph E2E
+        run: bash tests/graph-e2e.sh
+      - name: Graph benchmark offline self-test
+        run: python3 tests/live-graph.py --self-test
       - name: Install E2E
         run: bash tests/install-e2e.sh
       - name: TUI E2E
         run: python3 tests/tui-e2e.py
       - name: Workstream ownership E2E
         run: bash tests/workstream-e2e.sh
-      - name: Live graph benchmark self-test
-        run: python3 tests/live-graph.py --self-test

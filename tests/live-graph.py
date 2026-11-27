@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
-"""Opt-in Q0/Q1 or same-revision workflow trials using Claude Code; no provider call in self-test."""
+"""Plan workflow trials offline or run opt-in Claude Code benchmarks."""
 
 import argparse
 from contextlib import redirect_stdout
+from hashlib import sha256
 from io import StringIO
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +23,12 @@ SCENARIOS = ('S1', 'S2', 'S3', 'S4', 'S5', 'S5b')
 BRANCH = 'integration/task'
 Q0 = '6715d8d52a1d69480be2f2bec778184fb7abd3cf'
 SHA = r'[a-f0-9]{7,40}'
+REQUIRED_STREAMS = {
+    'S1': ('a',), 'S2': ('a', 'b'), 'S3': ('api', 'consumer', 'independent'),
+    'S4': ('a', 'b'), 'S5': ('a',), 'S5b': ('api', 'consumer'),
+}
+MAX_INVOCATIONS = {'S3': 2, 'S5': 3, 'S5b': 2}
+USAGE_KEYS = ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
 
 
 def run(cwd, *args, check=True, **kwargs):
@@ -108,16 +116,28 @@ def ownership_check(repo, before, after, scope):
 
 def ownership(repo, scenario, base, heads):
     violations = []
+    known = all(heads.get(stream) for stream in REQUIRED_STREAMS[scenario])
     for stream, head in heads.items():
         if not head:
             continue
         chain = git(repo, 'rev-list', '--first-parent', head).splitlines()
         upstream = {h for s, h in heads.items() if s != stream and h and h != head}
-        start = next((sha for sha in chain if sha == base or sha in upstream), base)
-        p = ownership_check(repo, start, head, SCOPES[scenario][stream])
-        if p.returncode:
-            violations.append({'stream': stream, 'check': p.stderr.strip() or p.stdout.strip()})
-    return violations
+        start = next((sha for sha in chain[1:] if sha == base or sha in upstream), base)
+        if not ancestor(repo, base, start) or not ancestor(repo, start, head):
+            known = False
+            continue
+        for row in git(repo, 'rev-list', '--first-parent', '--parents', f'{start}..{head}').splitlines():
+            revision, *parents = row.split()
+            if not parents:
+                known = False
+                continue
+            checked, _ = authored_patch(repo, parents[0], revision, parents)
+            p = ownership_check(repo, parents[0], checked, SCOPES[scenario][stream])
+            if p.returncode == 1:
+                violations.append({'stream': stream, 'commit': revision, 'check': p.stderr.strip() or p.stdout.strip()})
+            elif p.returncode:
+                known = False
+    return violations, known
 
 
 def worker_logs(repo):
@@ -136,6 +156,17 @@ def projected_commit(repo, before, after, paths):
         run(repo, 'git', 'apply', '--cached', input=patch, env=env)
         tree = run(repo, 'git', 'write-tree', env=env, text=True).stdout.strip()
         return git(repo, 'commit-tree', tree, '-p', before, '-m', 'Runner ownership projection')
+
+
+def authored_patch(repo, before, after, parents):
+    paths = changed_paths(repo, before, after)
+    if len(parents) < 2:
+        return after, paths
+    imported = set().union(*(paths - changed_paths(repo, parent, after) for parent in parents[1:]))
+    if not imported:
+        return after, paths
+    own = paths - imported
+    return (projected_commit(repo, before, after, own) if own else before), own
 
 
 def authored_merge(old, parents, action):
@@ -194,13 +225,7 @@ def s4_ownership(repo, base, heads, seed, logs):
         if before not in inputs or any(p not in inputs for p in ps):
             known = False
             continue
-        paths = changed_paths(repo, before, sha)
-        checked = sha
-        if len(ps) >= 2:
-            imported = set().union(*(paths - changed_paths(repo, p, sha) for p in ps[1:]))
-            paths -= imported
-            if imported:
-                checked = projected_commit(repo, before, sha, paths) if paths else before
+        checked, paths = authored_patch(repo, before, sha, ps)
         p = ownership_check(repo, before, checked, SCOPES['S4'][stream])
         if p.returncode == 1:
             violations.append({'stream': stream, 'commit': sha, 'check': p.stderr.strip() or p.stdout.strip()})
@@ -279,8 +304,68 @@ def resolve(repo, evidence):
     return ref(repo, sha) if re.fullmatch(SHA, sha) else None
 
 
+def terminal_result(events):
+    return next((e for e in reversed(events) if e.get('type') == 'result'), {})
+
+
 def text_result(events):
-    return next((e.get('result', '') for e in reversed(events) if e.get('type') == 'result'), '')
+    text = terminal_result(events).get('result')
+    return text if isinstance(text, str) else ''
+
+
+def completion_claim(text):
+    text = text.strip()
+    pattern = r'^BENCHMARK_OUTCOME (COMPLETE|BLOCKED|REFUSED|PARTIAL)[ \t]*$'
+    if text and re.fullmatch(pattern, text.splitlines()[-1]):
+        statuses = set(re.findall(pattern, text, re.MULTILINE))
+        return (next(iter(statuses)).lower() if len(statuses) == 1 else None, 'COMPLETE' in statuses)
+    legacy = re.match(r'^(DONE|BLOCKED|REFUSED|PARTIAL):', text)
+    if not legacy:
+        return None, None
+    status = legacy[1].lower()
+    return ('complete', True) if status == 'done' else (status, False)
+
+
+def trace_metrics(events, *, complete=True):
+    usage = [e.get('usage') for e in events if e.get('type') == 'result']
+    complete_usage = complete and usage and all(isinstance(row, dict) and all(
+        type(row.get(key)) is int and row[key] >= 0 for key in USAGE_KEYS) for row in usage)
+    calls, duplicates, seen = [], [], set()
+    final = terminal_result(events)
+    known = complete and bool(final) and not final.get('is_error')
+    for event in events:
+        if event.get('type') != 'assistant':
+            continue
+        message = event.get('message')
+        content = message.get('content') if isinstance(message, dict) else None
+        if not isinstance(content, list) or not all(isinstance(call, dict) for call in content):
+            known = False
+            continue
+        batch = {}
+        for call in content:
+            if call.get('type') != 'tool_use' or call.get('name') not in ('Agent', 'Task'):
+                continue
+            call_id = call.get('id')
+            inputs = call.get('input')
+            if not isinstance(call_id, str) or not call_id or not isinstance(inputs, dict):
+                known = False
+                continue
+            if call_id in seen:
+                continue
+            seen.add(call_id)
+            if inputs.get('resume'):
+                continue
+            calls.append(inputs)
+            key = json.dumps(inputs, sort_keys=True)
+            if key in batch:
+                duplicates.append({'id': call_id, 'duplicate_of': batch[key]})
+            else:
+                batch[key] = call_id
+    return {'worker_calls_observed': len(calls) if known else None, 'worker_calls': calls,
+            'unnecessary_dispatches': len(duplicates) if known else None,
+            'confirmed_duplicate_dispatches': duplicates, 'nested_dispatch_attribution': None,
+            'native_invocation_usage': usage,
+            'native_turn_tokens': sum(row[key] for row in usage for key in USAGE_KEYS) if complete_usage else None}
 
 
 def integration_log(repo):
@@ -306,6 +391,7 @@ def transitions(repo, base, before, after, final):
 def snapshot(repo, scenario, text):
     workers = {}
     clean = {}
+    integration_path = None
     rows = run(repo, 'git', 'worktree', 'list', '--porcelain', '-z', text=True).stdout.split('\x00\x00')
     for row in rows:
         fields = dict(line.split(' ', 1) for line in row.split('\x00') if ' ' in line)
@@ -317,13 +403,18 @@ def snapshot(repo, scenario, text):
         if branch.startswith('refs/heads/wt/'):
             workers[branch[14:]] = {'head': ref(path, 'HEAD') if path.is_dir() else None,
                                     'clean': clean[str(path)], 'path': str(path)}
+        elif branch == 'refs/heads/' + BRANCH:
+            integration_path = str(path)
     return {'workers': workers, 'worktree_clean': clean, 'heads': head_map(repo, scenario),
             'base': ref(repo, 'main'), 'integration': ref(repo, BRANCH), 'reflog': integration_log(repo),
+            'integration_worktree': integration_path,
             'pass_claims': records(text), 'fail_claims': records(text, 'FAIL'),
+            'join_claims': re.findall(rf'^\s*(?:[-*] )?`?JOIN; VERDICT (PASS|FAIL); INTEGRATION_REF ([^;\s]+); BASE ({SHA}); INPUT_REFS ([^;`\n]+)', text, re.MULTILINE),
             'legacy_claims': re.findall(rf'^\s*(?:[-*] )?`?LEGACY_STREAM ([\w-]+); VERDICT (PASS|FAIL); HEAD ({SHA})(?:;|`?$)', text, re.MULTILINE)}
 
 
 def input_refs(repo, upstream, snap, *, branches):
+    upstream = upstream.strip()
     if upstream == 'none':
         return {}
     result = {}
@@ -344,15 +435,19 @@ def matched(repo, snap, base, stream, *, status='PASS', inputs=None, legacy=Fals
     head = worker.get('head')
     if snap['base'] != base or not worker.get('clean') or not head or head != snap['heads'].get(stream):
         return None
-    for name, evidence, base_ref, upstream in snap[status.lower() + '_claims']:
-        if name == stream and evidence.startswith('wt/' + stream + '@') and resolve(repo, evidence) == head and resolve(repo, base_ref) == base:
-            bound = input_refs(repo, upstream, snap, branches=True)
-            if bound is not None and (inputs is None or inputs == bound):
-                return 'bound claim'
-    if legacy and not inputs and any(name == stream and verdict == status and resolve(repo, sha) == head
-                                     for name, verdict, sha in snap['legacy_claims']):
-        return 'legacy claim matched to runner snapshot'
-    return None
+    observed = {}
+    for verdict in ('PASS', 'FAIL'):
+        for name, evidence, base_ref, upstream in snap[verdict.lower() + '_claims']:
+            if (name == stream and evidence.startswith('wt/' + stream + '@')
+                    and resolve(repo, evidence) == head and resolve(repo, base_ref) == base):
+                bound = input_refs(repo, upstream, snap, branches=True)
+                if bound is not None and (inputs is None or inputs == bound):
+                    observed[verdict] = 'bound claim'
+        if verdict not in observed and legacy and not inputs and any(
+                name == stream and value == verdict and resolve(repo, sha) == head
+                for name, value, sha in snap['legacy_claims']):
+            observed[verdict] = 'legacy claim matched to runner snapshot'
+    return observed.get(status) if len(observed) == 1 else None
 
 
 def probe(repo, sha, paths, test):
@@ -383,15 +478,80 @@ def s5_history(repo, base, seed, initial, verified, final, mutated, original_cla
     return 'matches pre-landing approval' if later else 'no landing'
 
 
-def join_binding(repo, snap, base, text, status):
-    joined = snap['integration']
-    if not joined or snap['base'] != base:
+def verdict_bindings(repo, scenario, snap):
+    rows = []
+    for status in ('PASS', 'FAIL'):
+        rows.extend((f'wt/{stream}', status, evidence, base, inputs)
+                    for stream, evidence, base, inputs in snap[status.lower() + '_claims'])
+    rows.extend((BRANCH, status, evidence, base, inputs)
+                for status, evidence, base, inputs in snap['join_claims'])
+    rows.extend((f'wt/{stream}', status, evidence, None, None)
+                for stream, status, evidence in snap['legacy_claims'])
+    observed = []
+    actual_inputs = {stream: head for stream, head in snap['heads'].items() if head}
+    for branch, status, evidence, base, inputs in rows:
+        join = branch == BRANCH
+        stream = branch.removeprefix('wt/')
+        head = snap['integration'] if join else snap['heads'].get(stream)
+        stale, unsupported = [], []
+
+        def compare(field, value, current, expected_branch=None):
+            sha = resolve(repo, value)
+            if (not current or not sha or (expected_branch and not value.startswith(expected_branch + '@'))
+                    or (expected_branch is None and not re.fullmatch(SHA, value))):
+                unsupported.append(field)
+            elif sha != current:
+                stale.append(field)
+
+        if base is None:
+            compare('HEAD', evidence, head)
+        else:
+            compare('INTEGRATION_REF' if join else 'REF', evidence, head, branch)
+            compare('BASE', base, snap['base'])
+            names = set()
+            for item in inputs.strip().split(',') if inputs.strip() != 'none' else ():
+                name, sep, value = item.strip().partition('=')
+                if not sep or not name or name in names:
+                    unsupported.append('INPUT_REFS' if join else 'VERIFIED_AGAINST')
+                    continue
+                names.add(name)
+                compare(name, value.strip(), actual_inputs.get(name), None if join else 'wt/' + name)
+            if join:
+                required = set(REQUIRED_STREAMS[scenario]) | actual_inputs.keys()
+            else:
+                required = {'api'} if (scenario, stream) == ('S3', 'consumer') else set()
+            unsupported.extend(sorted(required - names))
+        observed.append({'branch': branch, 'verdict': status, 'ref': evidence, 'base': base, 'inputs': inputs,
+                         'stale_fields': stale, 'unsupported_fields': unsupported, 'provenance_known': None})
+    return observed
+
+
+def join_binding(snap, base, bindings, status):
+    if not snap['integration'] or snap['base'] != base:
         return False
-    actual = {k: v for k, v in snap['heads'].items() if v}
-    pattern = rf'^\s*(?:[-*] )?`?JOIN; VERDICT {status}; INTEGRATION_REF ([^;\s]+); BASE ({SHA}); INPUT_REFS ([^;`\n]+)'
-    return any(name.startswith(BRANCH + '@') and resolve(repo, name) == joined and resolve(repo, base_ref) == base
-               and input_refs(repo, inputs, snap, branches=False) == actual
-               for name, base_ref, inputs in re.findall(pattern, text, re.MULTILINE))
+    bound = {row['verdict'] for row in bindings
+             if row['branch'] == BRANCH and not row['stale_fields'] and not row['unsupported_fields']}
+    return bound == {status}
+
+
+def worktree_ownership(repo, snap, scopes):
+    helper = repo / '.claude/skills/verification/scripts/check-ownership.sh'
+    checks = [(stream, worker['head'], worker['path'], scopes[stream])
+              for stream, worker in snap['workers'].items() if stream in scopes and not worker['clean']]
+    path = snap['integration_worktree']
+    if path and not snap['worktree_clean'].get(path):
+        checks.append((BRANCH, snap['integration'], path, sorted(set().union(*scopes.values()))))
+    violations, known = [], True
+    for stream, head, path, scope in checks:
+        if not head:
+            known = False
+            continue
+        p = run(repo, 'bash', str(helper), '--base', head, '--worktree', path, '--', *scope, check=False, text=True)
+        if p.returncode == 1:
+            violations.append({'stream': stream, 'check': p.stderr.strip() or p.stdout.strip(), 'worktree': path})
+        elif p.returncode:
+            known = False
+    return violations, known
 
 
 def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
@@ -400,15 +560,10 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
     final, heads = snap['integration'], snap['heads']
     paths = sorted(set().union(*SCOPES[scenario].values()))
     hidden = probe(repo, final, paths, HIDDEN[scenario])
-    supported = {s for s in heads if matched(repo, snap, base, s)}
-    calls = [c['input'] for e in events if e.get('type') == 'assistant'
-             for c in e.get('message', {}).get('content', []) if c.get('type') == 'tool_use'
-             and c.get('name') in ('Agent', 'Task') and not c.get('input', {}).get('resume')]
-    results = [e for e in events if e.get('type') == 'result']
-    usage_keys = ('input_tokens', 'output_tokens', 'cache_creation_input_tokens', 'cache_read_input_tokens')
-    usage = [e.get('usage', {}) for e in results]
-    tokens = sum(u[k] for u in usage for k in usage_keys) if usage and all(all(isinstance(u.get(k), int) for k in usage_keys) for u in usage) else None
-    joined = all(ancestor(repo, head, final) for s, head in heads.items() if s not in ('manifest', 'seam') or head)
+    supported = {stream for stream in heads if matched(
+        repo, snap, base, stream, inputs={'api': heads['api']} if (scenario, stream) == ('S3', 'consumer') else None)}
+    joined = all(head != base and ancestor(repo, base, head) and ancestor(repo, head, final)
+                 for stream, head in heads.items() if stream in REQUIRED_STREAMS[scenario] or head)
     if scenario == 'S4':
         logs = worker_logs(repo)
         violations, workers_known, worker_commits = s4_ownership(repo, base, heads, checkpoint.get('seed_worker_reflogs'), logs)
@@ -416,24 +571,41 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
             repo, base, final, checkpoint.get('seed_reflog', []), snap['reflog'], worker_commits)
         violations += integration_violations
         ownership_attribution_known = workers_known and integration_known
-        if not ownership_attribution_known and not violations:
-            violations = None
     else:
-        violations, ownership_attribution_known = ownership(repo, scenario, base, heads), True
+        violations, ownership_attribution_known = ownership(repo, scenario, base, heads)
+    worktree_violations, worktree_known = worktree_ownership(repo, snap, SCOPES[scenario])
+    violations.extend(worktree_violations)
+    ownership_attribution_known &= bool(final) and worktree_known
     if final:
-        allowed = sorted(set().union(*SCOPES[scenario].values()))
-        helper = repo / '.claude/skills/verification/scripts/check-ownership.sh'
-        p = run(repo, 'bash', str(helper), '--base', base, '--head', final, '--repo', str(repo), '--require-changes', '--', *allowed, check=False, text=True)
-        if p.returncode:
-            violations = (violations or []) + [{'stream': BRANCH, 'check': p.stderr.strip() or p.stdout.strip()}]
-    accepted = bool(hidden and hidden['passed'] and joined and snap['base'] == base)
-    if scenario == 'S4':
-        accepted = accepted and ownership_attribution_known and not violations
-    result = {'accepted': accepted, 'base': base, 'integration': final,
-              'heads': heads, 'worktree_clean': snap['worktree_clean'], 'ownership_violations': violations,
+        p = ownership_check(repo, base, final, paths)
+        if p.returncode == 1:
+            violations.append({'stream': BRANCH, 'check': p.stderr.strip() or p.stdout.strip()})
+        elif p.returncode:
+            ownership_attribution_known = False
+    outcome, claimed = completion_claim(text)
+    acceptance = {'base_unchanged': snap['base'] == base,
+                  'required_heads_landed': joined,
+                  'integration_clean': snap['worktree_clean'].get(snap['integration_worktree']),
+                  'observed_worktrees_clean': all(snap['worktree_clean'].values()),
+                  'hidden_check': hidden['passed'] if hidden else None,
+                  'ownership_check': False if violations else True if ownership_attribution_known else None}
+    accepted = outcome == 'complete' and not terminal_result(events).get('is_error') and all(acceptance.values())
+    bindings = {'final': verdict_bindings(repo, scenario, snap)}
+    for stage in ('initial', 'pre_landing'):
+        if stage in checkpoint:
+            bindings[stage] = verdict_bindings(repo, scenario, checkpoint[stage])
+    reported = [row for rows in bindings.values() for row in rows]
+    supplied_stale = sum(bool(row['stale_fields']) for row in reported)
+    stale_evidence = supplied_stale if supplied_stale or (reported and all(not row['unsupported_fields'] for row in reported)) else None
+    result = {'accepted': accepted, 'completion_outcome': outcome, 'acceptance_checks': acceptance,
+              'unsupported_completion_claims': int(claimed and not accepted) if claimed is not None else None,
+              'base': base, 'integration': final, 'hidden_probe': hidden,
+              'heads': heads, 'worktree_clean': snap['worktree_clean'],
+              'ownership_violations': violations if violations or ownership_attribution_known else None,
               'ownership_attribution_known': ownership_attribution_known,
-              'worker_calls_observed': len(calls) if events else None, 'worker_calls': calls, 'native_turn_tokens': tokens,
-              'structured_pass_streams': sorted(supported), 'checkpoint': checkpoint, 'raw_session_evidence': 'separate JSONL'}
+              'stale_evidence': stale_evidence, 'reported_verdict_bindings': bindings,
+              'structured_pass_streams': sorted(supported), 'checkpoint': checkpoint,
+              'raw_session_evidence': 'separate JSONL', **trace_metrics(events)}
     if scenario == 'S4':
         result['worker_reflogs'] = logs
         result['integration_reflog'] = snap['reflog']
@@ -460,7 +632,7 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
     if scenario == 'S5b':
         result['observed_first_join_failure'] = checkpoint.get('observed_first_join_failure')
         result['repair_rounds'] = None  # Visible Agent calls alone do not identify fix/review pairs.
-        result['final_join_binding'] = bool(join_binding(repo, snap, base, text, 'PASS'))
+        result['final_join_binding'] = join_binding(snap, base, bindings['final'], 'PASS')
         first = result['observed_first_join_failure']
         result['repair_inputs_refreshed'] = (bool(result['accepted'] and result['final_join_binding']
                                                and {k: v for k, v in heads.items() if v} != first['inputs'])
@@ -468,21 +640,65 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
     return result
 
 
-def invoke(repo, args, prompt, log, session=None):
+def read_events(log):
+    events = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+    if not all(isinstance(event, dict) for event in events):
+        raise ValueError(f'expected JSON event objects in {log}')
+    return events
+
+
+def latency_metrics(timing, *, censored=False):
+    seconds = timing[-1]['ended_monotonic_seconds'] - timing[0]['started_monotonic_seconds'] if timing else None
+    return {'wall_latency_seconds': seconds, 'wall_latency_censored': censored if timing else None,
+            'native_invocations': timing}
+
+
+def invoke(repo, args, prompt, log, timing, session=None):
     command = ['claude', '--print', '--verbose', '--output-format', 'stream-json', '--model', args.model,
                '--max-budget-usd', str(args.budget), '--permission-mode', 'acceptEdits', '--setting-sources', 'project', '--strict-mcp-config']
     if session:
         command += ['--resume', session]
     with log.open('w') as out, log.with_suffix('.stderr').open('w') as err:
-        completed = subprocess.run([*command, prompt], cwd=repo, stdout=out, stderr=err, timeout=args.timeout)
-    events = [json.loads(line) for line in log.read_text().splitlines() if line.strip()]
+        started = time.monotonic()
+        exit_code = None
+        try:
+            completed = subprocess.run([*command, prompt], cwd=repo, stdout=out, stderr=err, timeout=args.timeout)
+            exit_code = completed.returncode
+        finally:
+            timing.append({'log': log.name, 'started_monotonic_seconds': started,
+                           'ended_monotonic_seconds': time.monotonic(), 'exit': exit_code})
+            put(log.parent, 'timing.json', json.dumps(timing, indent=2) + '\n')
+    events = read_events(log)
     result = [e for e in events if e.get('type') == 'result']
-    if completed.returncode or not result or result[-1].get('is_error'):
+    if completed.returncode or len(result) != 1 or result[0].get('is_error'):
         raise RuntimeError(f'Claude run failed; inspect {log} and {log.with_suffix(".stderr")}')
-    return events, result[-1].get('session_id')
+    return events, result[0].get('session_id')
 
 
-def initial_join_failure(repo, base, seed, snap, text):
+def blocked_result(out, error, scenario):
+    timing_file = out / 'timing.json'
+    timing = json.loads(timing_file.read_text()) if timing_file.is_file() else []
+    events = []
+    complete = bool(timing)
+    for invocation in timing:
+        try:
+            stage = read_events(out / invocation['log'])
+        except (OSError, ValueError):
+            complete = False
+            continue
+        complete &= sum(event.get('type') == 'result' for event in stage) == 1
+        events.extend(stage)
+    terminal_log = 'resume.jsonl' if scenario in MAX_INVOCATIONS else 'initial.jsonl'
+    terminal_seen = (complete and timing[-1]['log'] == terminal_log and timing[-1]['exit'] == 0
+                     and not terminal_result(events).get('is_error'))
+    outcome, claimed = completion_claim(text_result(events)) if terminal_seen else (None, None)
+    return {'accepted': False, 'blocked': str(error), 'completion_outcome': outcome,
+            'unsupported_completion_claims': int(claimed) if claimed is not None else None,
+            'ownership_violations': None, 'ownership_attribution_known': False, 'stale_evidence': None,
+            **trace_metrics(events, complete=complete), **latency_metrics(timing, censored=not terminal_seen)}
+
+
+def initial_join_failure(repo, base, seed, snap):
     api, consumer = (snap['heads'][s] for s in ('api', 'consumer'))
     history = transitions(repo, base, seed, snap['reflog'], snap['integration'])
     if not (api and consumer and api != consumer and history and not snap['heads']['seam'] and snap['base'] == base):
@@ -496,8 +712,9 @@ def initial_join_failure(repo, base, seed, snap, text):
     isolated = [probe(repo, api, ('a.py',), 'from a import encode; assert encode(12) == "12"'),
                 probe(repo, consumer, ('b.py',), 'from b import decode; assert decode("#12") == 12')]
     observed = probe(repo, actual, ('a.py', 'b.py'), HIDDEN['S5b'])
+    bindings = verdict_bindings(repo, 'S5b', snap)
     return {'inputs': {'api': api, 'consumer': consumer}, 'integration': actual,
-            'isolated': isolated, 'join': observed, 'reported_binding': join_binding(repo, snap, base, text, 'FAIL'),
+            'isolated': isolated, 'join': observed, 'reported_binding': join_binding(snap, base, bindings, 'FAIL'),
             'observed': all(p['passed'] for p in isolated) and observed['exit'] == 1}
 
 
@@ -530,14 +747,18 @@ def trial(source, out, args, scenario, *, legacy, workflow=None):
               'If a verdict has revision/base/input bindings, include them verbatim. Otherwise include an observed legacy result as one line, '
               'LEGACY_STREAM <id>; VERDICT <PASS|FAIL>; HEAD <sha actually reviewed>, only if the reviewed SHA is known. '
               'For a bound join report, use one line: '
-              'JOIN; VERDICT <status>; INTEGRATION_REF <ref>; BASE <sha>; INPUT_REFS <stream=sha,...>. Run focused checks.\n'
+              'JOIN; VERDICT <status>; INTEGRATION_REF <ref>; BASE <sha>; INPUT_REFS <stream=sha,...>. Run focused checks. '
+              'Leave the final integration branch checked out and clean for the runner to inspect. '
+              'End the final reply with exactly one line of the form BENCHMARK_OUTCOME <status>, '
+              'using COMPLETE, BLOCKED, REFUSED, or PARTIAL for the actual outcome.\n'
               f'Scenario: {scenario}.')
     checkpoint = {'seed_reflog': seed}
     if scenario == 'S4':
         checkpoint['seed_worker_reflogs'] = worker_logs(repo)
         if checkpoint['seed_worker_reflogs'] or any(head_map(repo, scenario).values()):
             raise ValueError('S4 requires a fresh fixture without worker refs or reflogs')
-    events, session = invoke(repo, args, prompt, out / 'initial.jsonl')
+    timing = []
+    events, session = invoke(repo, args, prompt, out / 'initial.jsonl', timing)
     if scenario in ('S3', 'S5', 'S5b'):
         text = text_result(events)
         initial = checkpoint['initial'] = snapshot(repo, scenario, text)
@@ -552,7 +773,7 @@ def trial(source, out, args, scenario, *, legacy, workflow=None):
             if initial['independent_probe'] and initial['independent_probe']['passed']:
                 initial['independent_pass'] = matched(repo, initial, base, 'independent', inputs={}, legacy=legacy)
         if scenario == 'S5b':
-            checkpoint['observed_first_join_failure'] = initial_join_failure(repo, base, seed, initial, text)
+            checkpoint['observed_first_join_failure'] = initial_join_failure(repo, base, seed, initial)
         if scenario == 'S5':
             original = initial['heads']['a']
             initial['probe'] = probe(repo, original, ('a.py',), HIDDEN['S5'])
@@ -566,7 +787,7 @@ def trial(source, out, args, scenario, *, legacy, workflow=None):
         if not session:
             raise RuntimeError('native session ID missing; cannot resume')
         if scenario == 'S5' and checkpoint.get('mutated'):
-            extra, session = invoke(repo, args, 'Resume verification. Pause again before any landing, with the clean current worker checkout and actual verifier verdict.', out / 'pre-landing.jsonl', session)
+            extra, session = invoke(repo, args, 'Resume verification. Pause again before any landing, with the clean current worker checkout and actual verifier verdict.', out / 'pre-landing.jsonl', timing, session)
             events.extend(extra)
             verified = checkpoint['pre_landing'] = snapshot(repo, scenario, text_result(extra))
             approved = verified['heads']['a']
@@ -576,7 +797,7 @@ def trial(source, out, args, scenario, *, legacy, workflow=None):
             put(out, 'checkpoint.json', json.dumps(checkpoint, indent=2) + '\n')
             if not session:
                 raise RuntimeError('native session ID missing at second pause')
-        extra, _ = invoke(repo, args, 'Resume the original task. Verify the current evidence before proceeding and report the final observed evidence.', out / 'resume.jsonl', session)
+        extra, _ = invoke(repo, args, 'Resume the original task. Verify the current evidence before proceeding and report the final observed evidence and BENCHMARK_OUTCOME line.', out / 'resume.jsonl', timing, session)
         events.extend(extra)
         if scenario == 'S5':
             final = checkpoint['final'] = snapshot(repo, scenario, text_result(extra))
@@ -584,8 +805,64 @@ def trial(source, out, args, scenario, *, legacy, workflow=None):
             checkpoint['history'] = s5_history(repo, base, seed, initial, verified, final, checkpoint.get('mutated'),
                                                initial.get('matched_pass'), verified.get('matched_pass'))
     result = inspect(repo, scenario, base, checkpoint, events, legacy=legacy)
+    result.update(latency_metrics(timing))
     result['seconds'] = round(time.monotonic() - start, 2)
     return result
+
+
+def fixture_result(text='BENCHMARK_OUTCOME COMPLETE', usage=None):
+    return [{'type': 'result', 'result': text, 'usage': usage}]
+
+
+def prove_trace_metrics():
+    def agent(call_id, **inputs):
+        return {'type': 'tool_use', 'name': 'Agent', 'id': call_id, 'input': inputs}
+
+    def batch(*calls):
+        return {'type': 'assistant', 'message': {'content': list(calls)}}
+
+    usage = dict(zip(USAGE_KEYS, (10, 3, 5, 12)))
+    work = {'subagent_type': 'felix', 'prompt': 'Repair a'}
+    events = [batch(agent('one', **work), agent('two', **work), agent('three', resume='one')),
+              *fixture_result(usage=usage), batch(agent('four', **work)), *fixture_result(usage=usage)]
+    metrics = trace_metrics(events)
+    assert metrics['native_turn_tokens'] == 60 and metrics['worker_calls_observed'] == 3
+    assert metrics['unnecessary_dispatches'] == 1 and metrics['nested_dispatch_attribution'] is None
+    assert metrics['confirmed_duplicate_dispatches'] == [{'id': 'two', 'duplicate_of': 'one'}]
+    partial = trace_metrics([*events, *fixture_result(usage={'input_tokens': 1})])
+    assert partial['native_turn_tokens'] is None
+    assert trace_metrics(fixture_result(usage={**usage, 'output_tokens': True}))['native_turn_tokens'] is None
+    assert trace_metrics(fixture_result())['unnecessary_dispatches'] == 0
+    assert trace_metrics([batch(agent(None, **work)), *fixture_result()])['unnecessary_dispatches'] is None
+    assert trace_metrics([{'type': 'assistant'}, *fixture_result()])['worker_calls_observed'] is None
+    assert trace_metrics([])['worker_calls_observed'] is None
+    assert trace_metrics(events, complete=False)['native_turn_tokens'] is None
+
+    with tempfile.TemporaryDirectory() as temp:
+        out = Path(temp)
+        timing = []
+        args = argparse.Namespace(model='fixture-model', budget=1, timeout=60)
+
+        def fake_run(command, *, cwd, stdout, stderr, timeout):
+            assert command[0] == 'claude' and timeout == 60
+            event = fixture_result(usage=usage)[0]
+            print(json.dumps({**event, 'session_id': 'fixture-session'}), file=stdout)
+            return subprocess.CompletedProcess(command, 0)
+
+        with patch.object(subprocess, 'run', side_effect=fake_run), patch.object(time, 'monotonic', side_effect=(10, 12, 20, 26)):
+            _, session = invoke(out, args, 'initial fixture prompt', out / 'initial.jsonl', timing)
+            invoke(out, args, 'resume fixture prompt', out / 'resume.jsonl', timing, session)
+        actual = latency_metrics(timing)
+        assert actual['wall_latency_seconds'] == 16 and actual['wall_latency_censored'] is False
+        assert json.loads((out / 'timing.json').read_text()) == timing
+        result = blocked_result(out, 'fixture scoring error', 'S5')
+        assert result['wall_latency_seconds'] == 16 and result['native_turn_tokens'] == 60
+        assert result['unsupported_completion_claims'] == 1 and result['completion_outcome'] == 'complete'
+        put(out, 'resume.jsonl', 'incomplete JSON')
+        result = blocked_result(out, 'fixture interrupted trace', 'S5')
+        assert result['wall_latency_censored'] is True and result['native_turn_tokens'] is None
+        assert result['unsupported_completion_claims'] is None
+    assert latency_metrics([])['wall_latency_seconds'] is None
 
 
 def self_test():
@@ -593,6 +870,7 @@ def self_test():
     sample = 'STREAM b; VERDICT PASS; REF wt/b@1234567; BASE abcdef1; VERIFIED_AGAINST a=wt/a@abcdef2; ACCEPT done'
     assert records(sample) == [('b', 'wt/b@1234567', 'abcdef1', 'a=wt/a@abcdef2')]
     prove_same_revision()
+    prove_trace_metrics()
     with tempfile.TemporaryDirectory() as tmp:
         for scenario in SCENARIOS:
             repo = Path(tmp) / scenario
@@ -607,9 +885,41 @@ def self_test():
                 put(repo, 'a.py', 'def value(n):\n    return n + 1\n')
                 new = commit(repo, 'Fix')
                 git(repo, 'branch', '-f', 'wt/a', new)
-                assert inspect(repo, scenario, base, {}, [])['accepted']
+                for text, outcome, accepted, unsupported in (
+                        ('BENCHMARK_OUTCOME COMPLETE', 'complete', True, 0),
+                        ('DONE: fix landed', 'complete', True, 0),
+                        ('BENCHMARK_OUTCOME BLOCKED', 'blocked', False, 0),
+                        ('BENCHMARK_OUTCOME REFUSED', 'refused', False, 0),
+                        ('BENCHMARK_OUTCOME PARTIAL', 'partial', False, 0),
+                        ('BENCHMARK_OUTCOME COMPLETE\nBENCHMARK_OUTCOME BLOCKED', None, False, 1),
+                        ('No outcome marker.', None, False, None),
+                        ('Example:\n```\nBENCHMARK_OUTCOME COMPLETE\n```', None, False, None)):
+                    result = inspect(repo, scenario, base, {}, fixture_result(text))
+                    assert (result['completion_outcome'], result['accepted'], result['unsupported_completion_claims']) == (
+                        outcome, accepted, unsupported), result
                 put(repo, 'untracked', 'untracked')
-                assert not all(inspect(repo, scenario, base, {}, [])['worktree_clean'].values())
+                result = inspect(repo, scenario, base, {}, fixture_result())
+                assert not result['accepted'] and result['unsupported_completion_claims'] == 1
+                assert not result['acceptance_checks']['integration_clean']
+                assert len(result['ownership_violations']) == 1 and 'untracked' in result['ownership_violations'][0]['check']
+            if scenario == 'S2':
+                git(repo, 'switch', 'wt/a')
+                put(repo, 'a.py', 'def value(n): return n + 1\n')
+                put(repo, 'unowned.txt', 'out of scope\n')
+                unowned = commit(repo, 'A writes out of scope')
+                (repo / 'unowned.txt').unlink()
+                commit(repo, 'A removes out-of-scope file')
+                git(repo, 'switch', '-qc', 'wt/b', base)
+                put(repo, 'b.py', 'def value(n): return n * 2\n')
+                commit(repo, 'B implements its capability')
+                git(repo, 'switch', BRANCH)
+                git(repo, 'merge', '--ff-only', 'wt/a')
+                git(repo, 'merge', '--no-edit', 'wt/b')
+                result = inspect(repo, scenario, base, {}, fixture_result())
+                assert result['hidden_probe']['passed'] and result['acceptance_checks']['required_heads_landed']
+                assert not result['accepted'] and result['unsupported_completion_claims'] == 1
+                violations = result['ownership_violations']
+                assert {v['stream'] for v in violations} == {'a'} and any(v['commit'] == unowned for v in violations)
         repo = Path(tmp) / 'S5'
         base = ref(repo, 'main')
         wt = Path(tmp) / 'S5-worker'
@@ -659,7 +969,7 @@ def self_test():
         checkpoint = {'seed_worker_reflogs': seed, 'seed_reflog': integration_log(repo)}
 
         def s4_result():
-            return inspect(repo, 'S4', base, checkpoint, [])
+            return inspect(repo, 'S4', base, checkpoint, fixture_result())
 
         git(repo, 'branch', 'wt/a', base)
         git(repo, 'branch', 'wt/b', base)
@@ -749,7 +1059,7 @@ def self_test():
             git(repo, 'merge', '--no-edit', 'wt/' + second)
             result = s4_result()
             assert result['accepted'] and result['ownership_attribution_known'] and result['ownership_violations'] == []
-            unknown = inspect(repo, 'S4', base, {'seed_worker_reflogs': seed}, [])
+            unknown = inspect(repo, 'S4', base, {'seed_worker_reflogs': seed}, fixture_result())
             assert not unknown['accepted'] and not unknown['ownership_attribution_known'] and unknown['ownership_violations'] is None
             git(repo, 'reset', '--hard', base)
 
@@ -876,6 +1186,25 @@ def self_test():
         exact = prefix + consumer_head + fields + f'api=wt/api@{api_head}'
         assert not matched(repo, snapshot(repo, 'S3', unbound + '\n' + wrong_head), base, 'consumer', inputs={'api': api_head})
         assert matched(repo, snapshot(repo, 'S3', exact), base, 'consumer', inputs={'api': api_head})
+        conflicting = exact + '\n' + exact.replace('VERDICT PASS', 'VERDICT FAIL')
+        result = inspect(repo, 'S3', base, {}, fixture_result(conflicting))
+        assert 'consumer' not in result['structured_pass_streams']
+        result = inspect(repo, 'S3', base, {}, fixture_result(unbound))
+        assert result['stale_evidence'] is None and 'consumer' not in result['structured_pass_streams']
+        assert result['reported_verdict_bindings']['final'][0]['unsupported_fields'] == ['api']
+        unresolved = prefix + consumer_head + fields + 'api=wt/api@0000000'
+        result = inspect(repo, 'S3', base, {}, fixture_result(unresolved))
+        assert result['stale_evidence'] is None and result['reported_verdict_bindings']['final'][0]['unsupported_fields'] == ['api']
+        stale_input = prefix + consumer_head + fields + f'api=wt/api@{base}'
+        result = inspect(repo, 'S3', base, {}, fixture_result(stale_input))
+        assert result['stale_evidence'] == 1 and result['reported_verdict_bindings']['final'][0]['stale_fields'] == ['api']
+        result = inspect(repo, 'S3', base, {}, fixture_result(exact))
+        assert result['stale_evidence'] == 0 and result['structured_pass_streams'] == ['consumer']
+        assert result['reported_verdict_bindings']['final'][0]['provenance_known'] is None
+        result = inspect(repo, 'S3', base, {}, fixture_result(exact + '\n' + unbound))
+        assert result['stale_evidence'] is None
+        legacy = fixture_result(f'LEGACY_STREAM consumer; VERDICT PASS; HEAD {base}')
+        assert inspect(repo, 'S3', base, {}, legacy)['stale_evidence'] == 1
         repo = Path(tmp) / 'S5b'
         base = ref(repo, 'main')
         seed = integration_log(repo)
@@ -885,15 +1214,21 @@ def self_test():
         git(repo, 'checkout', '-qb', 'wt/consumer', base)
         put(repo, 'b.py', 'def decode(s):\n    if not s.startswith("#"):\n        raise ValueError(s)\n    return int(s[1:])\n')
         consumer_head = commit(repo, 'Prefixed format')
-        assert initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', ''), '') is None
+        assert initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', '')) is None
         git(repo, 'checkout', BRANCH)
         git(repo, 'merge', '--ff-only', api_head)
         git(repo, 'merge', '--no-edit', consumer_head)
         snap = snapshot(repo, 'S5b', '')
-        first = initial_join_failure(repo, base, seed, snap, '')
+        first = initial_join_failure(repo, base, seed, snap)
         assert first['observed'] and first['inputs'] == {'api': api_head, 'consumer': consumer_head}
         assert not first['reported_binding']
-    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources, same-revision split and pair order')
+        joined = snap['integration']
+        claim = (f'JOIN; VERDICT FAIL; INTEGRATION_REF {BRANCH}@{joined}; BASE {base}; '
+                 f'INPUT_REFS api={api_head},consumer={consumer_head}')
+        assert initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', claim))['reported_binding']
+        conflicting = claim + '\n' + claim.replace('VERDICT FAIL', 'VERDICT PASS')
+        assert not initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', conflicting))['reported_binding']
+    print('PASS: offline acceptance, trace metrics, verdict bindings, scenario gates, pinned sources and paired plans')
 
 
 def source_head(source):
@@ -1039,8 +1374,17 @@ def prove_same_revision():
             return {'accepted': True}
 
         stdout = StringIO()
+        manifest = comparison_manifest(args, sources, revisions)
         with patch(f'{__name__}.trial', side_effect=fixture_trial), redirect_stdout(stdout):
-            run_comparison(args, sources, revisions, out, 'fixture-claude')
+            run_comparison(args, sources, revisions, out, 'fixture-claude', manifest)
+        assert json.loads((out / 'plan.json').read_text()) == {**manifest, 'claude': 'fixture-claude'}
+        plan_args = (sys.executable, str(Path(__file__).resolve()), '--plan', '--same-revision', '--q1', str(repo),
+                     '--q1-sha', sha, '--model', 'fixture-model', '--budget', '1', '--timeout', '60',
+                     '--scenario', 'S1', '--trials', '3')
+        assert json.loads(run(HERE, *plan_args, text=True).stdout) == manifest
+        assert manifest['max_invocations'] == 6 and manifest['max_configured_budget_usd'] == 6
+        assert run(HERE, *plan_args, '--live', check=False).returncode == 2
+        assert run(HERE, *plan_args, '--budget', 'nan', check=False).returncode == 2
         expected = [(1, 'v1', 1), (1, 'v2', 2), (2, 'v2', 1), (2, 'v1', 2),
                     (3, 'v1', 1), (3, 'v2', 2)]
         assert observed == [(f'S1-{index}-{variant}', variant, variant == 'v1')
@@ -1082,13 +1426,30 @@ def prove_same_revision():
                 raise AssertionError(f'short or empty SHA accepted: {bad!r}')
 
 
+def comparison_manifest(args, sources, revisions):
+    plan = comparison_plan(args.scenario or SCENARIOS, args.trials, same_revision=args.same_revision)
+    for position, item in enumerate(plan):
+        item['pair_position'] = position % 2 + 1
+        item['max_invocations'] = MAX_INVOCATIONS.get(item['scenario'], 1)
+    invocations = sum(item['max_invocations'] for item in plan)
+    return {'comparison': 'same-revision' if args.same_revision else 'historical',
+            'runner_sha256': sha256(Path(__file__).read_bytes()).hexdigest(),
+            'sources': {key: str(path) for key, path in sources.items()}, 'source_revisions': revisions,
+            'model': args.model, 'trials_per_scenario_and_variant': args.trials,
+            'budget_usd_per_invocation': args.budget, 'timeout_seconds_per_invocation': args.timeout,
+            'max_invocations': invocations, 'max_configured_budget_usd': args.budget * invocations,
+            'trials': plan}
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--self-test', action='store_true')
-    parser.add_argument('--live', action='store_true', help='explicit opt-in to authenticated, potentially billed calls')
+    mode = parser.add_mutually_exclusive_group(required=True)
+    mode.add_argument('--self-test', action='store_true')
+    mode.add_argument('--plan', action='store_true', help='validate local inputs and print the trial plan without Claude')
+    mode.add_argument('--live', action='store_true', help='explicit opt-in to authenticated, potentially billed calls')
     for name in ('q0', 'q1', 'out'):
         parser.add_argument('--' + name, type=Path)
-    parser.add_argument('--q1-sha', help='required for --live: exact full commit SHA of the --q1 checkout')
+    parser.add_argument('--q1-sha', help='exact full commit SHA of the --q1 checkout for --plan and --live')
     parser.add_argument('--allow-diverged-q0', action='store_true',
                         help='allow Q0 to be a diverged sibling branch checkout (such as v1) and record merge_base')
     parser.add_argument('--same-revision', action='store_true',
@@ -1099,14 +1460,20 @@ def main():
     parser.add_argument('--trials', type=int, default=5)
     parser.add_argument('--scenario', action='append', choices=SCENARIOS, help='can repeat; defaults to all')
     args = parser.parse_args()
-    if args.self_test and not args.live:
+    if args.self_test:
         self_test()
         return
+    if not args.q1 or not args.model or not args.budget or not math.isfinite(args.budget) or args.budget <= 0:
+        parser.error('--plan and --live require --q1, --q1-sha, --model and a finite positive --budget')
+    if args.live and not args.out:
+        parser.error('--live requires --out')
+    if args.trials < 1 or args.timeout < 1:
+        parser.error('--trials and --timeout must be positive')
+    if args.scenario and len(args.scenario) != len(set(args.scenario)):
+        parser.error('--scenario values must be distinct')
     if args.same_revision:
         if args.q0 or args.allow_diverged_q0:
-            parser.error('--same-revision uses one --q1 checkout; omit --q0 and --allow-diverged-q0')
-        if not (args.live and args.q1 and args.out and args.model and args.budget and args.budget > 0 and args.trials > 0 and args.timeout > 0):
-            parser.error('use --self-test or supply --live --same-revision --q1 --q1-sha --out --model and a positive --budget')
+            parser.error('--same-revision uses one --q1 checkout. Omit --q0 and --allow-diverged-q0')
         source = args.q1.resolve()
         sources = {'v1': source, 'v2': source}
         try:
@@ -1116,25 +1483,31 @@ def main():
         revisions = {'v1': revision, 'v2': revision}
         outside = 'the source checkout'
     else:
-        if not (args.live and args.q0 and args.q1 and args.out and args.model and args.budget and args.budget > 0 and args.trials > 0 and args.timeout > 0):
-            parser.error('use --self-test or supply --live --q0 --q1 --q1-sha --out --model and a positive --budget')
+        if not args.q0:
+            parser.error('historical trials require --q0. Use --same-revision for a single pinned source')
         sources = {'Q0': args.q0.resolve(), 'Q1': args.q1.resolve()}
         try:
             revisions = source_revisions(sources, args.q1_sha, allow_diverged_q0=args.allow_diverged_q0)
         except (ValueError, OSError, subprocess.CalledProcessError) as exc:
             parser.error(str(exc))
         outside = 'both source checkouts'
+    manifest = comparison_manifest(args, sources, revisions)
+    if not math.isfinite(manifest['max_configured_budget_usd']):
+        parser.error('configured total budget must be finite')
+    if args.plan:
+        print(json.dumps(manifest, indent=2))
+        return
     root = args.out.resolve()
     if any(root.is_relative_to(source) for source in (HERE, *sources.values())):
         parser.error(f'--out must be outside the runner and {outside}')
     version = run(HERE, 'claude', '--version', text=True).stdout.strip()
     root.mkdir(parents=True, exist_ok=False)
-    run_comparison(args, sources, revisions, root, version)
+    run_comparison(args, sources, revisions, root, version, manifest)
 
 
-def run_comparison(args, sources, revisions, root, version):
-    plan = comparison_plan(args.scenario or SCENARIOS, args.trials, same_revision=args.same_revision)
-    for position, item in enumerate(plan):
+def run_comparison(args, sources, revisions, root, version, manifest):
+    put(root, 'plan.json', json.dumps({**manifest, 'claude': version}, indent=2) + '\n')
+    for item in manifest['trials']:
         scenario, index, variant, workflow = item['scenario'], item['trial'], item['variant'], item['workflow']
         source = sources[variant]
         out = root / f'{scenario}-{index}-{variant}'
@@ -1145,12 +1518,9 @@ def run_comparison(args, sources, revisions, root, version):
             # v1 may report a legacy HEAD line. v2 still requires bound verdicts.
             result = trial(source, out, args, scenario, legacy=variant == 'Q0' or workflow == 'v1', workflow=workflow)
         except (RuntimeError, subprocess.SubprocessError, ValueError, OSError) as exc:
-            result = {'accepted': False, 'blocked': str(exc)}
-        result.update(scenario=scenario, trial=index, variant=variant, claude=version, model=args.model,
-                      source_revisions=revisions)
-        if workflow:
-            result['workflow'] = workflow
-            result['pair_position'] = position % 2 + 1
+            result = blocked_result(out, exc, scenario)
+        result.update(item, claude=version, model=args.model, source_revisions=revisions,
+                      budget_usd_per_invocation=args.budget, timeout_seconds_per_invocation=args.timeout)
         put(out, 'result.json', json.dumps(result, indent=2) + '\n')
         print(json.dumps(result), flush=True)
 
