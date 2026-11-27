@@ -11,10 +11,15 @@ git clone https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
-For Pi, install Pi 1.1.0 or later. When that harness is selected, the installer
-runs `pi install npm:@tintinweb/pi-subagents` and
-`pi install npm:pi-web-access` if `pi list` does not already show them. It
-writes `subagents.json` in `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`.
+For Pi, the installer requires Pi 1.1.0 or later and Python 3.
+`npm:@tintinweb/pi-subagents@0.26.3` declares Pi peers at 1.1.0 or later.
+`npm:pi-web-access@0.48.0` requires Node.js 22.19.0 or later. Quintet tested
+these pins with Pi 1.6.1 and Node.js 26.13.1. The installer
+checks the exact registrations and installed manifests. It registers missing
+pins globally, including for project installs, and reports conflicts before
+changing settings. Resolve reported legacy, filtered, duplicate, or mismatched
+registrations in Pi before retrying. Quintet creates `subagents.json` in
+`${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` if absent.
 
 Run `./install.sh` in a terminal. Use the arrow keys and Enter or Space to
 select your harness, scope, and workflow. Review the choices before installing.
@@ -45,10 +50,9 @@ that block. Restart the harness session to load the updated rules.
 
 Project rules take precedence over global workflow rules for the active
 harness. The installer backs up files it replaces and preserves model and
-provider settings. Selecting Pi installs both runtime packages when they are
-absent, including with `--no-web`. `--no-web` omits web tool grants from worker
-profiles. It does not skip those package installs or remove an existing
-registration.
+provider settings. A failed Pi install restores the package registration file.
+Package-manager cache entries can remain. `--no-web` omits web tool grants from
+worker profiles and retains the same Pi package prerequisites.
 
 ### Antigravity
 
@@ -78,7 +82,10 @@ web tool grants Quintet adds for Pi, Claude Code, and Antigravity CLI.
 | **Nora** | Researches contracts and root causes | Read-only |
 | **Felix** | Implements changes and runs focused checks | Owned paths |
 | **Vera** | Independently reviews diffs and evidence | Read-only |
-| **Iris** | Runs acceptance and smoke checks | Read-only on source |
+| **Iris** | Checks acceptance and smoke behavior | Read-only |
+
+For the native tool boundaries and how the coordinator supplies executable
+check evidence, see [Read-only verification](docs/read-only-verification.md).
 
 Denia is the default coordinator. Edit [PERSONALITY.md](PERSONALITY.md) in the Quintet checkout
 for global installs. For project installs, edit `PROJECT/PERSONALITY.md`. The

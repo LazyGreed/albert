@@ -71,25 +71,63 @@ mkdir -p "$project" "$tmp/bin"
 printf '# Kanade contract\nKeep this rule.\n' > "$project/AGENTS.md"
 printf '# Claude contract\nKeep this too.\n' > "$project/CLAUDE.md"
 cat > "$tmp/bin/pi" <<'PI'
-#!/usr/bin/env bash
-if [[ -n "${MOCK_PI_CALLS:-}" ]]; then printf '%s\n' "$*" >> "$MOCK_PI_CALLS"; fi
-case "$1" in
-  --version) printf 'pi %s\n' "${MOCK_PI_VERSION:-1.1.0}" ;;
-  list)
-    [[ "${MOCK_PI_LIST_STATUS:-0}" == 0 ]] || exit "$MOCK_PI_LIST_STATUS"
-    printf '%s\n' "${MOCK_PI_PACKAGES:-npm:@tintinweb/pi-subagents}"
-    ;;
-  install)
-    printf 'pi %s\n' "$*" >> "$MOCK_PI_LOG"
-    if [[ -n "${MOCK_PI_INSTALL_FAIL:-}" && "$2" == "$MOCK_PI_INSTALL_FAIL" ]]; then exit 1; fi
-    ;;
-  *) exit 1 ;;
-esac
+#!/usr/bin/env python3
+import json
+import os
+from pathlib import Path
+import sys
+
+args = sys.argv[1:]
+if args[0] != 'seed':
+    with open(os.environ['MOCK_PI_CALLS'], 'a') as log:
+        print(' '.join(args), file=log)
+agent_dir = Path(os.environ['PI_CODING_AGENT_DIR'])
+settings = agent_dir / 'settings.json'
+data = json.loads(settings.read_text()) if settings.is_file() else {}
+packages = data.setdefault('packages', [])
+
+
+def manifest(spec):
+    name, _, version = spec[4:].rpartition('@') if '@' in spec[5:] else (spec[4:], '', '')
+    return agent_dir / 'npm' / 'node_modules' / name / 'package.json', name, version
+
+
+def register(spec):
+    pkg, name, version = manifest(spec)
+    pkg.parent.mkdir(parents=True, exist_ok=True)
+    pkg.write_text(json.dumps({'name': name, 'version': version}))
+    if spec not in packages:
+        packages.append(spec)
+    settings.write_text(json.dumps(data) + '\n')
+
+
+if args[0] == '--version':
+    print('pi', os.environ['MOCK_PI_VERSION'])
+elif args == ['list', '--no-approve']:
+    if os.getenv('MOCK_PI_LIST_STATUS'):
+        sys.exit(int(os.environ['MOCK_PI_LIST_STATUS']))
+    print('User packages:')
+    for entry in packages:
+        source = entry if isinstance(entry, str) else entry['source']
+        print(f'  {source}' + (' (filtered)' if isinstance(entry, dict) else ''))
+        if source.startswith('npm:') and (pkg := manifest(source)[0]).is_file():
+            print(f'    {pkg.parent}')
+elif args[0] == 'install' and args[2:] == ['--no-approve']:
+    with open(os.environ['MOCK_PI_LOG'], 'a') as log:
+        print('pi', *args, file=log)
+    register(args[1])
+    if args[1] == os.getenv('MOCK_PI_INSTALL_FAIL'):
+        sys.exit(1)
+elif args[0] == 'seed':
+    for spec in args[1:]:
+        register(spec)
+else:
+    sys.exit(2)
 PI
 chmod +x "$tmp/bin/pi"
-export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_CALLS="$tmp/pi-calls" MOCK_PI_VERSION=1.1.0
-export MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access'
-both_pi_packages="$MOCK_PI_PACKAGES"
+export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_CALLS="$tmp/pi-calls" MOCK_PI_VERSION=1.6.1
+subagents_pin='npm:@tintinweb/pi-subagents@0.26.3'
+web_pin='npm:pi-web-access@0.48.0'
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
 unset CODEX_HOME
 mkdir -p "$HOME"
@@ -112,8 +150,8 @@ assert_absent '[Aa]lbert' "$tmp/help"
 [[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
 [[ ! -e "$PI_CODING_AGENT_DIR/subagents.json" && ! -e "$MOCK_PI_LOG" && ! -e "$MOCK_PI_CALLS" ]]
 grep -Fxq 'CHECK Pi >=1.1.0 before install' "$tmp/dry"
-grep -Fxq 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents' "$tmp/dry"
-grep -Fxq 'INSTALL IF ABSENT: pi install npm:pi-web-access' "$tmp/dry"
+grep -Fxq "INSTALL IF ABSENT: pi install $subagents_pin --no-approve" "$tmp/dry"
+grep -Fxq "INSTALL IF ABSENT: pi install $web_pin --no-approve" "$tmp/dry"
 grep -Fxq "WRITE $PI_CODING_AGENT_DIR/subagents.json" "$tmp/dry"
 "$root/install.sh" --harness claude --scope project --target "$project" --dry-run > "$tmp/claude-dry"
 assert_absent 'pi install\|subagents.json' "$tmp/claude-dry"
@@ -147,27 +185,87 @@ cat > "$tmp/expected-subagents.json" <<'JSON'
 }
 JSON
 : > "$MOCK_PI_LOG"
-MOCK_PI_PACKAGES='npm:unrelated' HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+mkdir -p "$pkg_home/.pi/agent"
+printf '%s\n' '{"defaultModel":"user-owned","packages":["npm:@tintinweb/pi-subagents-extra",{"source":"npm:third-party","extensions":[]}]}' \
+  > "$pkg_home/.pi/agent/settings.json"
+HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
   "$root/install.sh" --harness pi --scope project --target "$pkg_project" --no-web > "$tmp/pkg-install"
-grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
-grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
-grep -Fxq 'INSTALL: pi install npm:@tintinweb/pi-subagents' "$tmp/pkg-install"
-grep -Fxq 'INSTALL: pi install npm:pi-web-access' "$tmp/pkg-install"
+grep -Fxq "pi install $subagents_pin --no-approve" "$MOCK_PI_LOG"
+grep -Fxq "pi install $web_pin --no-approve" "$MOCK_PI_LOG"
+grep -Fxq "INSTALL: pi install $subagents_pin --no-approve" "$tmp/pkg-install"
+grep -Fxq "INSTALL: pi install $web_pin --no-approve" "$tmp/pkg-install"
+python3 - "$pkg_home/.pi/agent/settings.json" "$subagents_pin" "$web_pin" <<'PY'
+import json, sys
+with open(sys.argv[1]) as settings:
+    assert json.load(settings) == {
+        'defaultModel': 'user-owned',
+        'packages': ['npm:@tintinweb/pi-subagents-extra', {'source': 'npm:third-party', 'extensions': []}, *sys.argv[2:]],
+    }
+PY
 assert_absent 'install -l\|pi install -l' "$MOCK_PI_LOG"
 [[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 2 ]]
 assert_absent 'pi-web-access/' "$pkg_project/.pi/agents/nora.md"
 [[ ! -e "$pkg_project/.pi/subagents.json" ]]
 cmp -- "$tmp/expected-subagents.json" "$pkg_home/.pi/agent/subagents.json"
 [[ "$(tail -c 1 "$pkg_home/.pi/agent/subagents.json" | od -An -tx1 | tr -d ' ')" == 0a ]]
-printf '{ "defaultJoinMode": "wait", "extra": true }\n' > "$pkg_home/.pi/agent/subagents.json"
+printf '{ "defaultJoinMode": "wait", "extra": true }\n' > "$tmp/user-subagents.json"
+cp "$tmp/user-subagents.json" "$pkg_home/.pi/agent/subagents.json"
 : > "$MOCK_PI_LOG"
-MOCK_PI_PACKAGES="$both_pi_packages" HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
   "$root/install.sh" --harness pi --scope global --no-web > "$tmp/pkg-replace"
 assert_absent '^pi install ' "$MOCK_PI_LOG"
-grep -Fq 'SKIP PI PACKAGE: npm:@tintinweb/pi-subagents is already registered; unchanged.' "$tmp/pkg-replace"
-grep -Fq 'SKIP PI PACKAGE: npm:pi-web-access is already registered; unchanged.' "$tmp/pkg-replace"
-cmp -- "$tmp/expected-subagents.json" "$pkg_home/.pi/agent/subagents.json"
-assert_absent 'wait' "$pkg_home/.pi/agent/subagents.json"
+grep -Fq "SKIP PI PACKAGE: $subagents_pin is already registered; unchanged." "$tmp/pkg-replace"
+grep -Fq "SKIP PI PACKAGE: $web_pin is already registered; unchanged." "$tmp/pkg-replace"
+cmp -- "$tmp/user-subagents.json" "$pkg_home/.pi/agent/subagents.json"
+
+# Refuse conflicting, filtered, stale, and ambiguous registrations before any change.
+for problem in unpinned filtered mismatched missing duplicate shadowed local-alias; do
+  conflict="$tmp/pi-conflict-$problem"
+  agent_home="$conflict/home/agent"
+  conflict_project="$conflict/project"
+  mkdir -p "$agent_home" "$conflict_project/.pi"
+  PI_CODING_AGENT_DIR="$agent_home" pi seed "$subagents_pin" "$web_pin"
+  settings="$agent_home/settings.json"
+  message='needs an unfiltered exact'
+  case "$problem" in
+    unpinned) printf '{"packages":["npm:@tintinweb/pi-subagents","%s"]}\n' "$web_pin" > "$settings" ;;
+    filtered) printf '{"packages":[{"source":"%s","extensions":[]},"%s"]}\n' "$subagents_pin" "$web_pin" > "$settings" ;;
+    mismatched)
+      printf '%s\n' '{"name":"@tintinweb/pi-subagents","version":"0.25.0"}' \
+        > "$agent_home/npm/node_modules/@tintinweb/pi-subagents/package.json"
+      message='resolves to @tintinweb/pi-subagents@0.25.0'
+      ;;
+    missing)
+      rm -- "$agent_home/npm/node_modules/@tintinweb/pi-subagents/package.json"
+      message='resolves to missing package manifest'
+      ;;
+    duplicate)
+      printf '{"packages":["%s","%s","%s"]}\n' "$subagents_pin" "$subagents_pin" "$web_pin" > "$settings"
+      message='ambiguous registrations'
+      ;;
+    shadowed)
+      printf '{"packages":["npm:@tintinweb/pi-subagents@0.25.0"]}\n' > "$conflict_project/.pi/settings.json"
+      message='ambiguous registrations'
+      ;;
+    local-alias)
+      mkdir "$conflict_project/.pi/worker-tools"
+      printf '{"packages":["./worker-tools"]}\n' > "$conflict_project/.pi/settings.json"
+      cp "$agent_home/npm/node_modules/@tintinweb/pi-subagents/package.json" "$conflict_project/.pi/worker-tools/"
+      message='ambiguous registrations'
+      ;;
+  esac
+  snapshot_tree "$conflict" "$tmp/conflict-before"
+  rc=0
+  HOME="$conflict/home" PI_CODING_AGENT_DIR="$agent_home" \
+    "$root/install.sh" --harness pi --scope project --target "$conflict_project" \
+    > "$tmp/conflict-out" 2> "$tmp/conflict-err" || rc=$?
+  [[ "$rc" -ne 0 && ! -s "$MOCK_PI_LOG" ]]
+  grep -Fq "$message" "$tmp/conflict-err"
+  assert_absent '^WRITE \|^DONE$' "$tmp/conflict-out"
+  snapshot_tree "$conflict" "$tmp/conflict-after"
+  diff -u "$tmp/conflict-before" "$tmp/conflict-after"
+done
+
 claude_only="$tmp/claude-only-home"
 mkdir -p "$claude_only"
 : > "$MOCK_PI_CALLS"
@@ -180,7 +278,7 @@ mkdir -p "$agy_only"
 HOME="$agy_only" PI_CODING_AGENT_DIR="$agy_only/.pi/agent" \
   "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-only"
 [[ ! -e "$agy_only/.pi/agent/subagents.json" && ! -s "$MOCK_PI_CALLS" ]]
-MOCK_PI_PACKAGES="$both_pi_packages"
+pi seed "$subagents_pin" "$web_pin"
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" > "$tmp/initial"
 [[ -f "$project/PERSONALITY.md" && ! -d "$project/.quintet" ]]
@@ -227,8 +325,22 @@ assert_absent 'load `alien-science-ideation` if installed' "$weight_skill"
 grep -q 'AUTO_IMPROVE` runs only after an explicit broader-method request' "$weight_skill"
 grep -q '^name: felix$' "$project/.pi/agents/felix.md"
 grep -q '^prompt_mode: append$' "$project/.pi/agents/felix.md"
-grep -q '^disallowed_tools: edit, write$' "$project/.pi/agents/vera.md"
-grep -q '^disallowedTools: Write, Edit, NotebookEdit$' "$project/.claude/agents/vera.md"
+for role in nora vera iris; do
+  pi_agent="$project/.pi/agents/$role.md"
+  claude_agent="$project/.claude/agents/$role.md"
+  if [[ "$role" == iris ]]; then
+    grep -Fxq 'tools: read, grep, find, ls' "$pi_agent"
+    grep -Fxq 'extensions: false' "$pi_agent"
+    grep -Fxq 'tools: Read, Grep, Glob' "$claude_agent"
+  else
+    grep -Fxq 'tools: read, grep, find, ls, ext:pi-web-access/web_enable, ext:pi-web-access/web_search, ext:pi-web-access/fetch_content, ext:pi-web-access/get_search_content, ext:pi-web-access/source_check' "$pi_agent"
+    grep -Fxq 'extensions: pi-web-access' "$pi_agent"
+    grep -Fxq 'tools: Read, Grep, Glob, WebSearch, WebFetch' "$claude_agent"
+  fi
+  grep -Fxq 'disallowedTools: Bash, Write, Edit, NotebookEdit' "$claude_agent"
+  grep -Fq 'check-readonly.sh run-codex' "$pi_agent"
+done
+grep -Fq 'Require a mechanical result from `skills/verification/scripts/check-ownership.sh`' "$project/.pi/agents/vera.md"
 grep -q 'main session only' "$project/AGENTS.md"
 
 # Consolidated reporting: Pi workers are color-badged, Claude Code frontmatter is untouched,
@@ -286,7 +398,7 @@ grep -Fxq 'Keep this rule.' "$project/AGENTS.md"
 [[ ! -e "$project/.claude/settings.json" && ! -e "$project/.pi/settings.json" ]]
 "$root/install.sh" --harness pi,claude --scope global > "$tmp/global"
 [[ -f "$HOME/.claude/CLAUDE.md" && -f "$PI_CODING_AGENT_DIR/agents/felix.md" ]]
-[[ ! -e "$HOME/.claude/settings.json" && ! -e "$PI_CODING_AGENT_DIR/settings.json" ]]
+[[ ! -e "$HOME/.claude/settings.json" && -e "$PI_CODING_AGENT_DIR/settings.json" ]]
 [[ ! -e "$PI_CODING_AGENT_DIR/pi-blackhole" && ! -e "$project/.pi/pi-blackhole" ]]
 assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
 [[ ! -e "$project/.mcp.json" && ! -e "$HOME/.claude.json" ]]
@@ -330,7 +442,9 @@ seed_old_global() {
   } > "$upgrade_agents"
 }
 mkdir -p "$upgrade_home/.pi/agent"
-printf '{ "model" : "user-owned" }\n' > "$upgrade_home/.pi/agent/settings.json"
+PI_CODING_AGENT_DIR="$upgrade_home/.pi/agent" pi seed "$subagents_pin" "$web_pin"
+printf '{ "model" : "user-owned", "packages": ["%s", "%s"] }\n' "$subagents_pin" "$web_pin" \
+  > "$upgrade_home/.pi/agent/settings.json"
 cp "$upgrade_home/.pi/agent/settings.json" "$tmp/upgrade-settings"
 seed_old_global '\n# Machine notes\nKeep my global note.\n\n'
 prefix_bytes "$upgrade_agents" > "$tmp/upgrade-prefix-before"
@@ -363,8 +477,10 @@ printf '{ "model" : "user-owned" }\n\n' > "$tmp/claude-settings"
 cp "$tmp/claude-settings" "$project/.claude/settings.json"
 cp "$tmp/claude-settings" "$tmp/linked-settings"
 ln -s "$tmp/linked-settings" "$HOME/.claude/settings.json"
-printf '{ "packages" : ["npm:pi-blackhole", "npm:other"] }\n\n' > "$tmp/pi-settings"
-cp "$tmp/pi-settings" "$project/.pi/settings.json"
+printf '{ "packages" : ["npm:pi-blackhole", "npm:other"] }\n\n' > "$tmp/pi-project-settings"
+printf '{ "packages" : ["npm:pi-blackhole", "npm:other", "%s", "%s"] }\n\n' "$subagents_pin" "$web_pin" \
+  > "$tmp/pi-settings"
+cp "$tmp/pi-project-settings" "$project/.pi/settings.json"
 cp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
 printf '{ "mcpServers" : { "user-tool" : { "command" : "user-tool" } } }\n' > "$tmp/mcp-registration"
 cp "$tmp/mcp-registration" "$project/.mcp.json"
@@ -377,7 +493,7 @@ cp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-confi
 cmp "$tmp/claude-settings" "$project/.claude/settings.json"
 [[ "$(readlink "$HOME/.claude/settings.json")" == "$tmp/linked-settings" ]]
 cmp "$tmp/claude-settings" "$HOME/.claude/settings.json"
-cmp "$tmp/pi-settings" "$project/.pi/settings.json"
+cmp "$tmp/pi-project-settings" "$project/.pi/settings.json"
 cmp "$tmp/pi-settings" "$PI_CODING_AGENT_DIR/settings.json"
 cmp "$tmp/legacy-blackhole" "$PI_CODING_AGENT_DIR/pi-blackhole/pi-blackhole-config.json"
 cmp "$tmp/mcp-registration" "$project/.mcp.json"
@@ -389,8 +505,8 @@ assert_absent 'pi-blackhole' "$MOCK_PI_LOG"
 : > "$MOCK_PI_LOG"
 : > "$MOCK_PI_CALLS"
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web --dry-run > "$tmp/web-dry"
-grep -Fxq 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents' "$tmp/web-dry"
-grep -Fxq 'INSTALL IF ABSENT: pi install npm:pi-web-access' "$tmp/web-dry"
+grep -Fxq "INSTALL IF ABSENT: pi install $subagents_pin --no-approve" "$tmp/web-dry"
+grep -Fxq "INSTALL IF ABSENT: pi install $web_pin --no-approve" "$tmp/web-dry"
 [[ ! -s "$MOCK_PI_LOG" && ! -s "$MOCK_PI_CALLS" ]]
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-initial"
 assert_absent '^pi install \|^WRITE ' "$tmp/web-initial"
@@ -405,14 +521,14 @@ assert_absent 'pi-web-access/' "$project/.pi/agents/iris.md"
 assert_absent 'WebSearch' "$project/.claude/agents/iris.md"
 grep -q '## Web research' "$project/AGENTS.md"
 : > "$MOCK_PI_LOG"
-MOCK_PI_PACKAGES='npm:@tintinweb/pi-subagents' HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
+printf '{"packages":["%s"]}\n' "$subagents_pin" > "$pkg_home/.pi/agent/settings.json"
+HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
   "$root/install.sh" --harness pi --scope project --target "$pkg_project" --no-web > "$tmp/web-one"
-grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+grep -Fxq "pi install $web_pin --no-approve" "$MOCK_PI_LOG"
 assert_absent 'pi install npm:@tintinweb/pi-subagents\|install -l' "$MOCK_PI_LOG"
 [[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 1 ]]
-MOCK_PI_PACKAGES="$both_pi_packages" \
-  "$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-again"
-grep -Fq 'SKIP PI PACKAGE: npm:pi-web-access is already registered; unchanged.' "$tmp/web-again"
+"$root/install.sh" --harness pi,claude --scope project --target "$project" --with-web > "$tmp/web-again"
+grep -Fq "SKIP PI PACKAGE: $web_pin is already registered; unchanged." "$tmp/web-again"
 assert_absent '^WRITE \|^pi install ' "$tmp/web-again"
 [[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 1 ]]
 
@@ -449,6 +565,10 @@ grep -q 'exclusive owned files/path patterns' "$project/.agents/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$project/.agents/agents/vera.md"
 grep -q 'integration acceptance separately' "$project/.agents/agents/iris.md"
 grep -q 'coordinator authority' "$project/.agents/agents/nora.md"
+for role in nora vera; do
+  grep -Fxq 'tools: [read_file, search_web]' "$project/.agents/agents/$role.md"
+done
+grep -Fxq 'tools: [read_file]' "$project/.agents/agents/iris.md"
 [[ "$(grep -c '<!-- QUINTET MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-again"
 assert_absent '^WRITE ' "$tmp/agy-project-again"
@@ -508,7 +628,6 @@ assert_absent '^KEEP ' "$tmp/agy-global-again"
 project_rules=("$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md")
 global_rules=("$PI_CODING_AGENT_DIR/AGENTS.md" "$HOME/.claude/CLAUDE.md" "$agy_global/rules/AGENTS.md")
 printf 'Customized project coordinator\n' > "$project/.agents/agents/albert.md"
-export MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access'
 for scope in project global; do
   if [[ "$scope" == project ]]; then
     scope_args=(--scope project --target "$project")
@@ -594,7 +713,6 @@ for scope in project global; do
   "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/relocate-again"
   assert_absent '^WRITE \|^BACKUP RULE \|^RELOCATE RULE ' "$tmp/relocate-again"
 done
-unset MOCK_PI_PACKAGES
 for file in "${project_rules[@]}" "${global_rules[@]}"; do
   grep -Fq 'Use the installed project workflow for the active' "$file"
   grep -Fq 'Otherwise use the installed global workflow.' "$file"
@@ -943,7 +1061,9 @@ rc=0
 "$root/install.sh" --harness claude --scope project --target "$blocked" --workflow v2 --no-tui --no-web \
   > "$tmp/blocked-out" 2> "$tmp/blocked-err" || rc=$?
 [[ "$rc" -ne 0 ]]
-grep -Fxq "WRITE $blocked/.claude/skills/verification/SKILL.md" "$tmp/blocked-out"
+[[ "$(tail -n 1 "$tmp/blocked-out")" == "WRITE $blocked/.claude/skills/verification/"* ]]
+[[ "$(grep -Fc "WRITE $blocked/.claude/skills/verification/" "$tmp/blocked-out")" == 1 ]]
+grep -Fq "$blocked/.claude/skills/verification" "$tmp/blocked-err"
 grep -Fxq 'Install failed; undid writes from this run.' "$tmp/blocked-err"
 assert_absent '^DONE$' "$tmp/blocked-out"
 snapshot_tree "$blocked" "$tmp/blocked-after"
@@ -987,7 +1107,9 @@ HOME="$legacy_block_home" XDG_CONFIG_HOME="$legacy_block_home/.config" \
   "$root/install.sh" --harness antigravity --scope global --workflow v2 --no-tui --no-web \
   > "$tmp/legacy-block-out" 2> "$tmp/legacy-block-err" || rc=$?
 [[ "$rc" -ne 0 ]]
-grep -Fxq "WRITE $legacy_block_quintet/skills/verification/SKILL.md" "$tmp/legacy-block-out"
+[[ "$(tail -n 1 "$tmp/legacy-block-out")" == "WRITE $legacy_block_quintet/skills/verification/"* ]]
+[[ "$(grep -Fc "WRITE $legacy_block_quintet/skills/verification/" "$tmp/legacy-block-out")" == 1 ]]
+grep -Fq "$legacy_block_quintet/skills/verification" "$tmp/legacy-block-err"
 grep -Fxq 'Install failed; undid writes from this run.' "$tmp/legacy-block-err"
 assert_absent '^ARCHIVE \|^DONE$' "$tmp/legacy-block-out"
 snapshot_tree "$legacy_block_home/.gemini" "$tmp/legacy-block-after"
@@ -1007,49 +1129,47 @@ printf '# Pi contract\nKeep the pi rule.\n' > "$pi_block/AGENTS.md"
 snapshot_tree "$pi_block" "$tmp/pi-block-before"
 : > "$MOCK_PI_LOG"
 rc=0
-MOCK_PI_PACKAGES='npm:unrelated' HOME="$pi_block_home" PI_CODING_AGENT_DIR="$pi_block_home/.pi/agent" \
+HOME="$pi_block_home" PI_CODING_AGENT_DIR="$pi_block_home/.pi/agent" \
   "$root/install.sh" --harness pi --scope project --target "$pi_block" --workflow v2 --no-tui --no-web \
   > "$tmp/pi-block-out" 2> "$tmp/pi-block-err" || rc=$?
 [[ "$rc" -ne 0 ]]
-grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
-grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
-[[ ! -e "$pi_block_home/.pi/agent/subagents.json" ]]
+grep -Fxq "pi install $subagents_pin --no-approve" "$MOCK_PI_LOG"
+grep -Fxq "pi install $web_pin --no-approve" "$MOCK_PI_LOG"
+[[ ! -e "$pi_block_home/.pi/agent/subagents.json" && ! -e "$pi_block_home/.pi/agent/settings.json" ]]
 snapshot_tree "$pi_block" "$tmp/pi-block-after"
 diff -u "$tmp/pi-block-before" "$tmp/pi-block-after"
 [[ -z "$(find "$pi_block" -name '*.quintet-backup-*' -print -quit)" ]]
-MOCK_PI_PACKAGES="$both_pi_packages"
-
-# A failed package install must not be hidden by a later install that succeeds
-# or by a package that is already listed. Parent writes nothing in that case.
-for pi_fail_case in listed later; do
+# The package manager can write settings before failing. Roll back the exact
+# original bytes after a first or second package failure.
+for pi_fail_case in first second; do
   pi_fail="$tmp/pi-fail-$pi_fail_case"
   pi_fail_home="$tmp/pi-fail-home-$pi_fail_case"
   mkdir -p "$pi_fail" "$pi_fail_home"
   printf 'leave me\n' > "$pi_fail/NOTES.txt"
   snapshot_tree "$pi_fail" "$tmp/pi-fail-$pi_fail_case-before"
-  if [[ "$pi_fail_case" == listed ]]; then
-    pi_fail_packages='npm:pi-web-access'
-  else
-    pi_fail_packages='npm:unrelated'
-  fi
+  settings="$pi_fail_home/.pi/agent/settings.json"
+  mkdir -p "${settings%/*}"
+  printf '{ "packages": ["npm:user-tool"], "model": "custom" }\n\n' > "$settings"
+  cp "$settings" "$tmp/pi-settings-before"
+  fail_pin="$subagents_pin"
+  if [[ "$pi_fail_case" == second ]]; then fail_pin="$web_pin"; fi
   : > "$MOCK_PI_LOG"
   rc=0
-  MOCK_PI_INSTALL_FAIL='npm:@tintinweb/pi-subagents' MOCK_PI_PACKAGES="$pi_fail_packages" \
+  MOCK_PI_INSTALL_FAIL="$fail_pin" \
     HOME="$pi_fail_home" PI_CODING_AGENT_DIR="$pi_fail_home/.pi/agent" \
     "$root/install.sh" --harness pi --scope project --target "$pi_fail" --workflow v2 --no-tui --no-web \
     > "$tmp/pi-fail-$pi_fail_case-out" 2> "$tmp/pi-fail-$pi_fail_case-err" || rc=$?
   [[ "$rc" -ne 0 ]]
   assert_absent '^DONE$' "$tmp/pi-fail-$pi_fail_case-out"
-  grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
-  assert_absent 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+  grep -Fxq "pi install $subagents_pin --no-approve" "$MOCK_PI_LOG"
+  grep -Fxq "pi install $fail_pin --no-approve" "$MOCK_PI_LOG"
+  if [[ "$pi_fail_case" == first ]]; then assert_absent 'pi install npm:pi-web-access' "$MOCK_PI_LOG"; fi
+  cmp -- "$tmp/pi-settings-before" "$settings"
   [[ ! -e "$pi_fail_home/.pi/agent/subagents.json" ]]
   [[ ! -e "$pi_fail/PERSONALITY.md" && ! -e "$pi_fail/.pi" && ! -e "$pi_fail/AGENTS.md" ]]
   snapshot_tree "$pi_fail" "$tmp/pi-fail-$pi_fail_case-after"
   diff -u "$tmp/pi-fail-$pi_fail_case-before" "$tmp/pi-fail-$pi_fail_case-after"
 done
-unset MOCK_PI_INSTALL_FAIL
-MOCK_PI_PACKAGES="$both_pi_packages"
-
 # An unreadable agent body must not be installed as frontmatter and must not
 # print DONE. Files this run created are removed.
 unread_source="$tmp/unread-source"
@@ -1129,7 +1249,11 @@ for role, desc in expected.items():
     if "developer_instructions = '''" not in text:
         raise SystemExit(f"missing TOML literal: {path}")
     doc = tomllib.loads(text)
-    if set(doc) != {"name", "description", "developer_instructions"}:
+    keys = {"name", "description", "developer_instructions"}
+    if role != 'felix':
+        keys.add('features')
+        assert doc['features'] == {'shell_tool': False, 'request_permissions_tool': False}, path
+    if set(doc) != keys:
         raise SystemExit(f"unexpected keys in {path}: {sorted(doc)}")
     body = (root / "agents" / f"{role}.md").read_bytes()
     got = doc["developer_instructions"].encode()

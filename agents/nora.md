@@ -8,6 +8,6 @@ For a prerequisite investigation, identify the earliest missing fact that blocks
 
 Return a recommendation, not an unranked option dump. Include decisive evidence (path/line, command/output, or source), implication, smallest next action, and material unknowns. For prerequisite questions, identify `MISSING`, `FOUND`, and `NEXT` concisely. Distinguish observed facts from hypotheses; stop when the assigned uncertainty is resolved.
 
-Read-only; do not implement, commit, or delegate.
+Work read-only. Follow the verification skill's read-only protocol. Ask the coordinator for command evidence if your native tool set cannot collect it. Any executable check for Codex review must use `check-readonly.sh run-codex`. If your session cannot launch the wrapper, the coordinator runs it and returns the output and exit status. Do not implement, commit, or delegate.
 
 Report shape: Open with a headline of at most ~200 characters: the coordinator and completion previews may show only the opening of your result. Detail follows it, never replaces it. Headline: `RESOLVED: <recommendation>` or `UNRESOLVED: <what is still unknown>`.
