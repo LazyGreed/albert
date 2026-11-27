@@ -88,26 +88,17 @@ VERIFIER: vera-api / vera
 
 In v2, Denia uses one directed acyclic graph (DAG) for two or more
 implementation streams or when a verified stream changes. Edges point from
-provider or writer to dependent or reader. Use `DEPENDENCIES` for hard
-inputs and `READS` for narrow paths outside write ownership. Add `REF` once
-Felix reports it. [v2 instructions](../workflows/v2.md)
+provider or writer to dependent or reader. The coordinator records the
+stream `REF` from the observed checkout and keeps the verdict binding
+separate. See the [v2 instructions](../workflows/v2.md).
 
-A v2 consumer brief can name a hard prerequisite and a read-only contract.
+An independent v2 stream needs no dependency or read fields. For example:
 
 ```text
-WORKFLOW: v2
-STREAM: ui
-INSTANCE/ROLE: felix-ui / felix
-GOAL: Display the documented validation error
-WRITE OWNERSHIP: ui/validation/**, tests/ui/**
-DO NOT EDIT: server/**, shared/**
-CHECKOUT: verified clean and isolated worktree/branch
-ACCEPT: failed validation renders the error field, success has no error
-CHECKS: focused UI checks for both paths
-DEPENDENCIES: api (current verified ref)
-READS: shared/schema/**
-VERIFIER: vera-ui / vera
-REF: wt/ui@<sha> (once Felix reports)
+WORKFLOW: v2; STREAM: graph-help; CHECKOUT: /tmp/quintet-graph-help (wt/graph-help)
+GOAL: Clarify the graph gate usage text
+WRITE OWNERSHIP: skills/verification/scripts/check-graph.sh; DO NOT EDIT: tests/**
+ACCEPT: skills/verification/scripts/check-graph.sh --help exits 0 and lists all three gate commands
 ```
 
 ### Ready, invalidate, and join
@@ -145,11 +136,9 @@ status when needed.
 | Missing tool, access, or permission | Inspect and report the blocker |
 | User-only decision or authority boundary | Ask the user |
 
-Allow up to two automatic Felix edit plus Vera re-review rounds across the
-task, including integration fixes. In v2, clean trial rechecks alone use no
-round. At the cap, report failed checks and the next action. In v2, include
-stale streams, refs, and worktree paths. Never retry an unchanged failing
-approach or weaken a check.
+Follow the recovery cap for the selected edition: [v1](../workflows/v1.md)
+or [v2](../workflows/v2.md#recovery). At the cap, report failed checks and the
+next action. Never retry an unchanged failing approach or weaken a check.
 
 ## Specialized skills
 

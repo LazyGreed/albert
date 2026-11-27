@@ -96,10 +96,9 @@ Deployment requires separate validation and authorization.
   use the linked default if Quintet's source `AGENTS.md` is loaded as project
   instructions. Otherwise use the installed global workflow. Apply the chosen
   workflow to every brief and verdict. Shared rules apply in either mode.
-- **Workstream brief.** Include `WORKFLOW`, `STREAM`, `INSTANCE/ROLE`, `GOAL`,
-  `WRITE OWNERSHIP`, `DO NOT EDIT`, `CHECKOUT`, `ACCEPT`, `CHECKS`,
-  `DEPENDENCIES`, and `VERIFIER`. Use native aliases with the existing
-  profiles. Default to one Felix and risk-based review for routine work.
+- **Workstream brief.** Follow the selected workflow's brief format. Use
+  native aliases with the existing profiles. Default to one Felix and
+  risk-based review for routine work.
 - **Exclusive write ownership.** Assign each path to at most one active
   writer, including tests, lockfiles, and generated outputs. Concurrent
   writers require disjoint ownership, verified isolated native checkouts,
@@ -187,10 +186,9 @@ Source default is [v2](workflows/v2.md). <!-- QUINTET WORKFLOW -->
   Nora investigates knowledge gaps. Felix handles implementation failures.
   Resolve routine specification choices from evidence or safe experiments.
   Escalate user-only decisions or missing authority.
-- Inspect the cause of a blocked attempt before retrying. Allow up to two
-  automatic Felix edit plus Vera re-review rounds across the task, including
-  single streams and integration fixes. Change tactics based on evidence.
-  At the cap report `BLOCKED` with failing checks and a concrete next action.
+- Inspect the cause of a blocked attempt before retrying. Change tactics
+  based on evidence and follow the selected workflow's recovery cap. At the
+  cap report `BLOCKED` with failing checks and a concrete next action.
 
 ## Verify, review, finish
 
