@@ -16,7 +16,7 @@ usage() {
   cat <<'USAGE'
 Usage: ./install.sh                       # interactive Pi/Claude Code/Antigravity CLI TUI
        ./install.sh --tui                 # force interactive TUI
-       ./install.sh --harness pi|claude|antigravity|pi,claude,antigravity --scope global|project
+       ./install.sh --harness pi|claude|antigravity|codex --scope global|project
                     [--workflow v1|v2] [--target PROJECT_DIR] [--with-web|--no-web]
                     [--dry-run] [--no-tui]
 
@@ -24,14 +24,19 @@ Use arrows and Enter/Space to configure the TUI; preview before installing.
 Workflow: v1 sequences coordinator handoffs; v2 (default) uses revision-bound review.
 Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
 Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
-Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
-~/.gemini/config/plugins/quintet. Project: installs in PROJECT/.pi or PROJECT/.claude
-with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
+Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude,
+~/.gemini/config/plugins/quintet, and/or ${CODEX_HOME:-~/.codex}.
+Project: installs in PROJECT/.pi, PROJECT/.claude, or PROJECT/.agents, with
+instructions in root AGENTS.md or CLAUDE.md. Codex project agents are
+PROJECT/.codex/agents. Codex and Pi share one PROJECT/AGENTS.md.
+Codex does not edit config.toml.
 Both global and project scopes install the full coordinator contract and personality.
 Antigravity installs the quintet plugin (rules/AGENTS.md, worker agents, and skills). A global
 install moves an eligible previous plugin tree into ~/.gemini/config/quintet-backups
 once the new plugin is written. User rules outside the managed block are carried into
 the new file first. Unrecognized entries keep the old plugin in place and are listed.
+The installer does not publish an Antigravity rule over 24000 bytes or a Codex
+AGENTS.md over 32768 bytes. A file over that limit cannot be loaded whole.
 Selecting Pi requires Pi >=1.1.0. The installer runs pi install npm:@tintinweb/pi-subagents
 and pi install npm:pi-web-access when pi list does not already show them, and writes
 subagents.json in the Pi agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent).
@@ -79,7 +84,7 @@ fi
 IFS=',' read -r -a _harness_list <<< "$harness"
 for _h in "${_harness_list[@]}"; do
   case "$_h" in
-    pi|claude|antigravity|agy) ;;
+    pi|claude|antigravity|agy|codex) ;;
     *) echo "Invalid harness: $_h" >&2; exit 2 ;;
   esac
 done
@@ -99,6 +104,9 @@ rb_op=()
 rb_a=()
 rb_b=()
 rollback_armed=1
+instruction_refused=0
+agy_rule_max_bytes=24000
+codex_agents_max_bytes=32768
 rule_backup_saved=''
 note_rollback() {
   rb_op+=("$1")
@@ -314,16 +322,20 @@ render_instructions() {
   render_coordinator
 }
 
+role_description() {
+  case "$1" in
+    nora) printf '%s' 'Read-only investigation, architecture, research, root-cause analysis.' ;;
+    felix) printf '%s' 'Implement one bounded code change; perform targeted verification.' ;;
+    vera) printf '%s' 'Independent, read-only consequential-change review.' ;;
+    iris) printf '%s' 'User-facing end-to-end and smoke acceptance without source edits.' ;;
+    *) return 1 ;;
+  esac
+}
+
 # Generate compact, harness-native subagent frontmatter from a single canonical body.
 install_role() {
   local tool="$1" role="$2" dst="$3" tools desc color
-  case "$role" in
-    nora) desc='Read-only investigation, architecture, research, root-cause analysis.' ;;
-    felix) desc='Implement one bounded code change; perform targeted verification.' ;;
-    vera) desc='Independent, read-only consequential-change review.' ;;
-    iris) desc='User-facing end-to-end and smoke acceptance without source edits.' ;;
-    *) return 1 ;;
-  esac
+  desc="$(role_description "$role")" || return 1
   # Pi badges (widget, FleetView, notifications) tell parallel workers apart at a glance.
   case "$role" in nora) color=cyan ;; felix) color=green ;; vera) color=purple ;; iris) color=orange ;; esac
   if [[ "$tool" == pi ]]; then
@@ -429,6 +441,52 @@ append_block() {
   printf '%s\n' "$end" >> "$dst"
 }
 
+# Byte cap for a coordinator file this invocation would publish. 0 means no cap.
+# Pi and Claude stay uncapped. Pi and Codex share one project AGENTS.md, so that
+# file takes the Codex cap when Codex is selected.
+instruction_byte_limit() {
+  local dst="$1" codex_agents agy_rule
+  if has_harness codex; then
+    if [[ "$scope" == global ]]; then
+      codex_agents="${CODEX_HOME:-$HOME/.codex}/AGENTS.md"
+    else
+      codex_agents="$target/AGENTS.md"
+    fi
+    if [[ "$dst" == "$codex_agents" ]]; then
+      printf '%s' "$codex_agents_max_bytes"
+      return 0
+    fi
+  fi
+  if has_harness antigravity || has_harness agy; then
+    if [[ "$scope" == global ]]; then
+      agy_rule="$HOME/.gemini/config/plugins/quintet/rules/AGENTS.md"
+    else
+      agy_rule="$target/.agents/rules/AGENTS.md"
+    fi
+    if [[ "$dst" == "$agy_rule" ]]; then
+      printf '%s' "$agy_rule_max_bytes"
+      return 0
+    fi
+  fi
+  printf '%s' 0
+}
+
+# A coordinator file over the harness limit cannot be loaded whole. Refuse it
+# instead of publishing a partial file. The message must not claim a tail cut.
+refuse_oversized() {
+  local path="$1" limit bytes
+  limit="$(instruction_byte_limit "$path")" || return 1
+  [[ "$limit" -gt 0 ]] || return 0
+  bytes="$(wc -c < "$path" | tr -d '[:space:]')" || return 1
+  [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
+  if (( bytes > limit )); then
+    instruction_refused=1
+    printf 'Cannot publish %s: %s bytes exceeds %s. The harness cannot load this file whole, so it was not published.\n' \
+      "$path" "$bytes" "$limit" >&2
+    return 1
+  fi
+}
+
 # Add/update only our clearly delimited section. Never discard project instructions.
 # One rendered copy feeds the idempotence comparison and the write, so a global re-install
 # and a project re-install are both exact no-ops after the first run.
@@ -438,7 +496,9 @@ install_instructions() {
   if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
   if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst"; then
     if managed_block_text "$dst" | cmp -s "$rendered" -; then
-      rm -f -- "$rendered"; return 0
+      rm -f -- "$rendered"
+      refuse_oversized "$dst" || return 1
+      return 0
     fi
   fi
   temp="$(mktemp)"
@@ -446,6 +506,7 @@ install_instructions() {
     if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
   fi
   if ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
+    ! refuse_oversized "$temp" ||
     ! put "$temp" "$dst" "$rule_backups"; then
     rm -f -- "$temp" "$rendered"; return 1
   fi
@@ -495,11 +556,28 @@ merge_carried_instructions() {
   if ! render_instructions > "$rendered" || ! managed_outside_text "$dst" > "$outside" ||
     ! write_carried_rules "$temp" "$outside" "$carried" ||
     ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
+    ! refuse_oversized "$temp" ||
     ! put "$temp" "$dst" "$rule_backups"; then
     result=1
   fi
   rm -f -- "$temp" "$outside" "$rendered"
   return "$result"
+}
+
+# Dry-run still has to refuse a carried rule that cannot be loaded whole, without
+# leaving a size-check file in the install tree or in TMPDIR.
+carried_rule_fits() {
+  local dst="$1" carried="$2" rendered outside temp status=0
+  rendered="$(mktemp)" || return 0
+  if ! outside="$(mktemp)"; then rm -f -- "$rendered"; return 0; fi
+  if ! temp="$(mktemp)"; then rm -f -- "$rendered" "$outside"; return 0; fi
+  if render_instructions > "$rendered" && managed_outside_text "$dst" > "$outside" &&
+    write_carried_rules "$temp" "$outside" "$carried" &&
+    append_block "$temp" "$rendered" "$managed_begin" "$managed_end"; then
+    refuse_oversized "$temp" || status=1
+  fi
+  rm -f -- "$temp" "$outside" "$rendered"
+  return "$status"
 }
 
 has_old_rule_backup_name() {
@@ -632,10 +710,17 @@ migrate_legacy_antigravity_plugin() {
     if grep -q '[^[:space:]]' "$carried" ||
       { [[ -f "$rule" ]] && grep -Fqx -e "$carry_begin" -e "$carry_end" -- "$rule"; }; then
       if ((dry)); then
+        if ! carried_rule_fits "$rule" "$carried"; then
+          rm -f -- "$carried"
+          return 1
+        fi
         report "CARRY '$legacy_rule' -> '$rule' (dry run; your text outside the managed block would be preserved)"
         report "BACKUP RULE '$rule' under '$rule_backups' (dry run; if carrying rules changes the file)"
       elif ! merge_carried_instructions "$rule" "$carried" "$rule_backups"; then
         rm -f -- "$carried"
+        if (( instruction_refused )); then
+          return 1
+        fi
         report "KEEP '$legacy': '$legacy_rule' could not be merged into '$rule'."
         relocate_antigravity_rule_backups "$legacy_rule" "$rule_backups"
         return
@@ -790,6 +875,72 @@ EOF
   rm -f -- "$temp"
 }
 
+# Codex agents are standalone TOML. A literal body cannot contain '''.
+codex_agents_embeddable() {
+  local role body status
+  for role in nora felix vera iris; do
+    body="$source_dir/agents/$role.md"
+    if ! cat -- "$body" >/dev/null; then
+      printf 'Cannot read agent body: %s\n' "$body" >&2
+      return 1
+    fi
+    status=0
+    grep -Fq "'''" -- "$body" || status=$?
+    if (( status > 1 )); then
+      printf 'Cannot read agent body: %s\n' "$body" >&2
+      return 1
+    fi
+    if (( status == 0 )); then
+      printf 'Cannot install Codex agent %s: agent body contains a TOML literal delimiter.\n' "$role" >&2
+      return 1
+    fi
+  done
+}
+
+toml_basic_string() {
+  local value="$1" escaped
+  escaped="${value//\\/\\\\}"
+  escaped="${escaped//\"/\\\"}"
+  printf '"%s"' "$escaped"
+}
+
+install_codex_role() {
+  local role="$1" dst="$2" desc body temp status=0
+  desc="$(role_description "$role")" || return 1
+  body="$source_dir/agents/$role.md"
+  temp="$(mktemp)" || return 1
+  {
+    printf 'name = %s\n' "$(toml_basic_string "$role")" || status=1
+    printf 'description = %s\n' "$(toml_basic_string "$desc")" || status=1
+    printf "developer_instructions = '''\n" || status=1
+    cat -- "$body" || status=1
+    printf "'''\n" || status=1
+  } > "$temp" || status=1
+  if (( status != 0 )); then
+    rm -f -- "$temp"
+    return 1
+  fi
+  put "$temp" "$dst" || status=$?
+  rm -f -- "$temp"
+  return "$status"
+}
+
+install_codex() {
+  local root instruction role
+  if [[ "$scope" == global ]]; then
+    root="${CODEX_HOME:-$HOME/.codex}"
+    instruction="$root/AGENTS.md"
+  else
+    root="$target/.codex"
+    instruction="$target/AGENTS.md"
+  fi
+  codex_agents_embeddable || return 1
+  install_instructions "$instruction" || return 1
+  for role in nora felix vera iris; do
+    install_codex_role "$role" "$root/agents/$role.toml" || return 1
+  done
+}
+
 trap 'abort_install $?' ERR
 resolve_personality || abort_install $?
 report "WORKFLOW $workflow"
@@ -798,6 +949,7 @@ install_personality || abort_install $?
 if has_harness pi; then install_one pi || abort_install $?; fi
 if has_harness claude; then install_one claude || abort_install $?; fi
 if has_harness antigravity || has_harness agy; then install_one antigravity || abort_install $?; fi
+if has_harness codex; then install_codex || abort_install $?; fi
 # Summary lines are not part of the tree. Do not undo a finished install if one fails.
 rollback_armed=0
 

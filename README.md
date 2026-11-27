@@ -1,7 +1,7 @@
 # Quintet
 
 Quintet coordinates coding tasks through native subagents in Pi, Claude Code,
-and Antigravity CLI. One installer offers two workflows. Both use the same
+Antigravity CLI, and Codex. One installer offers two workflows. Both use the same
 coordinator contract, worker profiles, and skills.
 
 ## Install
@@ -27,6 +27,7 @@ selects `v2`.
 ./install.sh --harness pi --scope global --workflow v1
 ./install.sh --harness claude --scope global --workflow v2
 ./install.sh --harness antigravity --scope project --target /path/to/project
+./install.sh --harness codex --scope global
 ```
 
 Use the current installer with the same harness and scope to switch workflows.
@@ -35,7 +36,7 @@ that block. Restart the harness session to load the updated rules.
 
 | Option | Purpose |
 | --- | --- |
-| `--harness pi,claude,antigravity` | Install any comma-separated subset |
+| `--harness pi,claude,antigravity,codex` | Install any comma-separated subset |
 | `--scope global` | Apply across projects |
 | `--scope project --target PATH` | Apply to one project, defaulting to `.` |
 | `--with-web` / `--no-web` | Enable (default) or omit web tool grants |
@@ -59,6 +60,13 @@ installs or `PROJECT/.quintet-rule-backups` for project installs. If the
 installer reports `KEEP RULE`, inspect the named path and move that backup out
 of rule discovery before retrying. Use `--dry-run` to see the planned moves.
 
+### Codex
+
+Project installs write `PROJECT/AGENTS.md` (the same file as Pi) and
+`PROJECT/.codex/agents/*.toml`. Global installs write `AGENTS.md` and
+`agents/*.toml` under `${CODEX_HOME:-~/.codex}`. The installer does not edit
+`config.toml`.
+
 ## Agents and personality
 
 | Agent | Responsibility | Scope |
@@ -76,8 +84,10 @@ line must be `Name: Your Name`.
 Rerun the installer to apply the name and style to the coordinator, including
 its global Antigravity display name. The four workers keep their roles.
 
-Antigravity truncates rules above 24,000 bytes. The default personality fits
-with either workflow. A long custom personality can exceed the limit.
+The installer does not publish an Antigravity rule over 24,000 bytes or a
+Codex `AGENTS.md` over 32,768 bytes. A file over that limit cannot be loaded
+whole. The default personality fits either workflow. A long custom personality
+can exceed the limit.
 
 ## Compare the workflows
 

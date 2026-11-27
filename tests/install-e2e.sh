@@ -1093,4 +1093,264 @@ assert_absent 'QUINTET MANAGED' "$date_project/CLAUDE.md"
 snapshot_tree "$date_project" "$tmp/date-after"
 diff -u "$tmp/date-before" "$tmp/date-after"
 
-echo 'install E2E PASS: harnesses, workflow switching, scope, idempotence, settings, web, personality and legacy archive'
+# Codex is a harness. Unknown names still exit 2, before any write.
+rc=0
+"$root/install.sh" --harness nope --scope project --target "$project" --no-tui --no-web \
+  > "$tmp/bad-harness" 2>&1 || rc=$?
+[[ "$rc" -eq 2 ]]
+grep -Fq 'Invalid harness: nope' "$tmp/bad-harness"
+assert_absent '^WRITE \|^DONE$' "$tmp/bad-harness"
+rc=0
+"$root/install.sh" --harness codex,bogus --scope project --target "$project" --no-tui --no-web \
+  > "$tmp/bad-codex-harness" 2>&1 || rc=$?
+[[ "$rc" -eq 2 ]]
+grep -Fq 'Invalid harness: bogus' "$tmp/bad-codex-harness"
+"$root/install.sh" --help > "$tmp/help-codex"
+grep -Fq -- '--harness pi|claude|antigravity|codex' "$tmp/help-codex"
+assert_absent 'tail' "$tmp/help-codex"
+assert_absent 'truncat' "$tmp/help-codex"
+
+assert_codex_agents() {
+  local agent_dir="$1"
+  python3 - "$root" "$agent_dir" <<'PY'
+import pathlib, sys, tomllib
+root, agent_dir = map(pathlib.Path, sys.argv[1:])
+expected = {
+    "nora": "Read-only investigation, architecture, research, root-cause analysis.",
+    "felix": "Implement one bounded code change; perform targeted verification.",
+    "vera": "Independent, read-only consequential-change review.",
+    "iris": "User-facing end-to-end and smoke acceptance without source edits.",
+}
+for role, desc in expected.items():
+    path = agent_dir / f"{role}.toml"
+    text = path.read_text()
+    if "developer_instructions = '''" not in text:
+        raise SystemExit(f"missing TOML literal: {path}")
+    doc = tomllib.loads(text)
+    if set(doc) != {"name", "description", "developer_instructions"}:
+        raise SystemExit(f"unexpected keys in {path}: {sorted(doc)}")
+    body = (root / "agents" / f"{role}.md").read_bytes()
+    got = doc["developer_instructions"].encode()
+    if got != body or doc["name"] != role or doc["description"] != desc:
+        raise SystemExit(f"agent mismatch: {role}")
+PY
+}
+write_personality() {
+  local dest="$1" extra="$2"
+  python3 - "$dest" "$extra" <<'PY'
+import pathlib, sys
+dest, extra = sys.argv[1], int(sys.argv[2])
+pathlib.Path(dest).write_text("Name: Kanade\n\nShort.\n" + ("x" * extra) + "\n")
+PY
+}
+
+# Project Codex writes one AGENTS.md and four literal-string agents. Dry-run
+# writes no TOML and leaves no size-check temp files.
+codex_project="$tmp/codex-project"
+codex_dry_tmp="$tmp/codex-dry-tmp"
+mkdir -p "$codex_project" "$codex_dry_tmp"
+printf 'leave me\n' > "$codex_project/NOTES.txt"
+snapshot_tree "$codex_project" "$tmp/codex-dry-before"
+TMPDIR="$codex_dry_tmp" "$root/install.sh" --harness codex --scope project --target "$codex_project" \
+  --workflow v2 --no-tui --no-web --dry-run > "$tmp/codex-dry"
+snapshot_tree "$codex_project" "$tmp/codex-dry-after"
+diff -u "$tmp/codex-dry-before" "$tmp/codex-dry-after"
+[[ -z "$(find "$codex_dry_tmp" -mindepth 1 -print -quit)" ]]
+[[ -z "$(find "$codex_project" -name '*.toml' -o -name '*size*' -print -quit)" ]]
+grep -Fxq "WRITE $codex_project/AGENTS.md" "$tmp/codex-dry"
+grep -Fxq "WRITE $codex_project/.codex/agents/nora.toml" "$tmp/codex-dry"
+assert_absent 'pi install\|subagents.json' "$tmp/codex-dry"
+: > "$MOCK_PI_CALLS"
+"$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --no-web \
+  > "$tmp/codex-project-out"
+[[ ! -s "$MOCK_PI_CALLS" ]]
+assert_workflow v2 "$codex_project/AGENTS.md"
+[[ "$(find "$codex_project" -name AGENTS.md | wc -l)" -eq 1 ]]
+[[ ! -e "$codex_project/.codex/config.toml" && ! -e "$codex_project/.pi" && ! -e "$codex_project/.claude" ]]
+assert_codex_agents "$codex_project/.codex/agents"
+[[ "$(wc -c < "$codex_project/AGENTS.md")" -le 32768 ]]
+"$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --no-web \
+  > "$tmp/codex-project-again"
+assert_absent '^WRITE ' "$tmp/codex-project-again"
+"$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v1 --no-tui --no-web \
+  > "$tmp/codex-v1"
+assert_workflow v1 "$codex_project/AGENTS.md"
+
+# Pi and Codex share one project contract. A Pi-only install of the same
+# personality produces the same AGENTS.md.
+shared_pi="$tmp/shared-pi"
+shared_both="$tmp/shared-both"
+mkdir -p "$shared_pi" "$shared_both"
+"$root/install.sh" --harness pi --scope project --target "$shared_pi" --workflow v2 --no-tui --no-web \
+  > "$tmp/shared-pi-out"
+"$root/install.sh" --harness pi,codex --scope project --target "$shared_both" --workflow v2 --no-tui --no-web \
+  > "$tmp/shared-both-out"
+cmp -- "$shared_pi/AGENTS.md" "$shared_both/AGENTS.md"
+[[ "$(find "$shared_both" -name AGENTS.md | wc -l)" -eq 1 ]]
+[[ -f "$shared_both/.pi/agents/felix.md" && -f "$shared_both/.codex/agents/felix.toml" ]]
+assert_codex_agents "$shared_both/.codex/agents"
+
+# Global Codex follows CODEX_HOME and does not touch config.toml, Pi, or Claude.
+codex_global_home="$tmp/codex-global-home"
+mkdir -p "$codex_global_home/.codex" "$codex_global_home/.pi/agent" "$codex_global_home/.claude"
+printf 'leave config\n' > "$codex_global_home/.codex/config.toml"
+printf 'leave pi\n' > "$codex_global_home/.pi/agent/keep"
+printf 'leave claude\n' > "$codex_global_home/.claude/keep"
+HOME="$codex_global_home" PI_CODING_AGENT_DIR="$codex_global_home/.pi/agent" \
+  "$root/install.sh" --harness codex --scope global --workflow v2 --no-tui --no-web > "$tmp/codex-global-out"
+assert_workflow v2 "$codex_global_home/.codex/AGENTS.md"
+assert_codex_agents "$codex_global_home/.codex/agents"
+cmp -- <(printf 'leave config\n') "$codex_global_home/.codex/config.toml"
+cmp -- <(printf 'leave pi\n') "$codex_global_home/.pi/agent/keep"
+cmp -- <(printf 'leave claude\n') "$codex_global_home/.claude/keep"
+[[ ! -e "$codex_global_home/.pi/agent/AGENTS.md" && ! -e "$codex_global_home/.claude/CLAUDE.md" ]]
+[[ ! -e "$codex_global_home/.pi/agent/agents" && ! -e "$codex_global_home/.claude/agents" ]]
+codex_alt="$tmp/codex-alt-home"
+codex_alt_parent="$tmp/codex-alt-parent"
+mkdir -p "$codex_alt" "$codex_alt_parent"
+printf 'alt config\n' > "$codex_alt/config.toml"
+HOME="$codex_alt_parent" CODEX_HOME="$codex_alt" PI_CODING_AGENT_DIR="$codex_alt_parent/.pi/agent" \
+  "$root/install.sh" --harness codex --scope global --workflow v2 --no-tui --no-web > "$tmp/codex-alt-out"
+assert_workflow v2 "$codex_alt/AGENTS.md"
+assert_codex_agents "$codex_alt/agents"
+cmp -- <(printf 'alt config\n') "$codex_alt/config.toml"
+[[ ! -e "$codex_alt_parent/.codex" && ! -e "$codex_alt_parent/.pi" && ! -e "$codex_alt_parent/.claude" ]]
+
+# A coordinator file over the harness limit is not published. Antigravity and
+# Codex use different limits. The message must not claim a tail cut.
+size_fit="$tmp/size-fit"
+mkdir -p "$size_fit"
+write_personality "$size_fit/PERSONALITY.md" 0
+"$root/install.sh" --harness antigravity --scope project --target "$size_fit" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-fit-out"
+fit_bytes="$(wc -c < "$size_fit/.agents/rules/AGENTS.md" | tr -d '[:space:]')"
+[[ "$fit_bytes" -le 24000 ]]
+agy_pad="$((24000 - fit_bytes + 1))"
+size_agy="$tmp/size-agy"
+size_codex_ok="$tmp/size-codex-ok"
+mkdir -p "$size_agy" "$size_codex_ok"
+write_personality "$size_agy/PERSONALITY.md" "$agy_pad"
+cp -- "$size_agy/PERSONALITY.md" "$size_codex_ok/PERSONALITY.md"
+printf 'Keep this user rule.\n' > "$size_agy/RULE.txt"
+mkdir -p "$size_agy/.agents/rules"
+cp -- "$size_agy/RULE.txt" "$size_agy/.agents/rules/AGENTS.md"
+snapshot_tree "$size_agy" "$tmp/size-agy-before"
+size_dry_tmp="$tmp/size-dry-tmp"
+mkdir -p "$size_dry_tmp"
+rc=0
+TMPDIR="$size_dry_tmp" "$root/install.sh" --harness antigravity --scope project --target "$size_agy" \
+  --workflow v2 --no-tui --no-web --dry-run > "$tmp/size-agy-dry" 2> "$tmp/size-agy-dry-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/size-agy-dry"
+assert_absent 'truncat' "$tmp/size-agy-dry-err"
+assert_absent 'tail' "$tmp/size-agy-dry-err"
+grep -Fq 'exceeds 24000' "$tmp/size-agy-dry-err"
+grep -Fq 'cannot load this file whole' "$tmp/size-agy-dry-err"
+[[ -z "$(find "$size_dry_tmp" -mindepth 1 -print -quit)" ]]
+snapshot_tree "$size_agy" "$tmp/size-agy-dry-tree"
+diff -u "$tmp/size-agy-before" "$tmp/size-agy-dry-tree"
+rc=0
+"$root/install.sh" --harness antigravity --scope project --target "$size_agy" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-agy-out" 2> "$tmp/size-agy-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/size-agy-out"
+grep -Fq 'exceeds 24000' "$tmp/size-agy-err"
+grep -Fq 'cannot load this file whole' "$tmp/size-agy-err"
+assert_absent 'truncat' "$tmp/size-agy-err"
+assert_absent 'tail' "$tmp/size-agy-err"
+cmp -- "$size_agy/RULE.txt" "$size_agy/.agents/rules/AGENTS.md"
+[[ ! -e "$size_agy/.agents/agents" && ! -e "$size_agy/.agents/skills" ]]
+"$root/install.sh" --harness codex --scope project --target "$size_codex_ok" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-codex-ok-out"
+grep -Fxq 'DONE' "$tmp/size-codex-ok-out"
+codex_fit_bytes="$(wc -c < "$size_codex_ok/AGENTS.md" | tr -d '[:space:]')"
+[[ "$codex_fit_bytes" -gt 24000 && "$codex_fit_bytes" -le 32768 ]]
+
+codex_pad="$((32768 - fit_bytes + 1))"
+size_codex="$tmp/size-codex"
+size_pi="$tmp/size-pi"
+mkdir -p "$size_codex" "$size_pi"
+write_personality "$size_codex/PERSONALITY.md" "$codex_pad"
+cp -- "$size_codex/PERSONALITY.md" "$size_pi/PERSONALITY.md"
+printf '# User contract\nKeep the user contract.\n' > "$size_codex/AGENTS.md"
+cp -- "$size_codex/AGENTS.md" "$tmp/size-codex-user"
+snapshot_tree "$size_codex" "$tmp/size-codex-before"
+rc=0
+"$root/install.sh" --harness codex --scope project --target "$size_codex" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-codex-out" 2> "$tmp/size-codex-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/size-codex-out"
+grep -Fq 'exceeds 32768' "$tmp/size-codex-err"
+grep -Fq 'cannot load this file whole' "$tmp/size-codex-err"
+assert_absent 'truncat' "$tmp/size-codex-err"
+assert_absent 'tail' "$tmp/size-codex-err"
+cmp -- "$tmp/size-codex-user" "$size_codex/AGENTS.md"
+[[ ! -e "$size_codex/.codex" ]]
+snapshot_tree "$size_codex" "$tmp/size-codex-after"
+diff -u "$tmp/size-codex-before" "$tmp/size-codex-after"
+"$root/install.sh" --harness pi --scope project --target "$size_pi" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-pi-out"
+grep -Fxq 'DONE' "$tmp/size-pi-out"
+pi_large_bytes="$(wc -c < "$size_pi/AGENTS.md" | tr -d '[:space:]')"
+[[ "$pi_large_bytes" -gt 32768 ]]
+
+# A later size failure rolls back writes from earlier harnesses in the same run.
+size_roll="$tmp/size-roll"
+mkdir -p "$size_roll"
+printf 'leave me\n' > "$size_roll/NOTES.txt"
+printf '# Claude contract\nKeep this blocker text.\n' > "$size_roll/CLAUDE.md"
+cp -- "$size_codex/PERSONALITY.md" "$size_roll/PERSONALITY.md"
+snapshot_tree "$size_roll" "$tmp/size-roll-before"
+rc=0
+"$root/install.sh" --harness claude,codex --scope project --target "$size_roll" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-roll-out" 2> "$tmp/size-roll-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/size-roll-out"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/size-roll-err"
+grep -Fq 'exceeds 32768' "$tmp/size-roll-err"
+assert_absent 'truncat' "$tmp/size-roll-err"
+snapshot_tree "$size_roll" "$tmp/size-roll-after"
+diff -u "$tmp/size-roll-before" "$tmp/size-roll-after"
+[[ ! -e "$size_roll/.claude" && ! -e "$size_roll/.codex" ]]
+cmp -- <(printf '# Claude contract\nKeep this blocker text.\n') "$size_roll/CLAUDE.md"
+
+# A TOML literal delimiter in an agent body fails closed and rolls back earlier writes.
+quote_source="$tmp/quote-source"
+quote_project="$tmp/quote-project"
+mkdir -p "$quote_source" "$quote_project"
+cp -a "$root/." "$quote_source/"
+printf '%s\n' "'''" >> "$quote_source/agents/nora.md"
+printf 'leave me\n' > "$quote_project/NOTES.txt"
+printf '# Pi contract\nKeep the pi rule.\n' > "$quote_project/AGENTS.md"
+snapshot_tree "$quote_project" "$tmp/quote-before"
+rc=0
+"$quote_source/install.sh" --harness pi,codex --scope project --target "$quote_project" \
+  --workflow v2 --no-tui --no-web > "$tmp/quote-out" 2> "$tmp/quote-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/quote-out"
+grep -Fq 'TOML literal delimiter' "$tmp/quote-err"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/quote-err"
+[[ ! -e "$quote_project/.codex" && ! -e "$quote_project/.pi" ]]
+snapshot_tree "$quote_project" "$tmp/quote-after"
+diff -u "$tmp/quote-before" "$tmp/quote-after"
+
+# An unreadable Codex agent body is not installed as a partial TOML file.
+unread_codex_source="$tmp/unread-codex-source"
+unread_codex_project="$tmp/unread-codex-project"
+mkdir -p "$unread_codex_source" "$unread_codex_project"
+cp -a "$root/." "$unread_codex_source/"
+chmod a-r "$unread_codex_source/agents/nora.md"
+printf 'leave me\n' > "$unread_codex_project/NOTES.txt"
+snapshot_tree "$unread_codex_project" "$tmp/unread-codex-before"
+rc=0
+"$unread_codex_source/install.sh" --harness codex --scope project --target "$unread_codex_project" \
+  --workflow v2 --no-tui --no-web > "$tmp/unread-codex-out" 2> "$tmp/unread-codex-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/unread-codex-out"
+grep -Fq 'Cannot read agent body' "$tmp/unread-codex-err"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/unread-codex-err"
+[[ ! -e "$unread_codex_project/.codex" ]]
+snapshot_tree "$unread_codex_project" "$tmp/unread-codex-after"
+diff -u "$tmp/unread-codex-before" "$tmp/unread-codex-after"
+
+echo 'install E2E PASS: harnesses, workflow switching, scope, idempotence, settings, web, personality, legacy archive, codex, and size limits'

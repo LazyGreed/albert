@@ -19,9 +19,12 @@ workflow when both are loaded.
 | Pi | `PROJECT/AGENTS.md` | `~/.pi/agent/AGENTS.md` |
 | Claude Code | `PROJECT/CLAUDE.md` | `~/.claude/CLAUDE.md` |
 | Antigravity CLI | `PROJECT/.agents/rules/AGENTS.md` | `rules/AGENTS.md` |
+| Codex | `PROJECT/AGENTS.md` | `${CODEX_HOME:-~/.codex}/AGENTS.md` |
 
 Pi honors `$PI_CODING_AGENT_DIR/AGENTS.md` when configured. Antigravity's
 global `rules/AGENTS.md` is inside `~/.gemini/config/plugins/quintet`.
+Codex project agents live in `PROJECT/.codex/agents`. Global Codex agents live
+in `${CODEX_HOME:-~/.codex}/agents`. Project Codex and Pi share `PROJECT/AGENTS.md`.
 
 When working directly in Quintet with no project installation, the root
 [AGENTS.md](../AGENTS.md) points to the default [v2 workflow](../workflows/v2.md).
