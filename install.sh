@@ -211,7 +211,7 @@ save_antigravity_rule() {
 
 # Never overwrite an existing nonidentical file silently.
 put() {
-  local src="$1" dst="$2" rule_backups="${3:-}" replaced_from='' backup
+  local src="$1" dst="$2" rule_backups="${3:-}" replaced_from='' backup stamp
   if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then return 0; fi
   report "WRITE $dst"
   if [[ -n "$rule_backups" && -e "$dst" ]]; then
@@ -221,7 +221,9 @@ put() {
   ((dry)) && return 0
   mkparent "$dst" || return 1
   if [[ -z "$rule_backups" && -e "$dst" ]]; then
-    backup="$dst.quintet-backup-$(date +%Y%m%d%H%M%S)-$$"
+    # put runs under ||, so a failing date would otherwise leave an empty stamp.
+    stamp="$(date +%Y%m%d%H%M%S)" || return 1
+    backup="$dst.quintet-backup-${stamp}-$$"
     cp -p -- "$dst" "$backup" || return 1
     replaced_from="$backup"
   fi
@@ -374,7 +376,7 @@ install_role() {
       printf -- '---\n\n'
     fi
     cat -- "$source_dir/agents/$role.md"
-  } > "$temp"
+  } > "$temp" || { rm -f -- "$temp"; return 1; }
   local status=0
   put "$temp" "$dst" || status=$?
   rm -f -- "$temp" || true
@@ -766,7 +768,7 @@ install_pi_runtime() {
       report "SKIP PI PACKAGE: $spec is already registered; unchanged."
     else
       report "INSTALL: pi install $spec"
-      pi_in_scope install "$spec"
+      pi_in_scope install "$spec" || return 1
     fi
   done
 }

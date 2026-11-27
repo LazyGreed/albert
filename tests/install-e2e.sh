@@ -79,7 +79,10 @@ case "$1" in
     [[ "${MOCK_PI_LIST_STATUS:-0}" == 0 ]] || exit "$MOCK_PI_LIST_STATUS"
     printf '%s\n' "${MOCK_PI_PACKAGES:-npm:@tintinweb/pi-subagents}"
     ;;
-  install) printf 'pi %s\n' "$*" >> "$MOCK_PI_LOG" ;;
+  install)
+    printf 'pi %s\n' "$*" >> "$MOCK_PI_LOG"
+    if [[ -n "${MOCK_PI_INSTALL_FAIL:-}" && "$2" == "$MOCK_PI_INSTALL_FAIL" ]]; then exit 1; fi
+    ;;
   *) exit 1 ;;
 esac
 PI
@@ -1013,5 +1016,81 @@ snapshot_tree "$pi_block" "$tmp/pi-block-after"
 diff -u "$tmp/pi-block-before" "$tmp/pi-block-after"
 [[ -z "$(find "$pi_block" -name '*.quintet-backup-*' -print -quit)" ]]
 MOCK_PI_PACKAGES="$both_pi_packages"
+
+# A failed package install must not be hidden by a later install that succeeds
+# or by a package that is already listed. Parent writes nothing in that case.
+for pi_fail_case in listed later; do
+  pi_fail="$tmp/pi-fail-$pi_fail_case"
+  pi_fail_home="$tmp/pi-fail-home-$pi_fail_case"
+  mkdir -p "$pi_fail" "$pi_fail_home"
+  printf 'leave me\n' > "$pi_fail/NOTES.txt"
+  snapshot_tree "$pi_fail" "$tmp/pi-fail-$pi_fail_case-before"
+  if [[ "$pi_fail_case" == listed ]]; then
+    pi_fail_packages='npm:pi-web-access'
+  else
+    pi_fail_packages='npm:unrelated'
+  fi
+  : > "$MOCK_PI_LOG"
+  rc=0
+  MOCK_PI_INSTALL_FAIL='npm:@tintinweb/pi-subagents' MOCK_PI_PACKAGES="$pi_fail_packages" \
+    HOME="$pi_fail_home" PI_CODING_AGENT_DIR="$pi_fail_home/.pi/agent" \
+    "$root/install.sh" --harness pi --scope project --target "$pi_fail" --workflow v2 --no-tui --no-web \
+    > "$tmp/pi-fail-$pi_fail_case-out" 2> "$tmp/pi-fail-$pi_fail_case-err" || rc=$?
+  [[ "$rc" -ne 0 ]]
+  assert_absent '^DONE$' "$tmp/pi-fail-$pi_fail_case-out"
+  grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
+  assert_absent 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+  [[ ! -e "$pi_fail_home/.pi/agent/subagents.json" ]]
+  [[ ! -e "$pi_fail/PERSONALITY.md" && ! -e "$pi_fail/.pi" && ! -e "$pi_fail/AGENTS.md" ]]
+  snapshot_tree "$pi_fail" "$tmp/pi-fail-$pi_fail_case-after"
+  diff -u "$tmp/pi-fail-$pi_fail_case-before" "$tmp/pi-fail-$pi_fail_case-after"
+done
+unset MOCK_PI_INSTALL_FAIL
+MOCK_PI_PACKAGES="$both_pi_packages"
+
+# An unreadable agent body must not be installed as frontmatter and must not
+# print DONE. Files this run created are removed.
+unread_source="$tmp/unread-source"
+unread_project="$tmp/unread-project"
+mkdir -p "$unread_source" "$unread_project"
+cp -a "$root/." "$unread_source/"
+chmod a-r "$unread_source/agents/nora.md"
+printf 'leave me\n' > "$unread_project/NOTES.txt"
+snapshot_tree "$unread_project" "$tmp/unread-before"
+rc=0
+"$unread_source/install.sh" --harness claude --scope project --target "$unread_project" --workflow v2 --no-tui --no-web \
+  > "$tmp/unread-out" 2> "$tmp/unread-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/unread-out"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/unread-err"
+[[ ! -e "$unread_project/.claude/agents/nora.md" ]]
+snapshot_tree "$unread_project" "$tmp/unread-after"
+diff -u "$tmp/unread-before" "$tmp/unread-after"
+cmp -- <(printf 'leave me\n') "$unread_project/NOTES.txt"
+
+# A failing date while backing up a nonidentical contract must not exit 0,
+# print DONE, leave an empty-stamp backup, or overwrite the user text.
+date_project="$tmp/date-fail"
+mkdir -p "$date_project" "$tmp/fail-date"
+printf '# Claude contract\nKeep this user text.\n' > "$date_project/CLAUDE.md"
+printf 'leave me\n' > "$date_project/NOTES.txt"
+cat > "$tmp/fail-date/date" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+chmod +x "$tmp/fail-date/date"
+snapshot_tree "$date_project" "$tmp/date-before"
+rc=0
+PATH="$tmp/fail-date:$PATH" "$root/install.sh" --harness claude --scope project --target "$date_project" --workflow v2 --no-tui --no-web \
+  > "$tmp/date-out" 2> "$tmp/date-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$' "$tmp/date-out"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/date-err"
+[[ -z "$(find "$date_project" -name '*.quintet-backup-*' -print -quit)" ]]
+[[ -z "$(find "$date_project" -name 'CLAUDE.md.quintet-backup--*' -print -quit)" ]]
+cmp -- <(printf '# Claude contract\nKeep this user text.\n') "$date_project/CLAUDE.md"
+assert_absent 'QUINTET MANAGED' "$date_project/CLAUDE.md"
+snapshot_tree "$date_project" "$tmp/date-after"
+diff -u "$tmp/date-before" "$tmp/date-after"
 
 echo 'install E2E PASS: harnesses, workflow switching, scope, idempotence, settings, web, personality and legacy archive'
