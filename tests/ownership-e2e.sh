@@ -71,6 +71,8 @@ printf 'keep\n' > "$repo/src/b.py"
 printf 'tracked\n' > "$repo/src/foreign"
 printf 'base\n' > "$repo/src/stat.py"
 touch -t 200001010000 "$repo/src/stat.py"
+touch "$repo/src/empty.py"
+ln -s a.py "$repo/src/link.py"
 printf '*.log\n' > "$repo/.gitignore"
 git -C "$repo" add -A
 git -C "$repo" commit -q -m "baseline"
@@ -253,6 +255,90 @@ expect_fail '  src/stat.py' "$checker" --base HEAD --worktree "$repo" -- src/not
 git -C "$repo" config --unset core.trustctime
 git -C "$repo" config --unset core.checkStat
 git -C "$repo" restore -- src/stat.py
+
+# Model a same-stat edit independently of filesystem timestamp resolution.
+stat_repo="$tmp/stat-repo"
+git init -q "$stat_repo"
+printf 'base\n' > "$stat_repo/tracked"
+touch -t 200001010000 "$stat_repo/tracked"
+git -C "$stat_repo" add -- tracked
+git -C "$stat_repo" -c user.name='Quintet Test' -c user.email='quintet-test@example.com' commit -qm base
+git -C "$stat_repo" update-index --no-split-index --index-version=2
+expect_pass 'OWNERSHIP PASS: 0 changed paths' "$checker" --base HEAD --worktree "$stat_repo" -- .
+python3 - "$stat_repo" "$(git -C "$stat_repo" rev-parse --show-object-format)" <<'PY'
+import hashlib
+import os
+from pathlib import Path
+import struct
+import sys
+
+repo = Path(sys.argv[1])
+hash_name = sys.argv[2]
+path = repo / 'tracked'
+before = path.stat()
+path.write_bytes(b'edit\n')
+os.utime(path, ns=(before.st_atime_ns, before.st_mtime_ns))
+after = path.stat()
+assert (before.st_ino, before.st_size, before.st_mtime_ns) == (after.st_ino, after.st_size, after.st_mtime_ns)
+
+index = repo / '.git' / 'index'
+checksum_size = hashlib.new(hash_name).digest_size
+entries = bytearray(index.read_bytes()[:-checksum_size])
+assert struct.unpack_from('>4sII', entries) == (b'DIRC', 2, 1)
+# Give the only cache entry the current ctime. Its staged object stays intact.
+struct.pack_into('>II', entries, 12, *divmod(after.st_ctime_ns, 10**9))
+index.write_bytes(entries + hashlib.new(hash_name, entries).digest())
+PY
+git -C "$stat_repo" config core.ignoreStat true
+cp -- "$stat_repo/.git/index" "$tmp/stat-index"
+expect_fail '  tracked' "$checker" --base HEAD --worktree "$stat_repo" -- .
+cmp -- "$stat_repo/.git/index" "$tmp/stat-index"
+
+# File mode and symlink checks use actual filesystem types and Git's executable bit.
+chmod 0755 -- "$repo/src/b.py"
+git -C "$repo" config core.fileMode false
+expect_fail '  src/b.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+[[ "$(git -C "$repo" config core.fileMode)" == false ]]
+chmod 0644 -- "$repo/src/b.py"
+git -C "$repo" config --unset core.fileMode
+ln -sfn -- b.py "$repo/src/link.py"
+expect_fail '  src/link.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+rm -- "$repo/src/link.py"
+printf '%s' 'a.py' > "$repo/src/link.py"
+git -C "$repo" config core.symlinks false
+expect_fail '  src/link.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+git -C "$repo" config --unset core.symlinks
+git -C "$repo" restore -- src/link.py
+
+# Intent-to-add can represent both a new empty file and removal of a tracked one.
+touch "$repo/src/intent.py"
+git -C "$repo" add -N -- src/intent.py
+expect_fail '  src/intent.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+git -C "$repo" reset -q HEAD -- src/intent.py
+rm -- "$repo/src/intent.py"
+git -C "$repo" rm -q --cached -- src/empty.py
+git -C "$repo" add -N -- src/empty.py
+expect_fail '  src/empty.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+git -C "$repo" add -- src/empty.py
+
+# Rebuild a private index even when the real index is split and has unmerged stages.
+blob="$(git -C "$repo" rev-parse HEAD:src/b.py)"
+{
+  printf '0 %0*d\tsrc/b.py\0' "${#blob}" 0
+  for stage in 1 2 3; do
+    printf '100644 %s %s\tsrc/b.py\0' "$blob" "$stage"
+  done
+} | git -C "$repo" update-index -z --index-info
+git -C "$repo" config core.splitIndex true
+git -C "$repo" update-index --split-index
+cp -- "$repo/.git/index" "$tmp/conflict-index"
+expect_fail '  src/b.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+expect_pass 'OWNERSHIP PASS: 2 path(s) verified' \
+  "$checker" --base HEAD --worktree "$repo" -- src/b.py src/note.py
+cmp -- "$repo/.git/index" "$tmp/conflict-index"
+git -C "$repo" config --unset core.splitIndex
+git -C "$repo" update-index --no-split-index
+git -C "$repo" reset -q HEAD -- src/b.py
 
 # Gitlink changes must survive Git's submodule diff preferences in both modes.
 git -C "$repo" update-index --add --cacheinfo "160000,$base,foreign-submodule"

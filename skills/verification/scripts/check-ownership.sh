@@ -24,9 +24,11 @@ Options:
   -h, --help          Show this help message.
 
 Paths are relative to the repository root. Keep HEAD, the index, and working
-files stable during the scan. Worktree mode exits 2 for assume-unchanged or
-skip-worktree entries and for populated or unreadable submodule directories.
-Committed mode checks gitlink changes at their paths in the parent repository.
+files stable during the scan. The checker uses Git's content filters and
+ignore rules, and checks executable bits and symlink types. Worktree mode
+exits 2 for assume-unchanged or skip-worktree entries and for populated or
+unreadable submodule directories. Committed mode checks gitlink changes at
+their paths in the parent repository.
 
 Allow patterns:
   Exact paths         AGENTS.md, src/app.py
@@ -215,11 +217,13 @@ add_unique_path() {
 
 tmp_git_out="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_git_out"' EXIT
+# Git resolves GIT_INDEX_FILE after -C, so use an absolute temporary path.
+tmp_git_out="$(cd -- "$tmp_git_out" && pwd -P)"
 
 run_git_scan() {
   # Git can warn about unreadable paths and still exit successfully.
   if ! git -C "$git_dir" -c core.fsmonitor=false -c core.ignoreCase=false \
-    -c core.trustctime=true -c core.checkStat=default \
+    -c core.trustctime=true -c core.checkStat=default -c core.ignoreStat=false \
     "$@" > "$tmp_git_out/paths" 2> "$tmp_git_out/errors" || [[ -s "$tmp_git_out/errors" ]]; then
     cat "$tmp_git_out/errors" >&2
     printf 'check-ownership: incomplete Git scan (%s)\n' "$*" >&2
@@ -261,7 +265,13 @@ if [[ -n "$worktree" ]]; then
     if [[ "$entry" == ?\ 160000\ * ]]; then
       check_submodule_directory "$path"
     fi
-  done < "$tmp_git_out/paths"
+    printf '%s\0' "${entry:2}"
+  done < "$tmp_git_out/paths" > "$tmp_git_out/index-info"
+
+  # Rebuild the index from paths, modes, object IDs, and stages. Git then
+  # checks working files without trusting cached stat data from the real index.
+  GIT_INDEX_FILE="$tmp_git_out/index" run_git_scan -c core.splitIndex=false \
+    update-index -z --index-info < "$tmp_git_out/index-info"
 fi
 
 # Disabling rename detection includes both names. Compare each pair of adjacent
@@ -269,8 +279,13 @@ fi
 diff_options=(--name-only --no-renames --no-relative --ignore-submodules=none -z)
 collect_git_z_paths diff "${diff_options[@]}" "$base_commit" "$head_commit" --
 if [[ -n "$worktree" ]]; then
-  collect_git_z_paths diff --cached "${diff_options[@]}" "$head_commit" --
-  collect_git_z_paths diff "${diff_options[@]}" --
+  # The private index omits intent-to-add flags. In the real index, a
+  # placeholder is either a staged addition or stands in for a removed path.
+  collect_git_z_paths diff --cached --ita-visible-in-index "${diff_options[@]}" "$head_commit" --
+  collect_git_z_paths diff --cached --ita-invisible-in-index --diff-filter=D \
+    "${diff_options[@]}" "$head_commit" --
+  GIT_INDEX_FILE="$tmp_git_out/index" collect_git_z_paths -c core.fileMode=true \
+    -c core.symlinks=true diff "${diff_options[@]}" --
   collect_git_z_paths ls-files --others --exclude-standard -z
 fi
 
