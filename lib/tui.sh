@@ -9,7 +9,8 @@ albert_tui() {
   fi
   exec 3<>/dev/tty || return 2
 
-  local ti_pi=0 ti_claude=0 ti_agy=0 ti_scope="$scope" ti_target="${target:-$PWD}" ti_web="$with_web"
+  local ti_pi=0 ti_claude=0 ti_agy=0 ti_scope="$scope" ti_target="${target:-$PWD}"
+  local ti_workflow="$workflow" ti_web="$with_web"
   local _ti_h _ti_list=()
   IFS=',' read -r -a _ti_list <<< "$harness"
   for _ti_h in "${_ti_list[@]}"; do
@@ -60,11 +61,14 @@ albert_tui() {
     else
       printf '   Project directory: (choose Project to edit)\n' >&3
     fi
+    printf '\n%sWORKFLOW%s\n' "$ti_bold" "$ti_reset" >&3
+    _albert_tui_line 6 "($([[ "$ti_workflow" == v1 ]] && echo '*' || echo ' ')) v1  Coordinator-sequenced handoffs"
+    _albert_tui_line 7 "($([[ "$ti_workflow" == v2 ]] && echo '*' || echo ' ')) v2  Dependency graph and revision-bound review"
     printf '\n%sOPTIONAL%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 6 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude & Antigravity native tools)"
+    _albert_tui_line 8 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude & Antigravity native tools)"
     printf '\n' >&3
-    _albert_tui_line 7 'Review installation →'
-    _albert_tui_line 8 'Cancel'
+    _albert_tui_line 9 'Review installation →'
+    _albert_tui_line 10 'Cancel'
     printf '\n↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit\n' >&3
     [[ -z "$ti_message" ]] || printf '\n%s\n' "$ti_message" >&3
   }
@@ -96,7 +100,7 @@ albert_tui() {
     printf '%s' "${hs[*]}"
   }
   _albert_tui_args() {
-    ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope")
+    ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope" --workflow "$ti_workflow")
     [[ "$ti_scope" != project ]] || ti_args+=(--target "$ti_target")
     if ((ti_web)); then ti_args+=(--with-web); else ti_args+=(--no-web); fi
   }
@@ -113,17 +117,29 @@ albert_tui() {
       ti_message="Preview failed: $(tail -n 1 "$ti_preview_file")"
       rm -f -- "$ti_preview_file"; ti_preview_file=''; return 1
     fi
-    local n preview_focus=0 result=0
+    local n preview_focus=0 result=0 preview_limit=10 migration='' carry=''
     n="$(grep -c '^WRITE ' "$ti_preview_file" || true)"
+    if grep -q '^ARCHIVE ' "$ti_preview_file"; then
+      migration='Archive legacy Albert plugin under ~/.gemini/config/quintet-backups.'
+    elif grep -q '^KEEP ' "$ti_preview_file"; then
+      migration='Keep legacy Albert plugin in place.'
+    fi
+    if grep -q '^CARRY ' "$ti_preview_file"; then
+      carry='Carry user rules into the new plugin before archiving.'
+    fi
+    [[ -z "$migration" ]] || preview_limit=$((preview_limit-1))
+    [[ -z "$carry" ]] || preview_limit=$((preview_limit-1))
     while :; do
       printf '\033[?25l\033[H\033[J' >&3
       printf '%sQUINTET  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
       printf ' Harness   %s\n Scope     %s\n' "$(_albert_tui_harness)" "$ti_scope" >&3
       [[ "$ti_scope" != project ]] || printf ' Target    %s\n' "$ti_target" >&3
-      printf ' Web       %s\n Planned   %s file writes\n' "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
-      printf '\n%sPreview (first 10 file operations)%s\n' "$ti_bold" "$ti_reset" >&3
-      grep '^WRITE ' "$ti_preview_file" | head -n 10 >&3 || true
-      if ((n > 10)); then printf '  ... and %s more\n' "$((n-10))" >&3; fi
+      printf ' Workflow  %s\n Web       %s\n Planned   %s file writes\n' "$ti_workflow" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
+      [[ -z "$migration" ]] || printf ' %s\n' "$migration" >&3
+      [[ -z "$carry" ]] || printf ' %s\n' "$carry" >&3
+      printf '\n%sPlanned file writes%s\n' "$ti_bold" "$ti_reset" >&3
+      grep '^WRITE ' "$ti_preview_file" | head -n "$preview_limit" >&3 || true
+      if ((n > preview_limit)); then printf '  ... and %s more\n' "$((n-preview_limit))" >&3; fi
       printf '\nExisting changed files are backed up. Model settings remain unchanged.\n\n' >&3
       if ((preview_focus == 0)); then printf ' %s> Install%s     Back     Cancel\n' "$ti_reverse" "$ti_reset" >&3
       elif ((preview_focus == 1)); then printf '   Install    %s> Back%s     Cancel\n' "$ti_reverse" "$ti_reset" >&3
@@ -147,8 +163,8 @@ albert_tui() {
     _albert_tui_readkey || return 2
     ti_message=''
     case "$ti_key" in
-      up|k) ti_focus=$(((ti_focus+8)%9)) ;;
-      down|j) ti_focus=$(((ti_focus+1)%9)) ;;
+      up|k) ti_focus=$(((ti_focus+10)%11)) ;;
+      down|j) ti_focus=$(((ti_focus+1)%11)) ;;
       escape) return 0 ;;
       enter|' ')
         case "$ti_focus" in
@@ -166,8 +182,10 @@ albert_tui() {
               elif [[ "$new_target" == '~/'* ]]; then new_target="$HOME/${new_target:2}"; fi
               [[ -z "$new_target" ]] || ti_target="$new_target"
             fi ;;
-          6) ti_web=$((1-ti_web)) ;;
-          7)
+          6) ti_workflow=v1 ;;
+          7) ti_workflow=v2 ;;
+          8) ti_web=$((1-ti_web)) ;;
+          9)
             local review_status=0
             _albert_tui_review || review_status=$?
             if ((review_status == 0)); then
@@ -175,7 +193,7 @@ albert_tui() {
               printf '\033[?25h\033[H\033[J%sQUINTET  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;
-          8) return 0 ;;
+          10) return 0 ;;
         esac ;;
     esac
   done

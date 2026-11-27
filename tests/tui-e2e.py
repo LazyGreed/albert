@@ -66,14 +66,15 @@ def test_dual_project(root: Path):
     (project / 'AGENTS.md').write_text('Preserve project rules.\n')
     (project / 'CLAUDE.md').write_text('Preserve Claude rules.\n')
     session = Session(root)
-    session.expect(b'QUINTET  /  INSTALL')
+    session.expect(b'(*) v2  Dependency graph')
     # Toggle Claude (Pi selected initially); select Project; edit project path.
     session.send(ARROW_DOWN + SPACE + ARROW_DOWN * 3 + ENTER + ARROW_DOWN + ENTER)
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
-    # Leave the default web access enabled, then review.
-    session.send(ARROW_DOWN * 2 + ENTER)
+    # Select v1 and leave the default web access enabled, then review.
+    session.send(ARROW_DOWN + ENTER + ARROW_DOWN * 3 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Workflow  v1')
     session.expect(b'Web       enabled')
     session.expect(b'Planned')
     session.send(ENTER)
@@ -83,10 +84,15 @@ def test_dual_project(root: Path):
     assert (project / '.claude/agents/vera.md').is_file()
     assert 'WebSearch, WebFetch' in (project / '.claude/agents/vera.md').read_text()
     assert 'ext:pi-web-access/web_search' in (project / '.pi/agents/nora.md').read_text()
-    assert 'Preserve project rules.' in (project / 'AGENTS.md').read_text()
-    assert 'Preserve Claude rules.' in (project / 'CLAUDE.md').read_text()
-    # The TUI install adds one managed instruction block.
-    assert (project / 'AGENTS.md').read_text().count('<!-- ALBERT MANAGED START -->') == 1
+    for filename, rule in (
+        ('AGENTS.md', 'Preserve project rules.'),
+        ('CLAUDE.md', 'Preserve Claude rules.'),
+    ):
+        text = (project / filename).read_text()
+        assert rule in text
+        assert '## Workflow v1\n' in text
+        assert '## Workflow v2\n' not in text
+        assert text.count('<!-- ALBERT MANAGED START -->') == 1
 
 
 def test_antigravity_project(root: Path):
@@ -98,16 +104,19 @@ def test_antigravity_project(root: Path):
     session.send(SPACE + ARROW_DOWN * 2 + SPACE + ARROW_DOWN * 2 + ENTER + ARROW_DOWN + ENTER)
     session.expect(b'Project directory [')
     session.send(str(project).encode() + ENTER)
-    # Walk to Review (focus 7).
-    session.send(ARROW_DOWN * 2 + ENTER)
+    # Walk to Review (focus 9) with the default workflow.
+    session.send(ARROW_DOWN * 4 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Harness   antigravity')
     session.expect(b'Scope     project')
+    session.expect(b'Workflow  v2')
     session.send(ENTER)
     session.expect(b'DONE')
     session.finish()
-    assert (project / '.agents/rules/AGENTS.md').is_file()
-    assert '## Dynamic workstreams, ownership, and acceptance' in (project / '.agents/rules/AGENTS.md').read_text()
+    text = (project / '.agents/rules/AGENTS.md').read_text()
+    assert '## Dynamic workstreams, ownership, and acceptance' in text
+    assert '## Workflow v2\n' in text
+    assert '## Workflow v1\n' not in text
     assert (project / '.agents/agents/nora.md').is_file()
     assert not (project / '.agents/agents/albert.md').exists()
     assert not (project / '.pi').exists()
@@ -115,12 +124,14 @@ def test_antigravity_project(root: Path):
 
 def test_global_full(root: Path):
     """Global scope installs the full coordinator contract and personality."""
-    session = Session(root, '--tui', '--harness', 'pi', '--scope', 'global', '--no-web')
-    session.expect(b'Global')
-    # Pi and Global are already selected: walk down to Review (index 7) and install.
-    session.send(ARROW_DOWN * 7 + ENTER)
+    session = Session(
+        root, '--tui', '--harness', 'pi', '--scope', 'global', '--workflow', 'v1', '--no-web'
+    )
+    session.expect(b'(*) v1  Coordinator-sequenced handoffs')
+    session.send(ARROW_DOWN * 9 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Scope     global')
+    session.expect(b'Workflow  v1')
     session.send(ENTER)
     session.expect(b'DONE')
     session.finish()
@@ -129,6 +140,7 @@ def test_global_full(root: Path):
     assert '# Quintet | cross-project policy' not in text
     for contract in (
         '## Dynamic workstreams, ownership, and acceptance',
+        '## Workflow v1\n',
         '## Dispatch',
         '## Delegation gate',
         '## Opt-in Alien Science Ideation',
@@ -146,8 +158,8 @@ def test_web_disabled(root: Path, *, explicit: bool):
     initial = b'[ ]' if explicit else b'[x]'
     assert initial + b' Web search and fetch' in session.read_buffer
     if not explicit:
-        session.send(ARROW_DOWN * 6 + SPACE)
-    session.send(b'j' * (7 if explicit else 1) + ENTER)
+        session.send(ARROW_DOWN * 8 + SPACE)
+    session.send(b'j' * (9 if explicit else 1) + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
     session.expect(b'Web       disabled')
     session.send(ENTER)
@@ -156,6 +168,39 @@ def test_web_disabled(root: Path, *, explicit: bool):
     assert 'pi-web-access/' not in (project / '.pi/agents/nora.md').read_text()
     assert 'WebSearch' not in (project / '.claude/agents/vera.md').read_text()
     assert not (root / 'pi-installs').exists()
+
+
+def test_legacy_archive_review(root: Path):
+    config = root / '.gemini/config'
+    legacy = config / 'plugins/albert'
+    (legacy / 'agents').mkdir(parents=True)
+    (legacy / 'rules').mkdir()
+    (legacy / 'plugin.json').write_text('{"name": "albert", "description": "Quintet"}\n')
+    for worker in ('nora', 'felix', 'vera', 'iris'):
+        (legacy / f'agents/{worker}.md').write_text(f'Legacy {worker}\n')
+    (legacy / 'rules/AGENTS.md').write_text(
+        'Keep my legacy rules.\n\n<!-- ALBERT MANAGED START -->\n'
+        'Legacy workflow.\n<!-- ALBERT MANAGED END -->\n'
+    )
+    session = Session(root, '--tui', '--harness', 'antigravity', '--scope', 'global', '--no-web')
+    session.expect(b'Cancel')
+    session.send(ARROW_DOWN * 9 + ENTER)
+    session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Archive legacy Albert plugin under ~/.gemini/config/quintet-backups.')
+    session.expect(b'Carry user rules into the new plugin before archiving.')
+    session.expect(b' more\r\n')
+    assert legacy.is_dir()
+    assert not (config / 'quintet-backups').exists()
+    assert not (config / 'plugins/quintet').exists()
+    session.send(ENTER)
+    session.expect(b'ARCHIVE ')
+    session.expect(b'DONE')
+    session.finish()
+    assert not legacy.exists()
+    backups = list(config.glob('quintet-backups/albert.*/albert'))
+    assert len(backups) == 1
+    assert (backups[0] / 'agents/felix.md').read_text() == 'Legacy felix\n'
+    assert 'Keep my legacy rules.' in (config / 'plugins/quintet/rules/AGENTS.md').read_text()
 
 
 if __name__ == '__main__':
@@ -182,5 +227,6 @@ esac
         test_global_full(root)
         test_dual_project(root)
         test_antigravity_project(root)
+        test_legacy_archive_review(root)
         assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
-    print('TUI E2E PASS: cancel, keyboard and review, dual install, Antigravity install, global full scope, web default and opt-out')
+    print('TUI E2E PASS: keyboard, review, workflow selection, scopes, web, and legacy archive')

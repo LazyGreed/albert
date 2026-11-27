@@ -28,7 +28,7 @@ Use this skill when debugging, implementing a user-facing feature, or changing c
 ## Evidence and reporting
 
 - Run the most discriminating check after the last edit. Never infer runtime success from code inspection or a dispatch acknowledgement.
-- Before landing a parallel stream, check ownership mechanically (`scripts/check-ownership.sh`) and confirm the independent `PASS`: clean tree (including untracked files), branch and HEAD match `REF`, `BASE` is current, and `VERIFIED_AGAINST` inputs are fresh under the coordinator's hard-dependency and READS rules.
+- Before landing a parallel stream, check ownership mechanically (`scripts/check-ownership.sh`) and confirm the independent Vera `PASS` using the `WORKFLOW` in the brief. In `v1`, confirm the verdict covers the actual diff and acceptance evidence. In `v2`, also require a clean tree (including untracked files), branch and HEAD matching `REF`, a current `BASE`, and fresh `VERIFIED_AGAINST` inputs under the hard-dependency and `READS` rules.
 - For read-only specialists (Nora, Vera, Iris), verify checkout integrity mechanically with `scripts/check-readonly.sh`: take `snapshot [repo-dir]` into a temporary snapshot file before running checks and run `verify <snapshot-file> [repo-dir]` afterward (`READONLY_OK` on unchanged state, `READONLY_VIOLATION` on any HEAD, tracked, or untracked change).
 - Report exact commands and outcomes. Mark missing checks `NOT RUN` or `BLOCKED`; state unverified acceptance conditions and material risks.
 - Stop after bounded, relevant retries. Do not weaken tests or expand scope merely to produce a green result.

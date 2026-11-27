@@ -5,6 +5,7 @@ set -euo pipefail
 source_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 harness="pi"
 scope="global"
+workflow="v2"
 target=""
 dry=0
 with_web=1
@@ -16,9 +17,11 @@ usage() {
 Usage: ./install.sh                       # interactive Pi/Claude Code/Antigravity CLI TUI
        ./install.sh --tui                 # force interactive TUI
        ./install.sh --harness pi|claude|antigravity|pi,claude,antigravity --scope global|project
-                    [--target PROJECT_DIR] [--with-web|--no-web] [--dry-run] [--no-tui]
+                    [--workflow v1|v2] [--target PROJECT_DIR] [--with-web|--no-web]
+                    [--dry-run] [--no-tui]
 
 Use arrows and Enter/Space to configure the TUI; preview before installing.
+Workflow: v1 sequences coordinator handoffs; v2 (default) uses revision-bound review.
 Main-agent personality: PERSONALITY.md beside this repository's AGENTS.md.
 Project installs create PROJECT/PERSONALITY.md beside PROJECT/AGENTS.md (never overwrite).
 Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
@@ -26,10 +29,9 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Both global and project scopes install the full coordinator contract and personality.
 Antigravity installs the quintet plugin (rules/AGENTS.md, worker agents, and skills). A global
-install replaces a legacy ~/.gemini/config/plugins/albert (the previous project name) once the
-new plugin is written: text you added to its rules/AGENTS.md outside the managed block is
-carried into the new file first. An entry this installer does not write keeps the old directory
-and is listed.
+install moves an eligible legacy plugins/albert tree into ~/.gemini/config/quintet-backups
+once the new plugin is written. User rules outside the legacy managed block are carried into
+the new file first. Unrecognized entries keep the old plugin in place and are listed.
 Web research is enabled by default for eligible workers (use --no-web to disable).
 No bundled settings files are copied. Existing model/provider settings are preserved.
 USAGE
@@ -38,6 +40,13 @@ while (($#)); do
   case "$1" in
     --harness) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; harness="$2"; explicit_args=1; shift 2 ;;
     --scope) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; scope="$2"; explicit_args=1; shift 2 ;;
+    --workflow)
+      [[ $# -ge 2 ]] || { usage >&2; exit 2; }
+      case "$2" in
+        v1|v2) workflow="$2" ;;
+        *) printf 'Invalid workflow: %s (expected v1 or v2)\n' "$2" >&2; exit 2 ;;
+      esac
+      explicit_args=1; shift 2 ;;
     --target) [[ $# -ge 2 ]] || { usage >&2; exit 2; }; target="$2"; explicit_args=1; shift 2 ;;
     --with-web) with_web=1; explicit_args=1; shift ;;
     --no-web|--without-web) with_web=0; explicit_args=1; shift ;;
@@ -52,7 +61,7 @@ done
 if [[ "$tui_mode" == on ]] || [[ "$tui_mode" == auto && "$explicit_args" == 0 ]]; then
   if [[ -t 0 && -t 1 ]]; then
     if ((dry)); then echo "TUI already includes a preview; omit --dry-run or use --no-tui for scripted previews." >&2; exit 2; fi
-    # A forced TUI takes supplied harness, scope, target, and web options as initial selections.
+    # A forced TUI uses supplied options as initial selections.
     source "$source_dir/lib/tui.sh"
     albert_tui
     exit $?
@@ -86,9 +95,9 @@ put() {
   if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then return; fi
   report "WRITE $dst"
   ((dry)) && return 0
-  mkparent "$dst"
+  mkparent "$dst" || return 1
   if [[ -e "$dst" ]]; then
-    cp -p -- "$dst" "$dst.albert-backup-$(date +%Y%m%d%H%M%S)-$$"
+    cp -p -- "$dst" "$dst.albert-backup-$(date +%Y%m%d%H%M%S)-$$" || return 1
   fi
   cp -- "$src" "$dst"
 }
@@ -144,7 +153,20 @@ install_personality() {
   personality_file="$project_personality"
 }
 render_coordinator() {
-  cat -- "$source_dir/AGENTS.md"
+  local marker='Source default is [v2](workflows/v2.md). <!-- QUINTET WORKFLOW -->'
+  # Skip any managed block and its trailing separator in a self-installed checkout.
+  if ! managed_outside_text "$source_dir/AGENTS.md" |
+    awk -v marker="$marker" '
+      NR == FNR { policy = policy (FNR == 1 ? "#" : "") $0 "\n"; next }
+      $0 == "" { blanks++; next }
+      { while (blanks > 0) { print ""; blanks-- } }
+      $0 == marker { printf "%s", policy; markers++; next }
+      { print }
+      END { if (markers != 1) exit 1 }
+    ' "$source_dir/workflows/$workflow.md" -; then
+    echo "Cannot render workflow $workflow from $source_dir/AGENTS.md" >&2
+    return 1
+  fi
   printf '\n## Main-agent personality (user configuration)\n\n'
   printf 'This section controls only the coordinator name and communication style. Role, permissions, approvals, and verification rules above always take priority.\n\n'
   # awk adds the final newline if absent, and normalizes CRLF to LF.
@@ -258,10 +280,10 @@ managed_block_text() {
 append_managed_block() {
   local dst="$1" rendered="$2"
   if [[ -s "$dst" ]] && [[ "$(tail -c 2 -- "$dst" | od -An -tx1 | tr -d ' \n')" != '0a0a' ]]; then
-    printf '\n' >> "$dst"
+    printf '\n' >> "$dst" || return 1
   fi
-  printf '%s\n' "$managed_begin" >> "$dst"
-  cat -- "$rendered" >> "$dst"
+  printf '%s\n' "$managed_begin" >> "$dst" || return 1
+  cat -- "$rendered" >> "$dst" || return 1
   printf '%s\n' "$managed_end" >> "$dst"
 }
 
@@ -290,13 +312,18 @@ install_instructions() {
 # "user text outside the managed block" contract as install_instructions.
 merge_carried_instructions() {
   local dst="$1" carried="$2" rendered temp
-  rendered="$(mktemp)"
+  rendered="$(mktemp)" || return 1
   if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
-  temp="$(mktemp)"
+  if ! temp="$(mktemp)"; then rm -f -- "$rendered"; return 1; fi
   if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
-  cat -- "$carried" >> "$temp"
-  append_managed_block "$temp" "$rendered"
-  put "$temp" "$dst"
+  # A failed archive can be retried without copying the same block of user rules again.
+  if [[ $'\n'"$(< "$temp")"$'\n' != *$'\n'"$(< "$carried")"$'\n'* ]] &&
+    ! cat -- "$carried" >> "$temp"; then
+    rm -f -- "$temp" "$rendered"; return 1
+  fi
+  if ! append_managed_block "$temp" "$rendered" || ! put "$temp" "$dst"; then
+    rm -f -- "$temp" "$rendered"; return 1
+  fi
   rm -f -- "$temp" "$rendered"
 }
 
@@ -353,28 +380,17 @@ generated_antigravity_paths() {
   } | sort -u
 }
 
-# Count entries under a directory. Fails when the walk itself fails, so a caller never reads
-# "could not look" as "nothing there".
-count_entries() {
-  local dir="$1" list total=0 entry
-  list="$(mktemp)"
-  if ! find "$dir" -mindepth 1 -print0 > "$list"; then rm -f -- "$list"; return 1; fi
-  while IFS= read -r -d '' entry; do total=$((total + 1)); done < "$list"
-  rm -f -- "$list"
-  printf '%s' "$total"
-}
-
-# Replace plugins/albert after the new tree is complete. Runs last so a failed or partial
-# install never leaves the user without a coordinator, and never fails the install.
+# Archive plugins/albert only after the replacement tree is complete. Generated files
+# may also contain user edits, so preserve the entire legacy tree outside plugin discovery.
 migrate_legacy_antigravity_plugin() {
-  local root="$1" legacy rel entry list extras=() extra_count=0 total=0 carried remaining removed
+  local root="$1" legacy rel entry list extras=() extra_count=0 total=0 carried
+  local backup_root="$HOME/.gemini/config/quintet-backups" backup_dir
   legacy="$(legacy_antigravity_plugin)" || return 0
-  # Deletion needs a complete, non-empty walk: a failed or empty enumeration is not evidence
-  # that the tree is safe to remove.
+  # Require a complete, non-empty walk before claiming the tree as ours.
   list="$(mktemp)"
   if ! find "$legacy" -mindepth 1 -print0 > "$list"; then
     rm -f -- "$list"
-    report "KEEP '$legacy': the legacy plugin directory could not be enumerated, so nothing was removed."
+    report "KEEP '$legacy': the legacy plugin directory could not be enumerated."
     return 0
   fi
   while IFS= read -r -d '' entry; do
@@ -388,7 +404,7 @@ migrate_legacy_antigravity_plugin() {
   done < "$list"
   rm -f -- "$list"
   if [[ "$total" -eq 0 ]]; then
-    report "KEEP '$legacy': the legacy plugin directory listed no entries, so nothing was removed."
+    report "KEEP '$legacy': the legacy plugin directory listed no entries."
     return 0
   fi
   if [[ "$extra_count" -eq 0 ]]; then
@@ -397,7 +413,7 @@ migrate_legacy_antigravity_plugin() {
       carried="$(mktemp)"
       if ! managed_outside_text "$legacy/rules/AGENTS.md" > "$carried"; then
         rm -f -- "$carried"
-        report "KEEP '$legacy': '$legacy/rules/AGENTS.md' has managed markers that cannot be merged safely, so nothing was removed."
+        report "KEEP '$legacy': '$legacy/rules/AGENTS.md' has managed markers that cannot be merged safely."
         return 0
       fi
       if grep -q '[^[:space:]]' "$carried"; then
@@ -405,7 +421,7 @@ migrate_legacy_antigravity_plugin() {
           report "CARRY '$legacy/rules/AGENTS.md' -> '$root/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)"
         elif ! merge_carried_instructions "$root/rules/AGENTS.md" "$carried"; then
           rm -f -- "$carried"
-          report "KEEP '$legacy': '$legacy/rules/AGENTS.md' could not be merged into '$root/rules/AGENTS.md', so nothing was removed."
+          report "KEEP '$legacy': '$legacy/rules/AGENTS.md' could not be merged into '$root/rules/AGENTS.md'."
           return 0
         else
           report "CARRY '$legacy/rules/AGENTS.md' -> '$root/rules/AGENTS.md' (your text outside the managed block was preserved)"
@@ -414,20 +430,15 @@ migrate_legacy_antigravity_plugin() {
       rm -f -- "$carried"
     fi
     if ((dry)); then
-      report "REMOVE '$legacy' (dry run; legacy Antigravity plugin: every entry is a path this installer rewrites on each update and would be recreated at '$root')"
-    elif rm -rf -- "$legacy"; then
-      report "REMOVE '$legacy' (legacy Antigravity plugin, previous project name: every entry is a path this installer rewrites on each update, and the current versions are at '$root')"
+      report "ARCHIVE '$legacy' under '$backup_root' (dry run; preserve the intact legacy plugin)"
+    elif ! mkdir -p -- "$backup_root" || ! backup_dir="$(mktemp -d "$backup_root/albert.XXXXXXXX")"; then
+      report "KEEP '$legacy': could not create an archive directory under '$backup_root'."
+    elif mv -- "$legacy" "$backup_dir/albert"; then
+      report "ARCHIVE '$legacy' -> '$backup_dir/albert'"
+    elif rmdir -- "$backup_dir" 2>/dev/null; then
+      report "KEEP '$legacy': could not move the legacy plugin into '$backup_root'."
     else
-      # rm failed midway: report what actually remains instead of claiming nothing changed.
-      if [[ ! -e "$legacy" ]]; then
-        report "REMOVE '$legacy' (legacy Antigravity plugin, previous project name: removed, with the current versions at '$root')"
-      elif remaining="$(count_entries "$legacy")"; then
-        removed=$((total - remaining))
-        ((removed < 0)) && removed=0
-        report "KEEP '$legacy': automatic removal failed partway; $removed of $total entries were removed and $remaining remain. Inspect it and remove it yourself: rm -rf -- '$legacy'"
-      else
-        report "KEEP '$legacy': automatic removal failed and the remaining entries could not be counted. Inspect it and remove it yourself: rm -rf -- '$legacy'"
-      fi
+      report "KEEP '$legacy': the archive move failed. Inspect '$backup_dir' for a partial archive."
     fi
     return 0
   fi
@@ -435,7 +446,7 @@ migrate_legacy_antigravity_plugin() {
   for entry in "${extras[@]}"; do
     report "  EXTRA '$legacy/$entry'"
   done
-  report "  Inspect or back up those entries, then remove the directory yourself if you accept losing them: rm -rf -- '$legacy'"
+  report "  Inspect those entries before moving '$legacy' outside plugin discovery."
   return 0
 }
 
@@ -531,6 +542,7 @@ install_pi_web() {
 }
 
 resolve_personality
+report "WORKFLOW $workflow"
 if has_harness pi; then pi_preflight; fi
 install_personality
 if ((with_web)) && has_harness pi; then install_pi_web; fi

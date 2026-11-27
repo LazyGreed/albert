@@ -1,107 +1,131 @@
-# Quintet v2 (graph-engineering edition)
+# Quintet
 
-**One voice. Four specialists. Your rules.**
-
-Quintet coordinates coding tasks inside Pi, Claude Code, and Antigravity CLI using native subagents, without an extra daemon, runtime, or database. Customize the main agent's name and style in `PERSONALITY.md`; the four specialists keep their fixed roles.
-
-## Agents
-
-| Agent | Responsibility | Scope |
-| --- | --- | --- |
-| **Main agent** (Denia by default) | Delegate, coordinate, verify, report | Main session only |
-| **Nora** | Research, investigate, trace root causes | Read-only |
-| **Felix** | Implement changes and run focused checks | Exclusive owned paths |
-| **Vera** | Independently review diffs and check evidence | Read-only |
-| **Iris** | Test user-facing acceptance and smoke behavior | Read-only on app code |
-
-Denia uses a dependency graph for multi-stream work with exclusive file ownership, revision-bound reviews (`REF` / `BASE` / `VERIFIED_AGAINST`), and a separate integration check. Routine single-stream work still uses risk-based review. The [`v1` branch](https://github.com/LazyGreed/quintet/tree/refs/heads/v1) carries the coordinator-centric edition.
-
-> [!NOTE]
-> The [live Q0/Q1 comparison](docs/workflow.md#v2-evaluation) has not been run yet. Deterministic CI checks and the offline graph benchmark self-test pass locally.
-
-## Specialized skills
-
-- **Alien Science Ideation (opt-in):** Installed by default, loaded only when the user explicitly asks for alien science, alien ideation, cognitively unavailable research directions, or the skill by name. Ordinary research, brainstorming, or unconventional tasks do not activate it. See [Alien Science Ideation](skills/alien-science-ideation/SKILL.md).
-- **Weight-space network audit:** Installed by default under the [coordinator contract](AGENTS.md#task-specific-weight-space-network-audit) with three activation modes:
-
-| Request type | Mode | Scope |
-| --- | --- | --- |
-| Small ReLU decision network repair or audit | `references/relu-audit.md` | Default specialized path for accessible weights and an explicit protocol |
-| Read-only checkpoint inspection | `AUDIT_ONLY` | Architecture and weight audit only; a weight file alone never authorizes edits |
-| Explicit broader-method or model improvement | `AUTO_IMPROVE`, `DIRECT_ONLY`, or `RESEARCH` | Cross-architecture diagnosis and reversible edits on safe copies; never unrequested LLM editing, full training, or original-checkpoint mutation |
-
-See [weight-space network audit](skills/weight-space-network-audit/SKILL.md) for full details.
+Quintet coordinates coding tasks through native subagents in Pi, Claude Code,
+and Antigravity CLI. One installer offers two workflows. Both use the same
+coordinator contract, worker profiles, and skills.
 
 ## Install
 
 ```sh
-git clone --branch v2 https://github.com/LazyGreed/quintet.git
+git clone https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
-Run `./install.sh` for the interactive Pi, Claude Code, and Antigravity CLI installer, or pass flags directly:
+For Pi, install Pi 1.1.0 or later and register its subagent package first.
 
 ```sh
-# Pi: requires Pi 1.1.0+ and the subagents package
 pi install npm:@tintinweb/pi-subagents
-./install.sh --harness pi --scope global
-
-# Claude Code
-./install.sh --harness claude --scope global
-
-# Antigravity CLI
-./install.sh --harness antigravity --scope global
 ```
 
-For a single repository, pass `--scope project --target /path/to/project`. Add `--dry-run` to preview changes without writing files. The installer backs up files it replaces, preserves existing model/provider settings, and does not copy bundled harness settings. Pi web access registers `pi-web-access` when enabled.
+Run `./install.sh` in a terminal. Use the arrow keys and Enter or Space to
+select your harness, scope, and workflow. Review the choices before installing.
+`v2` is selected by default.
 
-> [!WARNING]
-> **Updating an older checkout?** Before pulling or switching revisions, save independent copies of any user configs symlinked into this repository, then point your harness at those copies. Legacy `settings.json`, `claude-settings.json`, `antigravity-settings.json`, and bundled `pi-blackhole` configs were removed from this repository; the installer does not rewrite external symlinks or remove user-managed Blackhole installs.
+For scripts, pass `--workflow v1` or `--workflow v2`. Omitting the flag also
+selects `v2`.
 
-## Customize the main agent
-
-Edit `PERSONALITY.md` beside `AGENTS.md` to change the main agent's name and communication style:
-
-```md
-Name: Kanade
-
-# Personality
-
-- Be concise and direct.
-- Explain important choices, not routine steps.
+```sh
+./install.sh --harness pi --scope global --workflow v1
+./install.sh --harness claude --scope global --workflow v2
+./install.sh --harness antigravity --scope project --target /path/to/project
 ```
 
-Rerun your install command to apply changes. Global installs read `PERSONALITY.md` directly across Pi, Claude Code, and Antigravity (including the plugin display name). Project installs create `PROJECT/PERSONALITY.md` beside `PROJECT/AGENTS.md` if missing and never overwrite it on reinstall.
-
-Only the main agent uses `PERSONALITY.md`. Nora, Felix, Vera, and Iris keep their fixed roles, permissions, approval gates, and verification standards.
-
-### Antigravity naming and legacy migration
-
-- **Plugin identity:** Antigravity installs register the `quintet` plugin (`~/.gemini/config/plugins/quintet` globally; `PROJECT/.agents` per project), loading the coordinator via `rules/AGENTS.md` and the four specialists under `agents/`.
-- **Legacy `plugins/albert` migration:** Global Antigravity installs replace an older `plugins/albert` directory only after the new `plugins/quintet` tree is complete.
-- **Preserved user content:** Text outside `<!-- ALBERT MANAGED START -->` / `<!-- ALBERT MANAGED END -->` in `rules/AGENTS.md` is carried into the new `rules/AGENTS.md` before removal. Any unrecognized file, directory, or symlink inside `plugins/albert` keeps the old directory in place, lists those entries, and prints the exact `rm -rf` command.
-- **Generated files:** Re-installing overwrites generated agent and skill files in place; use `--dry-run` to preview carry-over and migration output safely.
-
-## Workflow
-
-1. Describe the outcome.
-2. Denia delegates the smallest necessary work.
-3. Felix implements; Vera independently reviews consequential changes; Iris checks user-facing behavior when useful.
-4. Denia reports verified results, gaps, and required approvals.
-
-Parallel writers require isolated worktrees and exclusive write scopes. Each stream needs a mechanical ownership check (`check-ownership.sh`) and an independent Vera `PASS` before landing on the integration branch, followed by a separate combined check. Read-only specialists can verify checkout integrity mechanically with `check-readonly.sh`. Pushing, merging to the target branch, production deployment, and irreversible cleanup require explicit authorization.
-
-## Options and checks
+Rerun the installer with the same harness and scope to switch workflows. It
+replaces the managed instructions and preserves the text outside that block.
+Restart the harness session to load the updated rules.
 
 | Option | Purpose |
 | --- | --- |
-| `--harness pi,claude,antigravity` | Install one harness or a comma-separated subset |
-| `--scope global \| project --target PATH` | Install globally or into one target repository |
-| `--with-web` / `--no-web` | Include or skip installer-managed web tools and Pi web package registration (`--with-web` by default; `--no-web` never uninstalls packages) |
-| `--dry-run` | Preview scripted changes without modifying files |
-| `--tui` / `--no-tui` | Force or skip the interactive Pi/Claude Code/Antigravity CLI TUI |
+| `--harness pi,claude,antigravity` | Install any comma-separated subset |
+| `--scope global` | Apply across projects |
+| `--scope project --target PATH` | Apply to one project, defaulting to `.` |
+| `--with-web` / `--no-web` | Enable (default) or skip web access |
+| `--dry-run` | Preview without writing files |
+| `--tui` / `--no-tui` | Force or skip the terminal installer |
 
-Run the deterministic verification suites locally:
+Project rules take precedence over global workflow rules for the active
+harness. The installer backs up files it replaces and preserves model and
+provider settings. With web access enabled, the installer registers the Pi
+web package when needed. `--no-web` leaves existing registrations in place.
+
+> [!WARNING]
+> Before updating an old checkout, save independent copies of any configuration
+> you symlinked into it. The old bundled `settings.json`, `claude-settings.json`,
+> `antigravity-settings.json`, and `pi-blackhole` configs were removed from the
+> source tree. Point your harness at your saved copies before updating.
+
+### Antigravity upgrades
+
+Both workflows install the global `quintet` plugin at
+`~/.gemini/config/plugins/quintet` or use `PROJECT/.agents` for project installs.
+The coordinator loads through `rules/AGENTS.md`. A global install archives an
+eligible legacy `plugins/albert` tree intact under
+`~/.gemini/config/quintet-backups` after writing the new plugin. It carries user
+rules outside the legacy managed block into the new rules. If the old tree
+contains extra entries, the installer lists them and leaves the tree in place.
+Preview with `--dry-run` or the terminal installer's review screen.
+
+An earlier project install may still have `.agents/agents/albert.md`. If you
+previously selected that coordinator, move the file somewhere outside agent
+discovery to keep the old profile and use the new project rules.
+
+## Agents and personality
+
+| Agent | Responsibility | Scope |
+| --- | --- | --- |
+| **Coordinator** | Delegates, sequences work, and verifies | Main session |
+| **Nora** | Researches contracts and root causes | Read-only |
+| **Felix** | Implements changes and runs focused checks | Owned paths |
+| **Vera** | Independently reviews diffs and evidence | Read-only |
+| **Iris** | Runs acceptance and smoke checks | Read-only on source |
+
+Denia is the default coordinator. Edit `PERSONALITY.md` in the Quintet checkout
+for global installs. For project installs, edit `PROJECT/PERSONALITY.md`. The
+installer creates it if missing and keeps your edits on reinstall. The first
+line must be `Name: Your Name`.
+Rerun the installer to apply the name and style to the coordinator, including
+its global Antigravity display name. The four workers keep their roles.
+
+Antigravity truncates rules above 24,000 bytes. The default personality fits
+with either workflow. A long custom personality can exceed the limit.
+
+## Compare the workflows
+
+```mermaid
+flowchart TD
+  A["Shared: define acceptance and assign roles"] --> B{"Task path"}
+  B -->|"Routine single stream"| S["Felix implements, review by risk"]
+  B -->|"v1"| V1["Denia sequences named dependency handoffs"]
+  V1 --> D1["Ownership check and independent Vera diff verdict"]
+  D1 --> I1["Land verified streams and run a separate combined check"]
+  B -->|"v2"| V2["DAG: check ownership, inputs, and readiness"]
+  V2 --> D2["Ownership check and revision-bound Vera verdict"]
+  D2 -->|"Evidence stale"| T2["Trial recheck, edit if needed"]
+  T2 --> D2
+  D2 -->|"Verdicts current"| I2["Land streams and run revision-bound join"]
+  S --> R["Shared: report evidence, gaps, and approvals"]
+  I1 --> R
+  I2 --> R
+```
+
+Both workflows use isolated worktrees and exclusive write ownership for
+parallel writers, an independent Vera verdict per stream, and a separate
+combined check. [v1](workflows/v1.md) sequences handoffs through the
+coordinator and reviews the actual diffs. [v2](workflows/v2.md) tracks hard
+and read-only dependencies, refreshes stale evidence, and binds its join
+check to the landed commits. Final merge, push, and deployment require
+explicit approval in both workflows.
+
+## Specialized skills
+
+- [Alien Science Ideation](skills/alien-science-ideation/SKILL.md) is installed
+  by default. The coordinator loads it only when the user explicitly requests
+  alien ideation, cognitively unavailable research directions, or the skill.
+- The [weight-space network audit](skills/weight-space-network-audit/SKILL.md)
+  supports protocol-based ReLU audits, read-only checkpoint inspection, and
+  explicitly requested diagnosis or reversible edits on safe copies.
+
+## Checks
 
 ```sh
 bash tests/install-e2e.sh
@@ -110,18 +134,17 @@ bash tests/workstream-e2e.sh
 python3 tests/live-graph.py --self-test
 ```
 
-These checks cover all three harness installers (with Pi mocked), the interactive TUI, Git worktree ownership and `check-readonly.sh` enforcement, and the offline graph benchmark fixtures. Opt-in live checks are available via `tests/live-parallel-smoke.sh` (Antigravity CLI or Claude Code) and `tests/live-graph.py --live` (Claude Code; see [evaluation protocol](docs/workflow.md#v2-evaluation)).
+These checks exercise the installers with Pi mocked, the terminal UI, the
+Git ownership and read-only gates, and offline graph fixtures. The opt-in
+live scripts use `tests/live-parallel-smoke.sh` with Antigravity CLI or Claude
+Code, and `tests/live-graph.py --live` with Claude Code. The live Q0/Q1
+comparison is pending. [Evaluation protocol](docs/workflow.md#v2-evaluation)
 
 ## Documentation
 
-| Document | Contents |
-| --- | --- |
-| [Workflow](docs/workflow.md) | Delegation, dependency graph, verification, recovery, and evaluation |
-| [Peer messaging](docs/peer-messaging.md) | Native handoffs and coordinator fallback by harness |
-| [Model guide](docs/model-guide.md) | Role-level model and thinking effort guidance |
-| [Coordinator contract](AGENTS.md) | Authoritative rules enforced in the main session |
-| [Agent profiles](agents/) | Fixed specialist definitions (`nora`, `felix`, `vera`, `iris`) |
-| [Skills](skills/) | Architecture, domain modeling, documentation, research, verification, Alien Science, weight-space audit |
-| [Research lineage and acknowledgements](docs/references.md) | Upstream projects, adapted skills, historical integrations, and papers |
-
-Native background tasks are not guaranteed to survive the parent session exiting.
+- [Workflow and evaluation](docs/workflow.md)
+- [Peer messaging by harness](docs/peer-messaging.md)
+- [Model and effort guide](docs/model-guide.md)
+- [Shared coordinator contract](AGENTS.md) and [worker profiles](agents/)
+- [Skills](skills/)
+- [Research lineage and acknowledgements](docs/references.md)

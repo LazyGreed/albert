@@ -1,35 +1,52 @@
 # Peer messaging
 
-Quintet uses native peer messaging when the host harness supports it. **Denia remains the coordinator hub:** peers can share a changed `REF`, `READS` contract, blocker, or trial finding, but never advance graph state on their own. Denia checks input closure, assigns re-verification, owns the join gate, and enforces approval boundaries.
+Workers can send focused handoffs when the active harness exposes a native
+peer transport. The coordinator assigns work and enforces approval boundaries
+in both workflows. In v1 it sequences named handoffs and runs the combined
+check. In v2 it also determines when evidence is stale, assigns re-verification,
+and owns the revision-bound join.
 
-## Supported transports by harness
+## Transports
 
-| Harness | Supported mechanism | Default routing |
+| Harness | Transport | Routing |
 | --- | --- | --- |
-| Antigravity CLI `/swarm` | Peer messages inside an active swarm | Use native messaging if enabled |
-| Antigravity ordinary subagents | Coordinator-to-worker tools; peer access differs | Relay through coordinator |
-| Claude Code agent teams | `SendMessage` when teams are enabled | Narrow direct handoffs |
-| Claude Code ordinary subagents | Version-dependent | Relay through coordinator |
-| Pi with `@tintinweb/pi-subagents` | Coordinator steering; peer transport if exposed | Relay through coordinator |
-| Oh My Pi | `agent://` in supported configurations | Check active route |
+| Antigravity CLI `/swarm` | Peer tools in an active swarm | Use when exposed |
+| Antigravity subagents | Coordinator tools | Coordinator relay |
+| Claude Code agent teams | `SendMessage` in an active team | Use when exposed |
+| Claude Code subagents | Version-dependent | Relay if tools are absent |
+| Pi | Coordinator steering or exposed peer tools | Check active tools |
+| Oh My Pi | `agent://` where supported | Check the active route |
 
-> [!IMPORTANT]
-> Installing Quintet does not start an Antigravity swarm or Claude agent team automatically. Before using peer messaging, verify active runtime tools: Antigravity needs an active `/swarm` with peer tools, Claude needs agent teams/`SendMessage`, Pi's `Agent` tool alone does not imply peer messaging, and OMP requires a valid `agent://` route.
+The installer does not start a swarm or agent team. In Pi with
+`@tintinweb/pi-subagents`, the `Agent` tool confirms dispatch capability.
+Check for peer transport separately. Oh My Pi is a compatibility reference
+without a dedicated installer target.
 
-## Message format and boundaries
+## Handoffs
 
-Messages may carry only a verified dependency, API contract, blocker, or review finding:
+Use direct messages for API contracts, blockers, dependency changes, and
+review findings. Include the stream, path or ref, verified fact, and next
+action.
 
 ```text
 STREAM: api
 TO: felix-ui
 PATH/REF: server/validation.ts
-FACT: Error field is code, not errorCode
+FACT: Errors use the `code` field
 ACTION: Update mapping within assigned paths
 ```
 
-Peers cannot reassign file ownership, spawn workers, change acceptance, or approve actions; relay any scope or permission changes to Denia. Only the assigned Vera issues a bound `VERDICT`. Use native completion and steering whenever direct routing is unavailable. No extra message broker or polling service is used.
+Notify the coordinator when a message changes ownership, scope, acceptance,
+risk, or a decision. Workers need the coordinator to reassign ownership or
+act on approval boundaries. Only the assigned Vera issues the independent
+verdict for the stream. Relay through native completion and steering if
+direct transport is unavailable.
 
-Measure any peer-messaging benefit against serial execution and coordinator-relay parallel runs across accepted work, integration defects, tokens, and interventions.
+For a peer-messaging trial, compare serial execution, coordinator relay, and
+direct handoffs on accepted work, integration defects, tokens, and user
+interventions.
 
-**References:** [workflow](workflow.md), [Claude teams](https://code.claude.com/docs/en/agent-teams), [Claude subagents](https://code.claude.com/docs/en/sub-agents), [Pi subagents](https://github.com/tintinweb/pi-subagents).
+[Workflow](workflow.md) ·
+[Claude Code teams](https://code.claude.com/docs/en/agent-teams) ·
+[Claude Code subagents](https://code.claude.com/docs/en/sub-agents) ·
+[Pi subagents](https://github.com/tintinweb/pi-subagents)

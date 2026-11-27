@@ -17,6 +17,22 @@ assert_absent() {
     fi
   fi
 }
+assert_workflow() {
+  local edition="$1" file="$2"
+  [[ "$(grep -Ec '^## Workflow v[12]$' "$file")" -eq 1 ]]
+  grep -Fqx "## Workflow $edition" "$file"
+  assert_absent 'QUINTET WORKFLOW\|workflows/v[12]\.md' "$file"
+  if [[ "$edition" == v1 ]]; then
+    grep -Fq 'sequences work using' "$file"
+    assert_absent 'VERIFIED_AGAINST\|INTEGRATION_REF' "$file"
+  else
+    grep -Fq 'VERIFIED_AGAINST' "$file"
+    grep -Fq 'INTEGRATION_REF' "$file"
+    assert_absent 'sequences work using' "$file"
+  fi
+  [[ "$(grep -Fxc '<!-- ALBERT MANAGED START -->' "$file")" -eq 1 ]]
+  [[ "$(grep -Fxc '<!-- ALBERT MANAGED END -->' "$file")" -eq 1 ]]
+}
 # Weight-audit references ship byte-for-byte. Enumerate the source tree so a new
 # reference cannot be silently skipped; a missing installed copy fails the cmp.
 assert_refs() {
@@ -48,6 +64,18 @@ chmod +x "$tmp/bin/pi"
 export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_VERSION=1.1.0
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
 mkdir -p "$HOME"
+
+# Validate before the TUI, Pi preflight, or any project writes. A later valid flag
+# must not mask an earlier invalid value.
+for bad_workflow in '' v3 ../v1; do
+  rc=0
+  "$root/install.sh" --tui --harness pi,claude,antigravity --scope project --target "$project" \
+    --workflow "$bad_workflow" --workflow v2 > "$tmp/invalid-workflow" 2>&1 || rc=$?
+  [[ "$rc" -eq 2 ]]
+  grep -Fq 'Invalid workflow:' "$tmp/invalid-workflow"
+  assert_absent '^WRITE ' "$tmp/invalid-workflow"
+  [[ ! -e "$project/PERSONALITY.md" && ! -e "$project/.agents" && ! -e "$MOCK_PI_LOG" ]]
+done
 
 "$root/install.sh" --harness pi,claude --scope project --target "$project" --dry-run > "$tmp/dry"
 [[ ! -d "$project/.pi" && ! -d "$project/.claude" && ! -e "$project/PERSONALITY.md" ]]
@@ -88,6 +116,7 @@ for tool in pi claude; do
   done
 done
 for file in "$project/AGENTS.md" "$project/CLAUDE.md"; do
+  assert_workflow v2 "$file"
   grep -q '^## Opt-in Alien Science Ideation$' "$file"
   grep -q '^## Dispatch$' "$file"
   grep -q '^## Delegation gate$' "$file"
@@ -346,8 +375,52 @@ grep -q 'exclusive owned files/path patterns' "$agy_global/agents/felix.md"
 grep -q 'VERDICT PASS|FAIL|NOT RUN|BLOCKED' "$agy_global/agents/vera.md"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-global-again"
 assert_absent '^WRITE ' "$tmp/agy-global-again"
-assert_absent '^REMOVE ' "$tmp/agy-global-again"
+assert_absent '^ARCHIVE ' "$tmp/agy-global-again"
 assert_absent '^KEEP ' "$tmp/agy-global-again"
+
+# Switch every harness within each scope. Preview leaves existing rules alone,
+# switches write only the instructions, and reinstalling either version is a no-op.
+project_rules=("$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md")
+global_rules=("$PI_CODING_AGENT_DIR/AGENTS.md" "$HOME/.claude/CLAUDE.md" "$agy_global/rules/AGENTS.md")
+printf 'Customized project coordinator\n' > "$project/.agents/agents/albert.md"
+export MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access'
+for scope in project global; do
+  if [[ "$scope" == project ]]; then
+    scope_args=(--scope project --target "$project")
+    rules=("${project_rules[@]}")
+  else
+    scope_args=(--scope global)
+    rules=("${global_rules[@]}")
+  fi
+  for file in "${rules[@]}"; do assert_workflow v2 "$file"; done
+  "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow v1 --dry-run > "$tmp/workflow-preview"
+  grep -Fxq 'WORKFLOW v1' "$tmp/workflow-preview"
+  for file in "${rules[@]}"; do assert_workflow v2 "$file"; done
+
+  for edition in v1 v2; do
+    "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow "$edition" > "$tmp/workflow-switch"
+    grep -Fxq "WORKFLOW $edition" "$tmp/workflow-switch"
+    [[ "$(grep -c '^WRITE ' "$tmp/workflow-switch")" -eq 3 ]]
+    for file in "${rules[@]}"; do
+      grep -Fxq "WRITE $file" "$tmp/workflow-switch"
+      assert_workflow "$edition" "$file"
+    done
+    [[ "$(wc -c < "${rules[2]}")" -le 24000 ]]
+    if [[ "$scope" == project ]]; then
+      for file in "${global_rules[@]}"; do assert_workflow v2 "$file"; done
+    fi
+    "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow "$edition" > "$tmp/workflow-again"
+    assert_absent '^WRITE ' "$tmp/workflow-again"
+  done
+done
+unset MOCK_PI_PACKAGES
+for file in "${project_rules[@]}" "${global_rules[@]}"; do
+  grep -Fq 'Use the installed project workflow for the active' "$file"
+  grep -Fq 'Otherwise use the installed global workflow.' "$file"
+done
+grep -Fxq 'Keep this rule.' "$project/AGENTS.md"
+grep -Fxq 'Keep this too.' "$project/CLAUDE.md"
+grep -Fxq 'Customized project coordinator' "$project/.agents/agents/albert.md"
 
 # Legacy plugins/albert migration. Fixtures come from the archived installer at abab658, the
 # last revision that wrote plugins/albert, so the legacy layout is a real older tree instead of
@@ -362,18 +435,27 @@ seed_plugin="$seed_home/.gemini/config/plugins/albert"
 [[ -f "$seed_plugin/plugin.json" && -f "$seed_plugin/rules/AGENTS.md" && -f "$seed_plugin/agents/nora.md" ]]
 seed_legacy() { mkdir -p "$1/.gemini/config/plugins"; cp -a "$seed_plugin" "$1/.gemini/config/plugins/albert"; }
 
-# (b) A genuine older layout with nothing user-added still migrates away.
+# An eligible legacy tree is archived intact, including edits inside generated files.
 old_home="$tmp/old-home"
 old_dir="$old_home/.gemini/config/plugins/albert"
 seed_legacy "$old_home"
-HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-old"
-grep -q "^REMOVE '$old_dir' (legacy Antigravity plugin, previous project name: every entry is a path this installer rewrites on each update, and the current versions are at '$old_home/.gemini/config/plugins/quintet')" "$tmp/agy-old"
+printf '\nCustomized legacy worker instruction.\n' >> "$old_dir/agents/felix.md"
+printf '\nCustomized legacy skill.\n' >> "$old_dir/skills/verification/SKILL.md"
+cp -a "$old_dir" "$tmp/expected-archive"
+HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global \
+  --workflow v1 > "$tmp/agy-old"
 [[ ! -e "$old_dir" ]]
+archives=("$old_home"/.gemini/config/quintet-backups/albert.*/albert)
+[[ "${#archives[@]}" -eq 1 ]]
+grep -Fxq "ARCHIVE '$old_dir' -> '${archives[0]}'" "$tmp/agy-old"
+diff -r -- "$tmp/expected-archive" "${archives[0]}"
 [[ -f "$old_home/.gemini/config/plugins/quintet/plugin.json" && -f "$old_home/.gemini/config/plugins/quintet/agents/felix.md" ]]
+assert_workflow v1 "$old_home/.gemini/config/plugins/quintet/rules/AGENTS.md"
 assert_absent '^CARRY ' "$tmp/agy-old"
-# (f) A rerun after migration is silent and leaves a single plugin directory.
-HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-old-again"
-assert_absent '^REMOVE ' "$tmp/agy-old-again"
+# A rerun after migration performs no writes and leaves a single active plugin.
+HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global \
+  --workflow v1 > "$tmp/agy-old-again"
+assert_absent '^ARCHIVE ' "$tmp/agy-old-again"
 assert_absent '^KEEP ' "$tmp/agy-old-again"
 assert_absent '^WRITE ' "$tmp/agy-old-again"
 [[ "$(ls -A "$old_home/.gemini/config/plugins")" == quintet ]]
@@ -387,7 +469,7 @@ seed_legacy "$carry_home"
 printf '\n## House rules\nKeep our bespoke policy.\n' >> "$carry_rules"
 HOME="$carry_home" XDG_CONFIG_HOME="$carry_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-carry"
 grep -q "^CARRY '$carry_rules' -> '$carry_quintet/rules/AGENTS.md' (your text outside the managed block was preserved)$" "$tmp/agy-carry"
-grep -q "^REMOVE '$carry_dir' (legacy Antigravity plugin, previous project name:" "$tmp/agy-carry"
+grep -Fq "ARCHIVE '$carry_dir' -> '$carry_home/.gemini/config/quintet-backups/" "$tmp/agy-carry"
 grep -Fqx 'Keep our bespoke policy.' "$carry_quintet/rules/AGENTS.md"
 # The carried text must sit outside the managed block, which is rewritten in full.
 carry_outside="$(awk '$0=="<!-- ALBERT MANAGED START -->" {exit} {print}' "$carry_quintet/rules/AGENTS.md")"
@@ -398,16 +480,31 @@ grep -q '^## Dispatch$' "$carry_quintet/rules/AGENTS.md"
 assert_absent 'cross-project policy' "$carry_quintet/rules/AGENTS.md"
 [[ ! -e "$carry_dir" ]]
 
-# (e) A dry run previews the carry-over and the removal and changes nothing.
+# A failed archive preserves the old plugin. Retrying does not duplicate user rules.
+retry_home="$tmp/retry-home"
+retry_dir="$retry_home/.gemini/config/plugins/albert"
+retry_backup_root="$retry_home/.gemini/config/quintet-backups"
+seed_legacy "$retry_home"
+printf '\nKeep this on retry.\n' >> "$retry_dir/rules/AGENTS.md"
+touch "$retry_backup_root"
+HOME="$retry_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry" 2>&1
+grep -Fq "KEEP '$retry_dir': could not create an archive directory" "$tmp/agy-retry"
+[[ -f "$retry_dir/agents/felix.md" ]]
+rm -- "$retry_backup_root"
+HOME="$retry_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry-again"
+grep -Fq "ARCHIVE '$retry_dir' -> '$retry_backup_root/" "$tmp/agy-retry-again"
+[[ "$(grep -Fxc 'Keep this on retry.' "$retry_home/.gemini/config/plugins/quintet/rules/AGENTS.md")" -eq 1 ]]
+
+# A dry run previews the carry and archive and changes nothing.
 dry_home="$tmp/dry-home"
 dry_dir="$dry_home/.gemini/config/plugins/albert"
 seed_legacy "$dry_home"
 printf '\n## House rules\nDry run text.\n' >> "$dry_dir/rules/AGENTS.md"
 HOME="$dry_home" XDG_CONFIG_HOME="$dry_home/.config" "$root/install.sh" --harness antigravity --scope global --dry-run > "$tmp/agy-dry-legacy"
 grep -q "^CARRY '$dry_dir/rules/AGENTS.md' -> '$dry_home/.gemini/config/plugins/quintet/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)$" "$tmp/agy-dry-legacy"
-grep -q "^REMOVE '$dry_dir' (dry run; legacy Antigravity plugin: every entry is a path this installer rewrites on each update" "$tmp/agy-dry-legacy"
+grep -Fxq "ARCHIVE '$dry_dir' under '$dry_home/.gemini/config/quintet-backups' (dry run; preserve the intact legacy plugin)" "$tmp/agy-dry-legacy"
 [[ -f "$dry_dir/rules/AGENTS.md" ]]
-[[ ! -e "$dry_home/.gemini/config/plugins/quintet" ]]
+[[ ! -e "$dry_home/.gemini/config/plugins/quintet" && ! -e "$dry_home/.gemini/config/quintet-backups" ]]
 
 # Entries this installer does not write stop the migration and are named.
 keep_home="$tmp/keep-home"
@@ -424,8 +521,8 @@ grep -q "^  EXTRA '$keep_dir/notes.txt'$" "$tmp/agy-keep"
 grep -q "^  EXTRA '$keep_dir/skills/my-own-skill'$" "$tmp/agy-keep"
 grep -q "^  EXTRA '$keep_dir/skills/my-own-skill/SKILL.md'$" "$tmp/agy-keep"
 grep -q "^  EXTRA '$keep_dir/skills/empty-dir'$" "$tmp/agy-keep"
-grep -q "rm -rf -- '$keep_dir'$" "$tmp/agy-keep"
-assert_absent '^REMOVE ' "$tmp/agy-keep"
+grep -Fxq "  Inspect those entries before moving '$keep_dir' outside plugin discovery." "$tmp/agy-keep"
+assert_absent '^ARCHIVE ' "$tmp/agy-keep"
 assert_absent '^CARRY ' "$tmp/agy-keep"
 [[ "$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)" == "$keep_sum" ]]
 [[ -d "$keep_dir/skills/empty-dir" && -f "$keep_quintet/plugin.json" ]]
@@ -441,7 +538,7 @@ ln -s "$link_target" "$link_dir/skills/linked"
 HOME="$link_home" XDG_CONFIG_HOME="$link_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-link"
 grep -q "^KEEP '$link_dir': legacy Antigravity plugin kept because it holds entries this installer does not write.$" "$tmp/agy-link"
 grep -q "^  EXTRA '$link_dir/skills/linked'$" "$tmp/agy-link"
-assert_absent '^REMOVE ' "$tmp/agy-link"
+assert_absent '^ARCHIVE ' "$tmp/agy-link"
 [[ -L "$link_dir/skills/linked" ]]
 [[ -f "$link_target/keep.txt" && "$(cat "$link_target/keep.txt")" == 'outside data' ]]
 
@@ -451,10 +548,10 @@ broken_dir="$broken_home/.gemini/config/plugins/albert"
 seed_legacy "$broken_home"
 printf '<!-- ALBERT MANAGED START -->\nno end marker\n' > "$broken_dir/rules/AGENTS.md"
 HOME="$broken_home" XDG_CONFIG_HOME="$broken_home/.config" "$root/install.sh" --harness antigravity --scope global 2>/dev/null > "$tmp/agy-broken"
-grep -q "^KEEP '$broken_dir': '$broken_dir/rules/AGENTS.md' has managed markers that cannot be merged safely, so nothing was removed.$" "$tmp/agy-broken"
+grep -Fxq "KEEP '$broken_dir': '$broken_dir/rules/AGENTS.md' has managed markers that cannot be merged safely." "$tmp/agy-broken"
 [[ -f "$broken_dir/rules/AGENTS.md" ]]
 
-# An incomplete walk never reaches the delete branch.
+# An incomplete walk never archives the plugin.
 guard_home="$tmp/guard-home"
 guard_dir="$guard_home/.gemini/config/plugins/albert"
 seed_legacy "$guard_home"
@@ -462,7 +559,7 @@ mkdir -p "$guard_dir/skills/locked"
 printf 'x\n' > "$guard_dir/skills/locked/file"
 chmod 000 "$guard_dir/skills/locked"
 HOME="$guard_home" XDG_CONFIG_HOME="$guard_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-guard" 2>/dev/null
-grep -q "^KEEP '$guard_dir': the legacy plugin directory could not be enumerated, so nothing was removed.$" "$tmp/agy-guard"
+grep -Fxq "KEEP '$guard_dir': the legacy plugin directory could not be enumerated." "$tmp/agy-guard"
 [[ -f "$guard_dir/plugin.json" ]]
 chmod 700 "$guard_dir/skills/locked"
 
@@ -474,7 +571,7 @@ printf '{\n  "name": "albert",\n  "displayName": "Albert"\n}\n' > "$foreign_dir/
 printf -- '---\nname: albert\nmainAgent: true\n---\n\nA third-party Albert plugin.\n' > "$foreign_dir/agents/albert.md"
 printf '# Third-party rules\n' > "$foreign_dir/rules/AGENTS.md"
 HOME="$foreign_home" XDG_CONFIG_HOME="$foreign_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-foreign"
-assert_absent '^REMOVE ' "$tmp/agy-foreign"
+assert_absent '^ARCHIVE ' "$tmp/agy-foreign"
 assert_absent '^KEEP ' "$tmp/agy-foreign"
 assert_absent 'rm -rf' "$tmp/agy-foreign"
 [[ -f "$foreign_dir/agents/albert.md" && -f "$foreign_dir/rules/AGENTS.md" ]]
@@ -485,7 +582,7 @@ mkdir -p "$partial_dir/agents"
 for role in nora felix vera iris; do printf 'alpha worker\n' > "$partial_dir/agents/$role.md"; done
 printf 'alpha coordinator\n' > "$partial_dir/agents/albert.md"
 HOME="$partial_home" XDG_CONFIG_HOME="$partial_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-partial"
-assert_absent '^REMOVE ' "$tmp/agy-partial"
+assert_absent '^ARCHIVE ' "$tmp/agy-partial"
 assert_absent '^KEEP ' "$tmp/agy-partial"
 [[ -f "$partial_dir/agents/albert.md" ]]
 
@@ -496,7 +593,7 @@ Name: Kanade
 # Personality
 Use short, factual summaries.
 PERSONA
-"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized"
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" --workflow v1 > "$tmp/personalized"
 for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AGENTS.md"; do
   grep -q 'Name: Kanade' "$file"
   grep -q 'Use short, factual summaries.' "$file"
@@ -506,7 +603,7 @@ for role in nora felix vera iris; do
   assert_absent 'Name: Kanade' "$project/.claude/agents/$role.md"
   assert_absent 'Name: Kanade' "$project/.agents/agents/$role.md"
 done
-"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/personalized-again"
+"$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" --workflow v1 > "$tmp/personalized-again"
 assert_absent '^WRITE ' "$tmp/personalized-again"
 grep -q '^Name: Kanade' "$project/PERSONALITY.md"
 
@@ -523,10 +620,19 @@ assert_absent '^WRITE ' "$tmp/invalid"
 custom_source="$tmp/custom-source"
 mkdir -p "$custom_source"
 cp -a "$root/." "$custom_source/"
+"$custom_source/install.sh" --harness pi --scope project --target "$custom_source" --workflow v1 --no-web > "$tmp/install-in-source"
+"$custom_source/install.sh" --harness pi --scope project --target "$custom_source" --workflow v1 --no-web > "$tmp/install-in-source-again"
+assert_absent '^WRITE ' "$tmp/install-in-source-again"
+grep -Fqx '## Workflow v1' "$custom_source/AGENTS.md"
+grep -Fq 'QUINTET WORKFLOW' "$custom_source/AGENTS.md"
+"$custom_source/install.sh" --harness pi --scope project --target "$custom_source" --workflow v2 --no-web > "$tmp/switch-in-source"
+grep -Fqx '## Workflow v2' "$custom_source/AGENTS.md"
+assert_absent '^## Workflow v1$' "$custom_source/AGENTS.md"
 printf 'Name: Rei\n\n# Personality\nKeep it short.\n' > "$custom_source/PERSONALITY.md"
 HOME="$mock_home" XDG_CONFIG_HOME="$mock_home/.config" "$custom_source/install.sh" --harness antigravity --scope global > "$tmp/renamed-global"
 grep -q '"displayName": "Rei"' "$agy_global/plugin.json"
 grep -q 'Name: Rei' "$agy_global/rules/AGENTS.md"
+assert_workflow v2 "$agy_global/rules/AGENTS.md"
 grep -q '^Name: Rei' "$custom_source/PERSONALITY.md"
 [[ ! -e "$mock_home/.config/quintet/PERSONALITY.md" ]]
 for role in nora felix vera iris; do assert_absent 'Name: Rei' "$agy_global/agents/$role.md"; done
@@ -567,4 +673,4 @@ done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf-again"
 assert_absent '^WRITE ' "$tmp/crlf-again"
 
-echo 'install E2E PASS: harnesses, settings and MCP preservation, web access, personality, scope and idempotence'
+echo 'install E2E PASS: harnesses, workflow switching, scope, idempotence, settings, web, personality and legacy archive'
