@@ -89,14 +89,54 @@ fi
 has_harness() { [[ ",$harness," == *",$1,"* ]]; }
 report() { printf '%s\n' "$*"; }
 mkparent() { if (( !dry )); then mkdir -p -- "$(dirname -- "$1")"; fi; }
+
+# Never let mv silently switch to copying and unlinking a source across filesystems.
+rename_only() {
+  if LC_ALL=C mv --help 2>/dev/null | grep -F -- '--no-copy' >/dev/null; then
+    mv --no-copy -- "$1" "$2"
+  elif command -v python3 >/dev/null; then
+    python3 -c 'import os, sys; os.rename(sys.argv[1], sys.argv[2])' "$1" "$2"
+  elif command -v perl >/dev/null; then
+    perl -e 'rename($ARGV[0], $ARGV[1]) or die "rename: $!\n";' -- "$1" "$2"
+  else
+    printf 'No rename-only archive command available.\n' >&2
+    return 1
+  fi
+}
+
+save_antigravity_rule() {
+  local action="$1" rule="$2" backup_root="$3" dir saved
+  if ((dry)); then
+    report "$action RULE '$rule' under '$backup_root' (dry run)"
+    return 0
+  fi
+  # An install and a legacy carry can both write the same rule in one invocation.
+  if [[ -L "$backup_root" || -L "${rule%/*}" ]] || ! mkdir -p -- "$backup_root" ||
+    ! dir="$(mktemp -d "$backup_root/rule.XXXXXXXX")"; then
+    printf 'Cannot create a safe rule backup for %s under %s\n' "$rule" "$backup_root" >&2
+    return 1
+  fi
+  saved="$dir/${rule##*/}"
+  if { [[ "$action" == BACKUP ]] && cp -p -- "$rule" "$saved"; } ||
+    { [[ "$action" == RELOCATE ]] && rename_only "$rule" "$saved"; }; then
+    report "$action RULE '$rule' -> '$saved'"
+  else
+    rmdir -- "$dir" 2>/dev/null || true
+    return 1
+  fi
+}
+
 # Never overwrite an existing nonidentical file silently.
 put() {
-  local src="$1" dst="$2"
+  local src="$1" dst="$2" rule_backups="${3:-}"
   if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then return; fi
   report "WRITE $dst"
+  if [[ -n "$rule_backups" && -e "$dst" ]]; then
+    save_antigravity_rule BACKUP "$dst" "$rule_backups" || return 1
+  fi
   ((dry)) && return 0
   mkparent "$dst" || return 1
-  if [[ -e "$dst" ]]; then
+  if [[ -z "$rule_backups" && -e "$dst" ]]; then
     cp -p -- "$dst" "$dst.albert-backup-$(date +%Y%m%d%H%M%S)-$$" || return 1
   fi
   cp -- "$src" "$dst"
@@ -250,20 +290,23 @@ install_role() {
 # install merge and the legacy migration.
 managed_begin='<!-- ALBERT MANAGED START -->'
 managed_end='<!-- ALBERT MANAGED END -->'
+carry_begin='<!-- QUINTET LEGACY CARRY START -->'
+carry_end='<!-- QUINTET LEGACY CARRY END -->'
 
-# Print a file with the managed block and its markers removed, i.e. the user's own text.
-# Fails when the markers cannot be merged safely, so callers never drop text silently.
+# Print the user's text only if the managed markers form one ordered pair, or are absent.
 managed_outside_text() {
   local src="$1"
   [[ -e "$src" ]] || return 0
-  if grep -Fqx -- "$managed_begin" "$src"; then
-    if ! grep -Fqx -- "$managed_end" "$src"; then
-      echo "Malformed Albert markers: $src" >&2
-      return 1
-    fi
-    awk -v b="$managed_begin" -v e="$managed_end" '$0==b {skip=1; next} $0==e {skip=0; next} !skip {print}' "$src"
-  else
+  if ! grep -Fqx -- "$managed_begin" "$src" && ! grep -Fqx -- "$managed_end" "$src"; then
     cat -- "$src"
+  elif ! awk -v b="$managed_begin" -v e="$managed_end" '
+    $0 == b { if (state) { bad=1; exit }; state=1; next }
+    $0 == e { if (state != 1) { bad=1; exit }; state=2; next }
+    state != 1 { print }
+    END { if (bad || state != 2) exit 1 }
+  ' "$src"; then
+    echo "Malformed Albert markers: $src" >&2
+    return 1
   fi
 }
 
@@ -274,24 +317,22 @@ managed_block_text() {
   awk -v b="$managed_begin" -v e="$managed_end" '$0==b {inside=1; next} $0==e {exit} inside {print}' "$src"
 }
 
-# Write the managed block around rendered content, after any text already in the file. One blank
-# line separates them, and none is added when that text already ends with a blank line, so the
-# outside layout survives exactly.
-append_managed_block() {
-  local dst="$1" rendered="$2"
+# Do not add another separator if the existing text already ends with a blank line.
+append_block() {
+  local dst="$1" body="$2" begin="$3" end="$4"
   if [[ -s "$dst" ]] && [[ "$(tail -c 2 -- "$dst" | od -An -tx1 | tr -d ' \n')" != '0a0a' ]]; then
     printf '\n' >> "$dst" || return 1
   fi
-  printf '%s\n' "$managed_begin" >> "$dst" || return 1
-  cat -- "$rendered" >> "$dst" || return 1
-  printf '%s\n' "$managed_end" >> "$dst"
+  printf '%s\n' "$begin" >> "$dst" || return 1
+  cat -- "$body" >> "$dst" || return 1
+  printf '%s\n' "$end" >> "$dst"
 }
 
 # Add/update only our clearly delimited section. Never discard project instructions.
 # One rendered copy feeds the idempotence comparison and the write, so a global re-install
 # and a project re-install are both exact no-ops after the first run.
 install_instructions() {
-  local dst="$1" rendered temp
+  local dst="$1" rule_backups="${2:-}" rendered temp
   rendered="$(mktemp)"
   if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
   if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst"; then
@@ -303,28 +344,63 @@ install_instructions() {
   if [[ -f "$dst" ]]; then
     if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
   fi
-  append_managed_block "$temp" "$rendered"
-  put "$temp" "$dst"
+  if ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
+    ! put "$temp" "$dst" "$rule_backups"; then
+    rm -f -- "$temp" "$rendered"; return 1
+  fi
   rm -f -- "$temp" "$rendered"
 }
 
-# Fold text carried from a legacy tree into freshly written instructions, keeping the same
-# "user text outside the managed block" contract as install_instructions.
+# A failed archive can be retried. Only a complete matching carry block is a receipt;
+# matching text inside a Markdown example is not evidence of a prior migration.
+append_carried_rules() {
+  local dst="$1" carried="$2" result
+  if cmp -s "$dst" "$carried"; then return 0; fi
+  if awk -v b="$carry_begin" -v e="$carry_end" '
+    NR == FNR { if ($0 == b || $0 == e) { bad=1; exit }; expected=expected $0 "\n"; next }
+    $0 == b { if (inside) { bad=1; exit }; inside=1; text=""; next }
+    $0 == e { if (!inside) { bad=1; exit }; inside=0; if (text == expected) found=1; next }
+    inside { text=text $0 "\n" }
+    END { if (bad || inside) exit 2; exit !found }
+  ' "$carried" "$dst"; then
+    return 0
+  else
+    result=$?
+    [[ "$result" -eq 1 ]] || return 1
+  fi
+  append_block "$dst" "$carried" "$carry_begin" "$carry_end"
+}
+
 merge_carried_instructions() {
-  local dst="$1" carried="$2" rendered temp
+  local dst="$1" carried="$2" rule_backups="$3" rendered temp
   rendered="$(mktemp)" || return 1
   if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
   if ! temp="$(mktemp)"; then rm -f -- "$rendered"; return 1; fi
-  if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
-  # A failed archive can be retried without copying the same block of user rules again.
-  if [[ $'\n'"$(< "$temp")"$'\n' != *$'\n'"$(< "$carried")"$'\n'* ]] &&
-    ! cat -- "$carried" >> "$temp"; then
-    rm -f -- "$temp" "$rendered"; return 1
-  fi
-  if ! append_managed_block "$temp" "$rendered" || ! put "$temp" "$dst"; then
+  if ! managed_outside_text "$dst" > "$temp" || ! append_carried_rules "$temp" "$carried" ||
+    ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
+    ! put "$temp" "$dst" "$rule_backups"; then
     rm -f -- "$temp" "$rendered"; return 1
   fi
   rm -f -- "$temp" "$rendered"
+}
+
+is_antigravity_rule_backup() {
+  local rule="$1" candidate="$2"
+  [[ -f "$candidate" && ! -L "$candidate" && "$candidate" =~ ^"$rule.albert-backup-"[0-9]{14}-[0-9]+$ ]] &&
+    managed_outside_text "$candidate" >/dev/null 2>&1 &&
+    managed_block_text "$candidate" | grep -- '^# Quintet | ' >/dev/null
+}
+
+relocate_antigravity_rule_backups() {
+  local rule="$1" backup_root="$2" candidate
+  [[ ! -L "${rule%/*}" && ! -L "${rule%/rules/AGENTS.md}" ]] || return 0
+  for candidate in "$rule".albert-backup-*; do
+    if is_antigravity_rule_backup "$rule" "$candidate" &&
+      ! save_antigravity_rule RELOCATE "$candidate" "$backup_root"; then
+      report "KEEP RULE '$candidate': could not safely move it outside rule discovery."
+      return 1
+    fi
+  done
 }
 
 install_skills() {
@@ -383,7 +459,7 @@ generated_antigravity_paths() {
 # Archive plugins/albert only after the replacement tree is complete. Generated files
 # may also contain user edits, so preserve the entire legacy tree outside plugin discovery.
 migrate_legacy_antigravity_plugin() {
-  local root="$1" legacy rel entry list extras=() extra_count=0 total=0 carried
+  local root="$1" rule_backups="$2" legacy rel entry list extras=() extra_count=0 total=0 carried
   local backup_root="$HOME/.gemini/config/quintet-backups" backup_dir
   legacy="$(legacy_antigravity_plugin)" || return 0
   # Require a complete, non-empty walk before claiming the tree as ours.
@@ -397,7 +473,8 @@ migrate_legacy_antigravity_plugin() {
     total=$((total + 1))
     rel="${entry#"$legacy"/}"
     # Preserve any symlink inside the legacy tree rather than unlinking it automatically.
-    if [[ -L "$legacy/$rel" ]] || ! grep -Fqx -- "$rel" <(generated_antigravity_paths); then
+    if [[ -L "$entry" ]] || { ! grep -Fqx -- "$rel" <(generated_antigravity_paths) &&
+      ! is_antigravity_rule_backup "$legacy/rules/AGENTS.md" "$entry"; }; then
       extras+=("$rel")
       extra_count=$((extra_count + 1))
     fi
@@ -411,7 +488,7 @@ migrate_legacy_antigravity_plugin() {
     # Carry user text out of the managed block before the old tree goes away.
     if [[ -f "$legacy/rules/AGENTS.md" ]]; then
       carried="$(mktemp)"
-      if ! managed_outside_text "$legacy/rules/AGENTS.md" > "$carried"; then
+      if ! managed_outside_text "$legacy/rules/AGENTS.md" | awk '{ print }' > "$carried"; then
         rm -f -- "$carried"
         report "KEEP '$legacy': '$legacy/rules/AGENTS.md' has managed markers that cannot be merged safely."
         return 0
@@ -419,7 +496,8 @@ migrate_legacy_antigravity_plugin() {
       if grep -q '[^[:space:]]' "$carried"; then
         if ((dry)); then
           report "CARRY '$legacy/rules/AGENTS.md' -> '$root/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)"
-        elif ! merge_carried_instructions "$root/rules/AGENTS.md" "$carried"; then
+          report "BACKUP RULE '$root/rules/AGENTS.md' under '$rule_backups' (dry run; if carrying rules changes the file)"
+        elif ! merge_carried_instructions "$root/rules/AGENTS.md" "$carried" "$rule_backups"; then
           rm -f -- "$carried"
           report "KEEP '$legacy': '$legacy/rules/AGENTS.md' could not be merged into '$root/rules/AGENTS.md'."
           return 0
@@ -431,14 +509,14 @@ migrate_legacy_antigravity_plugin() {
     fi
     if ((dry)); then
       report "ARCHIVE '$legacy' under '$backup_root' (dry run; preserve the intact legacy plugin)"
-    elif ! mkdir -p -- "$backup_root" || ! backup_dir="$(mktemp -d "$backup_root/albert.XXXXXXXX")"; then
+    elif [[ -L "$backup_root" ]] || ! mkdir -p -- "$backup_root" || ! backup_dir="$(mktemp -d "$backup_root/albert.XXXXXXXX")"; then
       report "KEEP '$legacy': could not create an archive directory under '$backup_root'."
-    elif mv -- "$legacy" "$backup_dir/albert"; then
+    elif rename_only "$legacy" "$backup_dir/albert"; then
       report "ARCHIVE '$legacy' -> '$backup_dir/albert'"
     elif rmdir -- "$backup_dir" 2>/dev/null; then
       report "KEEP '$legacy': could not move the legacy plugin into '$backup_root'."
     else
-      report "KEEP '$legacy': the archive move failed. Inspect '$backup_dir' for a partial archive."
+      report "KEEP '$legacy': the archive move failed and '$backup_dir' could not be removed."
     fi
     return 0
   fi
@@ -451,15 +529,17 @@ migrate_legacy_antigravity_plugin() {
 }
 
 install_one() {
-  local tool="$1" root instruction role
+  local tool="$1" root instruction role rule_backups
   if [[ "$tool" == antigravity || "$tool" == agy ]]; then
     if [[ "$scope" == global ]]; then
       root="$HOME/.gemini/config/plugins/quintet"
-      instruction="$root/rules/AGENTS.md"
+      rule_backups="$HOME/.gemini/config/quintet-rule-backups"
     else
       root="$target/.agents"
-      instruction="$root/rules/AGENTS.md"
+      rule_backups="$target/.quintet-rule-backups"
     fi
+    instruction="$root/rules/AGENTS.md"
+    relocate_antigravity_rule_backups "$instruction" "$rule_backups" || return 1
     if [[ "$scope" == global ]]; then
       local manifest="$root/plugin.json"
       local temp_manifest; temp_manifest="$(mktemp)"
@@ -479,11 +559,11 @@ EOF
       put "$temp_manifest" "$manifest"
       rm -f -- "$temp_manifest"
     fi
-    install_instructions "$instruction"
+    install_instructions "$instruction" "$rule_backups" || return 1
     for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
     install_skills "$root"
     # Migrate only after the replacement tree is fully written and verified above.
-    if [[ "$scope" == global ]]; then migrate_legacy_antigravity_plugin "$root"; fi
+    if [[ "$scope" == global ]]; then migrate_legacy_antigravity_plugin "$root" "$rule_backups"; fi
     return
   fi
   if [[ "$scope" == global ]]; then

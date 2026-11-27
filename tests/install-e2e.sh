@@ -388,16 +388,23 @@ for scope in project global; do
   if [[ "$scope" == project ]]; then
     scope_args=(--scope project --target "$project")
     rules=("${project_rules[@]}")
+    rule_backups="$project/.quintet-rule-backups"
   else
     scope_args=(--scope global)
     rules=("${global_rules[@]}")
+    rule_backups="$HOME/.gemini/config/quintet-rule-backups"
   fi
+  agy_rule="${rules[2]}"
   for file in "${rules[@]}"; do assert_workflow v2 "$file"; done
   "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow v1 --dry-run > "$tmp/workflow-preview"
   grep -Fxq 'WORKFLOW v1' "$tmp/workflow-preview"
   for file in "${rules[@]}"; do assert_workflow v2 "$file"; done
+  grep -Fq "BACKUP RULE '$agy_rule' under '$rule_backups' (dry run)" "$tmp/workflow-preview"
+  [[ ! -e "$rule_backups" ]]
 
+  backup_count=0
   for edition in v1 v2; do
+    cp -- "$agy_rule" "$tmp/previous-rule-$edition"
     "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow "$edition" > "$tmp/workflow-switch"
     grep -Fxq "WORKFLOW $edition" "$tmp/workflow-switch"
     [[ "$(grep -c '^WRITE ' "$tmp/workflow-switch")" -eq 3 ]]
@@ -405,13 +412,49 @@ for scope in project global; do
       grep -Fxq "WRITE $file" "$tmp/workflow-switch"
       assert_workflow "$edition" "$file"
     done
-    [[ "$(wc -c < "${rules[2]}")" -le 24000 ]]
+    [[ "$(wc -c < "$agy_rule")" -le 24000 ]]
+    [[ "$(ls -A -- "${agy_rule%/*}")" == AGENTS.md ]]
+    saved_rule="$(find "$rule_backups" -type f -name AGENTS.md -exec cmp -s -- {} "$tmp/previous-rule-$edition" \; -print)"
+    [[ -f "$saved_rule" ]]
+    grep -Fxq "BACKUP RULE '$agy_rule' -> '$saved_rule'" "$tmp/workflow-switch"
+    backup_count=$((backup_count + 1))
+    [[ "$(find "$rule_backups" -type f | wc -l)" -eq "$backup_count" ]]
     if [[ "$scope" == project ]]; then
       for file in "${global_rules[@]}"; do assert_workflow v2 "$file"; done
     fi
     "$root/install.sh" --harness pi,claude,antigravity "${scope_args[@]}" --workflow "$edition" > "$tmp/workflow-again"
-    assert_absent '^WRITE ' "$tmp/workflow-again"
+    assert_absent '^WRITE \|^BACKUP RULE \|^RELOCATE RULE ' "$tmp/workflow-again"
   done
+
+  # Only regular files with the exact legacy name and a Quintet managed block move.
+  stale="$agy_rule.albert-backup-20261127101515-202082"
+  foreign="$agy_rule.albert-backup-20261127101515-202083"
+  link="$agy_rule.albert-backup-20261127101515-202084"
+  dir="$agy_rule.albert-backup-20261127101515-202085"
+  other="$agy_rule.albert-backup-20261127101515-notes"
+  cp -- "$tmp/previous-rule-v2" "$tmp/stale-rule"
+  printf '\nCustom text from the previous install.\n' >> "$tmp/stale-rule"
+  cp -- "$tmp/stale-rule" "$stale"
+  cp -- "$tmp/stale-rule" "$other"
+  printf '# User rule\n' > "$foreign"
+  ln -s -- "$tmp/stale-rule" "$link"
+  mkdir -- "$dir"
+  "$root/install.sh" --harness antigravity "${scope_args[@]}" --dry-run > "$tmp/relocate-preview"
+  grep -Fxq "RELOCATE RULE '$stale' under '$rule_backups' (dry run)" "$tmp/relocate-preview"
+  [[ "$(grep -c '^RELOCATE RULE ' "$tmp/relocate-preview")" -eq 1 ]]
+  [[ "$(find "$rule_backups" -type f | wc -l)" -eq "$backup_count" ]]
+  cmp -- "$tmp/stale-rule" "$stale"
+  "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/relocate"
+  assert_absent '^WRITE \|^ARCHIVE \|^KEEP ' "$tmp/relocate"
+  [[ ! -e "$stale" && "$(grep -c '^RELOCATE RULE ' "$tmp/relocate")" -eq 1 ]]
+  relocated="$(find "$rule_backups" -type f -name "${stale##*/}")"
+  cmp -- "$tmp/stale-rule" "$relocated"
+  grep -Fxq "RELOCATE RULE '$stale' -> '$relocated'" "$tmp/relocate"
+  [[ "$(readlink -- "$link")" == "$tmp/stale-rule" && -d "$dir" ]]
+  grep -Fxq '# User rule' "$foreign"
+  cmp -- "$tmp/stale-rule" "$other"
+  "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/relocate-again"
+  assert_absent '^WRITE \|^BACKUP RULE \|^RELOCATE RULE ' "$tmp/relocate-again"
 done
 unset MOCK_PI_PACKAGES
 for file in "${project_rules[@]}" "${global_rules[@]}"; do
@@ -441,6 +484,7 @@ old_dir="$old_home/.gemini/config/plugins/albert"
 seed_legacy "$old_home"
 printf '\nCustomized legacy worker instruction.\n' >> "$old_dir/agents/felix.md"
 printf '\nCustomized legacy skill.\n' >> "$old_dir/skills/verification/SKILL.md"
+cp -- "$old_dir/rules/AGENTS.md" "$old_dir/rules/AGENTS.md.albert-backup-20261127101515-202082"
 cp -a "$old_dir" "$tmp/expected-archive"
 HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global \
   --workflow v1 > "$tmp/agy-old"
@@ -460,40 +504,80 @@ assert_absent '^KEEP ' "$tmp/agy-old-again"
 assert_absent '^WRITE ' "$tmp/agy-old-again"
 [[ "$(ls -A "$old_home/.gemini/config/plugins")" == quintet ]]
 
-# (a) User text outside the managed block survives the migration.
+# Switching a live Quintet install while carrying legacy rules writes twice. Both previous
+# versions survive. A matching fenced example is not an active copy of the carried rules.
 carry_home="$tmp/carry-home"
 carry_dir="$carry_home/.gemini/config/plugins/albert"
 carry_rules="$carry_dir/rules/AGENTS.md"
 carry_quintet="$carry_home/.gemini/config/plugins/quintet"
+carry_dest="$carry_quintet/rules/AGENTS.md"
+mkdir -p "$carry_home"
+HOME="$carry_home" "$root/install.sh" --harness antigravity --scope global --workflow v2 > "$tmp/agy-carry-seed"
 seed_legacy "$carry_home"
 printf '\n## House rules\nKeep our bespoke policy.\n' >> "$carry_rules"
-HOME="$carry_home" XDG_CONFIG_HOME="$carry_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-carry"
-grep -q "^CARRY '$carry_rules' -> '$carry_quintet/rules/AGENTS.md' (your text outside the managed block was preserved)$" "$tmp/agy-carry"
+{
+  printf 'Example of the old rules:\n\n```markdown\n'
+  awk '$0=="<!-- ALBERT MANAGED START -->" {inside=1; next}
+    $0=="<!-- ALBERT MANAGED END -->" {inside=0; next} !inside {print}' "$carry_rules"
+  printf '```\n\n'
+  cat -- "$carry_dest"
+} > "$tmp/carry-v2"
+cp -- "$tmp/carry-v2" "$carry_dest"
+HOME="$carry_home" "$root/install.sh" --harness antigravity --scope global --workflow v1 > "$tmp/agy-carry"
+grep -Fxq "CARRY '$carry_rules' -> '$carry_dest' (your text outside the managed block was preserved)" "$tmp/agy-carry"
 grep -Fq "ARCHIVE '$carry_dir' -> '$carry_home/.gemini/config/quintet-backups/" "$tmp/agy-carry"
-grep -Fqx 'Keep our bespoke policy.' "$carry_quintet/rules/AGENTS.md"
-# The carried text must sit outside the managed block, which is rewritten in full.
-carry_outside="$(awk '$0=="<!-- ALBERT MANAGED START -->" {exit} {print}' "$carry_quintet/rules/AGENTS.md")"
-grep -Fq 'Keep our bespoke policy.' <<< "$carry_outside"
-# The carried text sits outside the full coordinator managed block.
-grep -q '^## Dynamic workstreams, ownership, and acceptance$' "$carry_quintet/rules/AGENTS.md"
-grep -q '^## Dispatch$' "$carry_quintet/rules/AGENTS.md"
-assert_absent 'cross-project policy' "$carry_quintet/rules/AGENTS.md"
+[[ "$(ls -A -- "$carry_quintet/rules")" == AGENTS.md ]]
+carry_backups=("$carry_home"/.gemini/config/quintet-rule-backups/rule.*/AGENTS.md)
+[[ "${#carry_backups[@]}" -eq 2 ]]
+[[ "$(grep -c '^BACKUP RULE ' "$tmp/agy-carry")" -eq 2 ]]
+saved_v2="$(grep -lFx -- '## Workflow v2' "${carry_backups[@]}")"
+saved_v1="$(grep -lFx -- '## Workflow v1' "${carry_backups[@]}")"
+cmp -- "$tmp/carry-v2" "$saved_v2"
+prefix_bytes "$tmp/carry-v2" > "$tmp/carry-v2-prefix"
+prefix_bytes "$saved_v1" > "$tmp/carry-v1-prefix"
+cmp -- "$tmp/carry-v2-prefix" "$tmp/carry-v1-prefix"
+assert_workflow v1 "$carry_dest"
+awk '
+  $0 == "<!-- QUINTET LEGACY CARRY START -->" { if (fenced || managed) exit 1; carry=1; next }
+  $0 == "<!-- QUINTET LEGACY CARRY END -->" { carry=0; next }
+  /^```/ { fenced=!fenced }
+  $0 == "<!-- ALBERT MANAGED START -->" { managed=1 }
+  carry && $0 == "Keep our bespoke policy." { rules++ }
+  END { if (rules != 1) exit 1 }
+' "$carry_dest"
+[[ "$(grep -Fxc 'Keep our bespoke policy.' "$carry_dest")" -eq 2 ]]
 [[ ! -e "$carry_dir" ]]
 
-# A failed archive preserves the old plugin. Retrying does not duplicate user rules.
+# Force a rename-only failure. The legacy tree remains intact and retry does not carry twice.
 retry_home="$tmp/retry-home"
 retry_dir="$retry_home/.gemini/config/plugins/albert"
 retry_backup_root="$retry_home/.gemini/config/quintet-backups"
+retry_dest="$retry_home/.gemini/config/plugins/quintet/rules/AGENTS.md"
 seed_legacy "$retry_home"
 printf '\nKeep this on retry.\n' >> "$retry_dir/rules/AGENTS.md"
-touch "$retry_backup_root"
-HOME="$retry_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry" 2>&1
-grep -Fq "KEEP '$retry_dir': could not create an archive directory" "$tmp/agy-retry"
-[[ -f "$retry_dir/agents/felix.md" ]]
-rm -- "$retry_backup_root"
+cp -a -- "$retry_dir" "$tmp/retry-original"
+mkdir -p "$tmp/fail-rename"
+cat > "$tmp/fail-rename/mv" <<'MV'
+#!/usr/bin/env bash
+case "$1" in
+  --help) printf '  --no-copy  do not copy across filesystems\n' ;;
+  --no-copy) printf 'simulated cross-filesystem rename refusal\n' >&2; exit 1 ;;
+  *) exec "$REAL_MV" "$@" ;;
+esac
+MV
+chmod +x "$tmp/fail-rename/mv"
+REAL_MV="$(command -v mv)" PATH="$tmp/fail-rename:$PATH" HOME="$retry_home" \
+  "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry" 2>&1
+grep -Fxq 'simulated cross-filesystem rename refusal' "$tmp/agy-retry"
+grep -Fq "KEEP '$retry_dir': could not move the legacy plugin" "$tmp/agy-retry"
+diff -r -- "$tmp/retry-original" "$retry_dir"
+grep -Fxq 'Keep this on retry.' "$retry_dest"
+cp -- "$retry_dest" "$tmp/retry-dest-before"
 HOME="$retry_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry-again"
 grep -Fq "ARCHIVE '$retry_dir' -> '$retry_backup_root/" "$tmp/agy-retry-again"
-[[ "$(grep -Fxc 'Keep this on retry.' "$retry_home/.gemini/config/plugins/quintet/rules/AGENTS.md")" -eq 1 ]]
+assert_absent '^WRITE \|^BACKUP RULE ' "$tmp/agy-retry-again"
+cmp -- "$tmp/retry-dest-before" "$retry_dest"
+[[ "$(grep -Fxc 'Keep this on retry.' "$retry_dest")" -eq 1 ]]
 
 # A dry run previews the carry and archive and changes nothing.
 dry_home="$tmp/dry-home"
@@ -503,8 +587,10 @@ printf '\n## House rules\nDry run text.\n' >> "$dry_dir/rules/AGENTS.md"
 HOME="$dry_home" XDG_CONFIG_HOME="$dry_home/.config" "$root/install.sh" --harness antigravity --scope global --dry-run > "$tmp/agy-dry-legacy"
 grep -q "^CARRY '$dry_dir/rules/AGENTS.md' -> '$dry_home/.gemini/config/plugins/quintet/rules/AGENTS.md' (dry run; your text outside the managed block would be preserved)$" "$tmp/agy-dry-legacy"
 grep -Fxq "ARCHIVE '$dry_dir' under '$dry_home/.gemini/config/quintet-backups' (dry run; preserve the intact legacy plugin)" "$tmp/agy-dry-legacy"
+grep -Fq "BACKUP RULE '$dry_home/.gemini/config/plugins/quintet/rules/AGENTS.md' under '$dry_home/.gemini/config/quintet-rule-backups' (dry run;" "$tmp/agy-dry-legacy"
 [[ -f "$dry_dir/rules/AGENTS.md" ]]
 [[ ! -e "$dry_home/.gemini/config/plugins/quintet" && ! -e "$dry_home/.gemini/config/quintet-backups" ]]
+[[ ! -e "$dry_home/.gemini/config/quintet-rule-backups" ]]
 
 # Entries this installer does not write stop the migration and are named.
 keep_home="$tmp/keep-home"
@@ -546,10 +632,13 @@ assert_absent '^ARCHIVE ' "$tmp/agy-link"
 broken_home="$tmp/broken-home"
 broken_dir="$broken_home/.gemini/config/plugins/albert"
 seed_legacy "$broken_home"
-printf '<!-- ALBERT MANAGED START -->\nno end marker\n' > "$broken_dir/rules/AGENTS.md"
+# Even after a valid pair, a second unmatched START must not hide user rules.
+printf '\n<!-- ALBERT MANAGED START -->\nDo not drop this rule.\n' >> "$broken_dir/rules/AGENTS.md"
+cp -a -- "$broken_dir" "$tmp/broken-original"
 HOME="$broken_home" XDG_CONFIG_HOME="$broken_home/.config" "$root/install.sh" --harness antigravity --scope global 2>/dev/null > "$tmp/agy-broken"
 grep -Fxq "KEEP '$broken_dir': '$broken_dir/rules/AGENTS.md' has managed markers that cannot be merged safely." "$tmp/agy-broken"
-[[ -f "$broken_dir/rules/AGENTS.md" ]]
+assert_absent '^ARCHIVE \|^CARRY ' "$tmp/agy-broken"
+diff -r -- "$tmp/broken-original" "$broken_dir"
 
 # An incomplete walk never archives the plugin.
 guard_home="$tmp/guard-home"

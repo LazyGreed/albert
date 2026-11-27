@@ -30,9 +30,11 @@ selects `v2`.
 ./install.sh --harness antigravity --scope project --target /path/to/project
 ```
 
-Rerun the installer with the same harness and scope to switch workflows. It
-replaces the managed instructions and preserves the text outside that block.
-Restart the harness session to load the updated rules.
+Use the current installer with the same harness and scope to switch workflows.
+Do not run an installer from an archived branch: it can recreate the legacy
+Albert plugin. The current installer replaces the managed instructions and
+preserves the text outside that block. Restart the harness session to load the
+updated rules.
 
 | Option | Purpose |
 | --- | --- |
@@ -64,6 +66,12 @@ eligible legacy `plugins/albert` tree intact under
 rules outside the legacy managed block into the new rules. If the old tree
 contains extra entries, the installer lists them and leaves the tree in place.
 Preview with `--dry-run` or the terminal installer's review screen.
+
+Antigravity coordinator rule backups live outside rule discovery: in
+`~/.gemini/config/quintet-rule-backups` for global installs or
+`PROJECT/.quintet-rule-backups` for project installs. Reinstalling also moves
+recognized Quintet rule backups out of the active rules directory. Use
+`--dry-run` to see which files would move.
 
 An earlier project install may still have `.agents/agents/albert.md`. If you
 previously selected that coordinator, move the file somewhere outside agent
