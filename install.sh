@@ -40,7 +40,9 @@ The installer refuses Antigravity rules over 24000 bytes and checks Codex
 AGENTS.md against the default Codex budget of 32768 bytes.
 Selecting Pi requires Pi >=1.1.0 and Python 3. The installer validates the pinned
 Pi packages and installs absent pins in the Pi agent directory
-(PI_CODING_AGENT_DIR or ~/.pi/agent). It creates subagents.json if absent.
+(PI_CODING_AGENT_DIR or ~/.pi/agent). The effective subagent fallback must be
+"none". The installer preserves existing subagents.json files and creates a
+strict global default if absent.
 Use --no-web to omit web tool grants the installer adds to worker profiles.
 Codex uses its own web settings.
 --no-web does not skip the Pi package installs. No bundled settings files are copied.
@@ -349,19 +351,11 @@ install_role() {
       *) tools='read, grep, find, ls' ;;
     esac
   elif [[ "$tool" == antigravity || "$tool" == agy ]]; then
-    if ((with_web)); then
-      case "$role" in
-        felix) tools='read_file, edit_file, write_file, run_command, manage_task, search_web' ;;
-        iris) tools='read_file' ;;
-        *) tools='read_file, search_web' ;;
-      esac
-    else
-      case "$role" in
-        felix) tools='read_file, edit_file, write_file, run_command, manage_task' ;;
-        iris) tools='read_file, run_command, manage_task' ;;
-        *) tools='read_file' ;;
-      esac
-    fi
+    case "$role" in
+      felix) tools='read_file, edit_file, write_file, run_command, manage_task' ;;
+      *) tools='read_file' ;;
+    esac
+    if ((with_web)) && [[ "$role" != iris ]]; then tools+=', search_web'; fi
   else
     case "$role" in
       felix) tools='Read, Grep, Glob, Bash, Edit, Write' ;;
@@ -631,6 +625,7 @@ install_skills() {
       put "$file" "$root/skills/$rel" || return 1
     done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
   done
+  put "$source_dir/docs/workflow.md" "$root/skills/verification/references/workflow.md"
 }
 
 # Older installs wrote the Antigravity coordinator to plugins/albert.
@@ -657,8 +652,7 @@ _generated_path() {
   done
 }
 
-# Every relative path a global Antigravity install generates. Compared against a legacy
-# tree, so anything else is user content that automatic migration must not destroy.
+# Managed paths from legacy Antigravity installs. Other paths are treated as user content.
 generated_antigravity_paths() {
   local role skill file rel
   {
@@ -841,6 +835,8 @@ import re
 import sys
 
 user_settings, project_settings, listing, *pins = sys.argv[1:]
+# Match JavaScript String.trim() in Pi and pi-subagents.
+js_whitespace = '\t\n\v\f\r \u00a0\u1680\u2000\u2001\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200a\u2028\u2029\u202f\u205f\u3000\ufeff'
 resolved = {}
 source = None
 for line in listing.splitlines():
@@ -860,6 +856,43 @@ def read_json(path):
     return data
 
 
+def parse_npm_spec(spec):
+    spec = spec.strip(js_whitespace)
+    match = re.fullmatch(r'(@?[^@]+(?:/[^@]+)?)(?:@(.+))?', spec)
+    return match.groups() if match else (spec, None)
+
+
+def reject_json_constant(value):
+    raise ValueError(f'{value} is not a JSON value')
+
+
+def check_subagent_fallback():
+    paths = [Path(user_settings).with_name('subagents.json')]
+    if project_settings:
+        paths.append(Path(project_settings).with_name('subagents.json'))
+    effective, source = 'none', paths[0]  # The installer creates this default when absent.
+    for path in paths:
+        try:
+            config = json.loads(path.read_text(encoding='utf-8'), parse_constant=reject_json_constant)
+        except FileNotFoundError:
+            if path.is_symlink():
+                raise ValueError(f'cannot read Pi subagent settings from {path}. Repair the link before retrying.')
+            continue
+        except (OSError, ValueError) as error:
+            raise ValueError(f'cannot read Pi subagent settings from {path}. Repair the file before retrying. {error}') from error
+        value = config.get('fallbackSubagent') if isinstance(config, dict) else None
+        if isinstance(value, str):
+            value = value.strip(js_whitespace).lower()
+        if value is False:
+            effective, source = 'none', path
+        elif isinstance(value, str) and value:
+            effective, source = value, path
+        elif path == paths[0]:
+            effective, source = None, path
+    if effective != 'none':
+        raise ValueError(f'set "fallbackSubagent": "none" in {source} before retrying. Pi must reject unresolved worker names.')
+
+
 def registrations(filename, user):
     if not filename:
         return
@@ -874,11 +907,11 @@ def registrations(filename, user):
         source = entry.get('source') if isinstance(entry, dict) else entry
         if not isinstance(source, str) or not source or '\n' in source or '\r' in source:
             raise ValueError(f'invalid package source in {path}')
-        npm = re.match(r'^npm:((?:@[^/]+/)?[^@/]+)', source)
+        npm_name, npm_version = parse_npm_spec(source[4:]) if source.startswith('npm:') else (None, None)
         installed = resolved.get(source) if user else None
-        if npm and not user:
-            installed = path.parent / 'npm' / 'node_modules' / npm[1]
-        elif not npm and not installed and not re.match(r'^(git:|https?://|ssh://)', source):
+        if npm_name and not user:
+            installed = path.parent / 'npm' / 'node_modules' / npm_name
+        elif npm_name is None and not installed and not re.match(r'^(git:|https?://|ssh://)', source):
             installed = path.parent / os.path.expanduser(source)
         manifest = None
         if installed is not None:
@@ -888,7 +921,8 @@ def registrations(filename, user):
                 manifest = read_json(manifest_path)
             except (FileNotFoundError, NotADirectoryError):
                 pass
-        yield path, source, entry, npm[1] if npm else None, manifest
+        alias = parse_npm_spec(npm_version[4:])[0] if npm_version and npm_version.startswith('npm:') else None
+        yield path, source, entry, npm_name, alias, manifest
 
 
 try:
@@ -898,11 +932,10 @@ try:
         name, version = pin[4:].rsplit('@', 1)
         short_name = name.rsplit('/', 1)[-1]
         matches = []
-        for path, source, entry, npm_name, manifest in entries:
+        for path, source, entry, npm_name, alias, manifest in entries:
             basename = re.split(r'[@#]', Path(source.rstrip('/')).name, maxsplit=1)[0]
-            alternate = not npm_name and basename in (short_name, f'{short_name}.git')
-            alias = npm_name and re.search(r'@npm:' + re.escape(name) + r'(?:@|$)', source)
-            if npm_name == name or (manifest or {}).get('name') == name or alternate or alias:
+            alternate = npm_name is None and basename in (short_name, f'{short_name}.git')
+            if name in (npm_name, alias, (manifest or {}).get('name')) or alternate:
                 matches.append((path, source, entry, manifest))
         if not matches:
             missing.append(pin)
@@ -916,9 +949,14 @@ try:
             if not manifest or (manifest.get('name'), manifest.get('version')) != (name, version):
                 actual = f"{manifest.get('name')}@{manifest.get('version')}" if manifest else 'missing package manifest'
                 raise ValueError(f'{pin} in {path} resolves to {actual}. Repair that installation before retrying.')
-    print('\n'.join(missing))
 except (OSError, ValueError) as error:
     sys.exit(f'Cannot inspect Pi packages: {error}')
+
+try:
+    check_subagent_fallback()
+except ValueError as error:
+    sys.exit(f'Cannot verify strict Pi subagent fallback: {error}')
+print('\n'.join(missing))
 PY
 }
 

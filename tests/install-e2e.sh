@@ -208,7 +208,7 @@ assert_absent 'pi-web-access/' "$pkg_project/.pi/agents/nora.md"
 [[ ! -e "$pkg_project/.pi/subagents.json" ]]
 cmp -- "$tmp/expected-subagents.json" "$pkg_home/.pi/agent/subagents.json"
 [[ "$(tail -c 1 "$pkg_home/.pi/agent/subagents.json" | od -An -tx1 | tr -d ' ')" == 0a ]]
-printf '{ "defaultJoinMode": "wait", "extra": true }\n' > "$tmp/user-subagents.json"
+printf '{ "defaultJoinMode": "wait", "fallbackSubagent": " NONE ", "extra": true }\n' > "$tmp/user-subagents.json"
 cp "$tmp/user-subagents.json" "$pkg_home/.pi/agent/subagents.json"
 : > "$MOCK_PI_LOG"
 HOME="$pkg_home" PI_CODING_AGENT_DIR="$pkg_home/.pi/agent" \
@@ -219,7 +219,7 @@ grep -Fq "SKIP PI PACKAGE: $web_pin is already registered; unchanged." "$tmp/pkg
 cmp -- "$tmp/user-subagents.json" "$pkg_home/.pi/agent/subagents.json"
 
 # Refuse conflicting, filtered, stale, and ambiguous registrations before any change.
-for problem in unpinned filtered mismatched missing duplicate shadowed local-alias; do
+for problem in unpinned filtered mismatched missing duplicate shadowed spaced-shadow spaced-alias local-alias; do
   conflict="$tmp/pi-conflict-$problem"
   agent_home="$conflict/home/agent"
   conflict_project="$conflict/project"
@@ -243,8 +243,13 @@ for problem in unpinned filtered mismatched missing duplicate shadowed local-ali
       printf '{"packages":["%s","%s","%s"]}\n' "$subagents_pin" "$subagents_pin" "$web_pin" > "$settings"
       message='ambiguous registrations'
       ;;
-    shadowed)
-      printf '{"packages":["npm:@tintinweb/pi-subagents@0.25.0"]}\n' > "$conflict_project/.pi/settings.json"
+    shadowed|spaced-shadow|spaced-alias)
+      case "$problem" in
+        shadowed) source='npm:@tintinweb/pi-subagents@0.25.0' ;;
+        spaced-shadow) source='npm: @tintinweb/pi-subagents@0.25.0' ;;
+        spaced-alias) source='npm: worker-tools@npm:@tintinweb/pi-subagents@0.25.0' ;;
+      esac
+      printf '{"packages":["%s"]}\n' "$source" > "$conflict_project/.pi/settings.json"
       message='ambiguous registrations'
       ;;
     local-alias)
@@ -265,6 +270,47 @@ for problem in unpinned filtered mismatched missing duplicate shadowed local-ali
   snapshot_tree "$conflict" "$tmp/conflict-after"
   diff -u "$tmp/conflict-before" "$tmp/conflict-after"
 done
+
+# The pinned resolver merges the sanitized project key over the global key.
+fallback="$tmp/pi-fallback"
+agent_home="$fallback/home/agent"
+fallback_project="$fallback/project"
+global_config="$agent_home/subagents.json"
+project_config="$fallback_project/.pi/subagents.json"
+mkdir -p "$agent_home" "$fallback_project/.pi"
+install_pi_fallback() {
+  HOME="$fallback/home" PI_CODING_AGENT_DIR="$agent_home" \
+    "$root/install.sh" --harness pi,claude "$@" > "$tmp/fallback-out" 2> "$tmp/fallback-err"
+}
+assert_unsafe_fallback() {
+  local path="$1"
+  shift
+  snapshot_tree "$fallback" "$tmp/fallback-before"
+  if install_pi_fallback "$@"; then
+    printf 'Accepted an unsafe Pi fallback in %s\n' "$path" >&2
+    exit 1
+  fi
+  grep -Fq "set \"fallbackSubagent\": \"none\" in $path" "$tmp/fallback-err"
+  assert_absent '^WRITE \|^DONE$' "$tmp/fallback-out"
+  [[ ! -s "$MOCK_PI_LOG" ]]
+  snapshot_tree "$fallback" "$tmp/fallback-after"
+  diff -u "$tmp/fallback-before" "$tmp/fallback-after"
+}
+printf '{ "defaultJoinMode": "wait" }\n' > "$global_config"
+assert_unsafe_fallback "$global_config" --scope global
+printf '{ "widgetMode": "all" }\n' > "$project_config"
+assert_unsafe_fallback "$global_config" --scope project --target "$fallback_project"
+printf '{ "fallbackSubagent": "none", "defaultJoinMode": "wait" }\n' > "$global_config"
+printf '{ "fallbackSubagent": "general-purpose" }\n' > "$project_config"
+assert_unsafe_fallback "$project_config" --scope project --target "$fallback_project"
+printf '{ "fallbackSubagent": "general-purpose", "defaultJoinMode": "wait" }\n' > "$global_config"
+printf '{ "fallbackSubagent": false, "widgetMode": "all" }\n' > "$project_config"
+cp -- "$global_config" "$tmp/global-subagents-before"
+cp -- "$project_config" "$tmp/project-subagents-before"
+install_pi_fallback --scope project --target "$fallback_project"
+cmp -- "$tmp/global-subagents-before" "$global_config"
+cmp -- "$tmp/project-subagents-before" "$project_config"
+[[ "$(grep -c '^pi install ' "$MOCK_PI_LOG")" -eq 2 ]]
 
 claude_only="$tmp/claude-only-home"
 mkdir -p "$claude_only"
@@ -304,6 +350,12 @@ for tool in pi claude; do
   assert_absent 'Always-on' "$project/.$tool/skills/alien-science-ideation/SKILL.md"
   cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.$tool/skills/weight-space-network-audit/SKILL.md"
   assert_refs "$project/.$tool/skills/weight-space-network-audit/references"
+  verification="$project/.$tool/skills/verification"
+  assert_absent 'Denia\|/blob/main/docs/workflow.md' "$verification/SKILL.md"
+  grep -Fq 'The coordinator runs the v2 graph gates.' "$verification/SKILL.md"
+  grep -Fq 'scripts/check-graph.sh --help' "$verification/SKILL.md"
+  grep -Fq 'references/workflow.md#dependency-graph' "$verification/SKILL.md"
+  cmp -- "$root/docs/workflow.md" "$verification/references/workflow.md"
   for role in nora felix vera iris; do
     assert_absent 'Alien Science Ideation is always on' "$project/.$tool/agents/$role.md"
     assert_absent 'Always-on Alien Science' "$project/.$tool/agents/$role.md"
@@ -572,6 +624,14 @@ grep -Fxq 'tools: [read_file]' "$project/.agents/agents/iris.md"
 [[ "$(grep -c '<!-- QUINTET MANAGED START -->' "$project/.agents/rules/AGENTS.md")" -eq 1 ]]
 "$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-again"
 assert_absent '^WRITE ' "$tmp/agy-project-again"
+cp -- "$project/.agents/agents/iris.md" "$tmp/agy-web-iris"
+"$root/install.sh" --harness antigravity --scope project --target "$project" --no-web > "$tmp/agy-project-no-web"
+for role in nora vera iris; do
+  grep -Fxq 'tools: [read_file]' "$project/.agents/agents/$role.md"
+done
+cmp -- "$tmp/agy-web-iris" "$project/.agents/agents/iris.md"
+grep -Fxq 'tools: [read_file, edit_file, write_file, run_command, manage_task]' "$project/.agents/agents/felix.md"
+"$root/install.sh" --harness antigravity --scope project --target "$project" > "$tmp/agy-project-restore-web"
 
 # Antigravity CLI global-scope install under mocked HOME without touching real $HOME.
 # The preview must name the quintet plugin directory before anything is written.
@@ -1261,11 +1321,17 @@ for role, desc in expected.items():
         raise SystemExit(f"agent mismatch: {role}")
 PY
 }
+# The installer bundles the workflow guide alongside the source verification skill.
+cp -R -- "$root/skills/verification" "$tmp/expected-verification"
+mkdir -p "$tmp/expected-verification/references"
+cp -- "$root/docs/workflow.md" "$tmp/expected-verification/references/workflow.md"
 assert_codex_skills() {
   local skills_dir="$1" skill tool
-  for skill in architecture domain-modeling documentation research verification alien-science-ideation weight-space-network-audit; do
+  for skill in architecture domain-modeling documentation research alien-science-ideation weight-space-network-audit; do
     diff -r -- "$root/skills/$skill" "$skills_dir/$skill"
   done
+  cmp -- "$root/docs/workflow.md" "$skills_dir/verification/references/workflow.md"
+  diff -r -- "$tmp/expected-verification" "$skills_dir/verification"
   for tool in check-graph.sh check-ownership.sh check-readonly.sh; do
     [[ -x "$skills_dir/verification/scripts/$tool" ]] || return 1
   done

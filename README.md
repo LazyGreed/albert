@@ -19,7 +19,11 @@ checks the exact registrations and installed manifests. It registers missing
 pins globally, including for project installs, and reports conflicts before
 changing settings. Resolve reported legacy, filtered, duplicate, or mismatched
 registrations in Pi before retrying. Quintet creates `subagents.json` in
-`${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` if absent.
+`${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}` if absent. Existing files keep their
+contents. Pi must resolve `fallbackSubagent` to `none` so unresolved worker
+names fail. For a project install, `.pi/subagents.json` can override that
+setting. If the installer reports an unsafe fallback, set
+`"fallbackSubagent": "none"` in the reported file and retry.
 
 Run `./install.sh` in a terminal. Use the arrow keys and Enter or Space to
 select your harness, scope, and workflow. Review the choices before installing.
