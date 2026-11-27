@@ -5,27 +5,33 @@
 set -euo pipefail
 LC_ALL=C
 
+# Let Git discover each supplied repository and use its recorded commit history.
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH \
+  GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
+  GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM \
+  GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
+export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
+
 usage() {
   cat <<'USAGE'
 Usage:
   check-graph.sh ready [--repo <dir>] <spec>
-  check-graph.sh invalidate [--repo <dir>] <spec>
-  check-graph.sh join --integration-ref <branch@sha> --integration-worktree <dir> [--repo <dir>] <spec>
+  check-graph.sh invalidate --base-ref BRANCH@SHA [--repo <dir>] <spec>
+  check-graph.sh join --base-ref BRANCH@SHA --integration-ref BRANCH@SHA
+                      --integration-worktree <dir> [--repo <dir>] <spec>
 
 Commands:
-  ready        Reject unknown dependencies, dependency cycles, mutual read/write
-               cycles, write/write overlaps, and a read of another stream's write
-               unless the reader depends on that writer. A depends target must be
-               status PASS, with a worktree whose branch and HEAD equal ref.
-               A missing worktree is not a pass. Missing status is not a pass.
-  invalidate   Require each stream worktree clean and its branch plus HEAD equal
-               to ref. A verified_against input is stale when its old sha is missing
-               or the upstream diff intersects that stream's read patterns, including
-               either path of a rename or copy. A non-overlapping diff is not stale.
-  join         Require a clean integration checkout at --integration-ref and every
-               input status PASS with a worktree whose branch and HEAD equal ref.
-               A missing, stale, or dirty binding fails. An object in the
-               integration repo is not an input binding.
+  ready        Reject dependency cycles, write/write overlaps, and read/write
+               overlaps without a dependency. Each hard dependency must have
+               PASS and a clean worktree matching its ref.
+  invalidate   Require clean worktrees matching their refs and a current base.
+               Each hard dependency must have PASS and a verified_against SHA
+               matching its current bound commit. For read-only edges, reject
+               missing old commits and changes intersecting reads, including
+               either path of a rename or copy.
+  join         Require a clean integration worktree matching its ref. The current
+               base and every clean, bound PASS input must be in its history.
 
 Spec fields:
   id, write, read, depends, status, ref (branch@sha, sha at least 7 hex),
@@ -33,10 +39,13 @@ Spec fields:
   verified_against for multiple values. Separate records with a blank line.
 
 Options:
-  --repo <dir>                 Accepted and ignored. Ref binding uses each stream
-                               worktree, never this directory or the current one.
-  --integration-ref <branch@sha>
-                               Required for join.
+  --base-ref BRANCH@SHA        Required for invalidate and join. The local branch
+                               tip must match the recorded commit.
+  --repo <dir>                 Optional repository for base lookup. Defaults to a
+                               stream worktree for invalidate and the integration
+                               worktree for join. All must share a Git common dir.
+                               Accepted by ready for compatibility.
+  --integration-ref BRANCH@SHA Required for join.
   --integration-worktree <dir> Required for join.
   -h, --help                   Show this help message.
 USAGE
@@ -53,6 +62,8 @@ die_spec() {
   exit 2
 }
 
+base_ref=""
+repo_dir=""
 integration_ref=""
 integration_worktree=""
 spec_file=""
@@ -506,14 +517,51 @@ stream_depends_on() {
 }
 
 resolve_commit() {
-  local dir="$1" sha="$2"
-  git -C "$dir" rev-parse --verify --end-of-options "${sha}^{commit}" 2>/dev/null
+  local dir="$1" sha="$2" resolved
+  resolved="$(git -C "$dir" rev-parse --verify --end-of-options "${sha}^{commit}" 2>/dev/null)" || return 1
+  [[ "$resolved" == "${sha,,}"* ]] || return 1
+  printf '%s\n' "$resolved"
 }
 
 is_worktree() {
   local dir="$1"
   [[ -d "$dir" ]] || return 1
   [[ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null || true)" == "true" ]]
+}
+
+common_git_dir() {
+  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+}
+
+check_base() {
+  local checkout="$1" lookup_dir="${repo_dir:-$1}" lookup_common branch tip
+  BASE_COMMON_DIR="$(common_git_dir "$checkout")" || {
+    note_fail "repository unavailable: $checkout"
+    return 1
+  }
+  if [[ -n "$repo_dir" ]]; then
+    lookup_common="$(common_git_dir "$lookup_dir")" || {
+      note_fail "base repository unavailable: $lookup_dir"
+      return 1
+    }
+    if [[ ! "$lookup_common" -ef "$BASE_COMMON_DIR" ]]; then
+      note_fail "base repository differs from worktree repository: $lookup_dir"
+      return 1
+    fi
+  fi
+  if ! parse_at_sha "$base_ref"; then
+    note_fail "base ref invalid: $base_ref"
+    return 1
+  fi
+  branch="$AT_LEFT"
+  if ! tip="$(git -C "$lookup_dir" show-ref --verify --hash "refs/heads/$branch" 2>/dev/null)"; then
+    note_fail "base branch unavailable: $branch"
+    return 1
+  fi
+  if ! BASE_SHA="$(resolve_commit "$lookup_dir" "$AT_SHA")" || [[ "$tip" != "$BASE_SHA" ]]; then
+    note_fail "base ref stale: expected $base_ref got ${branch}@${tip}"
+    return 1
+  fi
 }
 
 is_clean() {
@@ -679,10 +727,12 @@ checkout_binding() {
   BIND_RESOLVED=""
   BIND_RESOLVED="$(resolve_commit "$dir" "$sha")" || return 2
   BIND_HEAD="$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null)" || return 1
-  if ! BIND_BRANCH="$(git -C "$dir" symbolic-ref --short HEAD 2>/dev/null)"; then
+  if ! BIND_BRANCH="$(git -C "$dir" symbolic-ref HEAD 2>/dev/null)"; then
     BIND_BRANCH="DETACHED"
     return 1
   fi
+  [[ "$BIND_BRANCH" == refs/heads/* ]] || return 1
+  BIND_BRANCH="${BIND_BRANCH#refs/heads/}"
   [[ "$BIND_HEAD" == "$BIND_RESOLVED" && "$BIND_BRANCH" == "$branch" ]]
 }
 
@@ -716,6 +766,7 @@ cmd_ready() {
       elif ! is_worktree "${WORKTREES[$idx]}"; then
         note_fail "dependency ref does not resolve: $tid $sha (worktree unavailable)"
       else
+        note_dirty "dependency dirty: $tid" "dependency status unreadable: $tid" "${WORKTREES[$idx]}"
         local bind_rc=0
         checkout_binding "${WORKTREES[$idx]}" "$branch" "$sha" || bind_rc=$?
         if (( bind_rc == 2 )); then
@@ -771,7 +822,8 @@ cmd_ready() {
 cmd_invalidate() {
   RESULT_PREFIX="GRAPH INVALIDATE"
   parse_spec_file "$spec_file"
-  local i id
+  local i id repo_bound=0
+  local -a bound_heads=()
   for i in "${!IDS[@]}"; do
     id="${IDS[$i]}"
     if [[ -z "${WORKTREES[$i]}" ]]; then
@@ -780,6 +832,13 @@ cmd_invalidate() {
     fi
     if ! is_worktree "${WORKTREES[$i]}"; then
       note_fail "not a work tree: $id ${WORKTREES[$i]}"
+      continue
+    fi
+    if (( ! repo_bound )); then
+      check_base "${WORKTREES[$i]}" || finish
+      repo_bound=1
+    elif [[ ! "$(common_git_dir "${WORKTREES[$i]}")" -ef "$BASE_COMMON_DIR" ]]; then
+      note_fail "worktree repository differs from base repository: $id"
       continue
     fi
     if ! parse_at_sha "${REFS[$i]}"; then
@@ -794,16 +853,29 @@ cmd_invalidate() {
       note_fail "ref does not resolve: $id $sha"
     elif (( bind_rc != 0 )); then
       note_fail "ref mismatch: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
+    else
+      bound_heads[$i]="$BIND_HEAD"
     fi
   done
 
   for i in "${!IDS[@]}"; do
     id="${IDS[$i]}"
-    local -a verified=() reads_re=()
+    local -a verified=() reads_re=() deps=()
+    local -A seen_verified=() hard_deps=()
+    split_fields "${DEPS[$i]:-}" deps
+    local dep
+    for dep in "${deps[@]}"; do
+      if [[ -z "${ID_INDEX[$dep]+x}" ]]; then
+        note_fail "unknown dependency: $id -> $dep"
+        continue
+      fi
+      local dep_status="${STATUSES[${ID_INDEX[$dep]}]}"
+      if [[ "$dep_status" != PASS ]]; then
+        note_fail "dependency not PASS: $id -> $dep (status: ${dep_status:-missing})"
+      fi
+      hard_deps[$dep]=1
+    done
     split_fields "${VERIFIED[$i]:-}" verified
-    if (( ${#verified[@]} == 0 )); then
-      continue
-    fi
     compile_read_regexes "$i" reads_re || exit $?
     local entry
     for entry in "${verified[@]}"; do
@@ -817,8 +889,10 @@ cmd_invalidate() {
         continue
       fi
       local uidx="${ID_INDEX[$upstream]}"
-      if [[ -z "${WORKTREES[$uidx]}" ]] || ! is_worktree "${WORKTREES[$uidx]}"; then
-        note_fail "stale: $id verified_against $upstream missing worktree"
+      seen_verified[$upstream]=1
+      local current="${bound_heads[$uidx]:-}"
+      if [[ -z "$current" ]]; then
+        note_fail "stale: $id verified_against $upstream has no current binding"
         continue
       fi
       local resolved_old=""
@@ -826,11 +900,13 @@ cmd_invalidate() {
         note_fail "stale: $id verified_against ${upstream}@${old_sha} missing sha"
         continue
       fi
-      local current=""
-      if ! current="$(git -C "${WORKTREES[$uidx]}" rev-parse --verify HEAD 2>/dev/null)"; then
-        note_fail "stale: $id verified_against $upstream has no HEAD"
+      if [[ -n "${hard_deps[$upstream]+x}" ]]; then
+        if [[ "$resolved_old" != "$current" ]]; then
+          note_fail "stale: $id verified_against ${upstream}@${old_sha} does not match hard dependency $current"
+        fi
         continue
       fi
+      [[ "$resolved_old" != "$current" ]] || continue
       local -a changed=()
       local diff_rc=0
       collect_diff_paths "${WORKTREES[$uidx]}" "$resolved_old" "$current" changed || diff_rc=$?
@@ -845,6 +921,11 @@ cmd_invalidate() {
           break
         fi
       done
+    done
+    for dep in "${!hard_deps[@]}"; do
+      if [[ -z "${seen_verified[$dep]+x}" ]]; then
+        note_fail "missing verified_against for hard dependency: $id -> $dep"
+      fi
     done
   done
   finish
@@ -861,9 +942,10 @@ cmd_join() {
   fi
   local ibranch="$AT_LEFT" isha="$AT_SHA"
   if ! is_worktree "$integration_worktree"; then
-    note_fail "integration checkout unavailable: $integration_worktree"
+    note_fail "integration worktree unavailable: $integration_worktree"
     finish
   fi
+  check_base "$integration_worktree" || finish
   note_dirty "integration dirty" "integration status unreadable" "$integration_worktree"
   local bind_rc=0
   checkout_binding "$integration_worktree" "$ibranch" "$isha" || bind_rc=$?
@@ -871,6 +953,11 @@ cmd_join() {
     note_fail "integration ref does not resolve: $isha"
   elif (( bind_rc != 0 )); then
     note_fail "integration ref mismatch: expected ${ibranch}@${isha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
+  fi
+  (( bind_rc == 0 )) || finish
+  local integration_head="$BIND_HEAD"
+  if ! git -C "$integration_worktree" merge-base --is-ancestor "$BASE_SHA" "$integration_head"; then
+    note_fail "base not in integration history: $base_ref"
   fi
 
   local i id
@@ -894,6 +981,10 @@ cmd_join() {
       note_fail "input ref does not resolve: $id $sha (worktree unavailable)"
       continue
     fi
+    if [[ ! "$(common_git_dir "${WORKTREES[$i]}")" -ef "$BASE_COMMON_DIR" ]]; then
+      note_fail "input worktree repository differs from integration repository: $id"
+      continue
+    fi
     note_dirty "input dirty: $id" "input status unreadable: $id" "${WORKTREES[$i]}"
     bind_rc=0
     checkout_binding "${WORKTREES[$i]}" "$branch" "$sha" || bind_rc=$?
@@ -901,6 +992,8 @@ cmd_join() {
       note_fail "input ref does not resolve: $id $sha"
     elif (( bind_rc != 0 )); then
       note_fail "input ref stale: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
+    elif ! git -C "$integration_worktree" merge-base --is-ancestor "$BIND_HEAD" "$integration_head"; then
+      note_fail "input not in integration history: $id ${branch}@${sha}"
     fi
   done
   finish
@@ -927,7 +1020,13 @@ esac
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
-      [[ $# -ge 2 ]] || die_usage "--repo requires an argument"
+      [[ $# -ge 2 && -n "$2" ]] || die_usage "--repo requires an argument"
+      repo_dir="$2"
+      shift 2
+      ;;
+    --base-ref)
+      [[ $# -ge 2 && -n "$2" ]] || die_usage "--base-ref requires an argument"
+      base_ref="$2"
       shift 2
       ;;
     --integration-ref)
@@ -977,6 +1076,12 @@ if [[ "$cmd" != "join" ]]; then
   if [[ -n "$integration_ref" || -n "$integration_worktree" ]]; then
     die_usage "--integration-ref and --integration-worktree are only valid with join"
   fi
+fi
+
+if [[ "$cmd" == ready ]]; then
+  [[ -z "$base_ref" ]] || die_usage "--base-ref is only valid with invalidate and join"
+else
+  [[ -n "$base_ref" ]] || die_usage "--base-ref is required for $cmd"
 fi
 
 case "$cmd" in
