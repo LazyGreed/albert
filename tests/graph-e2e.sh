@@ -1,678 +1,565 @@
 #!/usr/bin/env bash
-# Deterministic checks for v2 graph ready, invalidate, and join.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 checker="$root/skills/verification/scripts/check-graph.sh"
-[[ -x "$checker" ]] || { echo "Missing executable checker: $checker" >&2; exit 1; }
-
+readonly_checker="$root/skills/verification/scripts/check-readonly.sh"
 tmp="$(mktemp -d)"
 trap 'rm -rf -- "$tmp"' EXIT
 
 fail() {
-  echo "graph-e2e FAIL: $*" >&2
-  if [[ -f "$tmp/out" ]]; then
-    echo "stdout:" >&2
-    cat "$tmp/out" >&2
-  fi
-  if [[ -f "$tmp/err" ]]; then
-    echo "stderr:" >&2
-    cat "$tmp/err" >&2
-  fi
+  printf 'graph-e2e FAIL: %s\n' "$*" >&2
+  cat "$tmp/out" "$tmp/err" >&2
   exit 1
 }
 
 run_check() {
-  local want_rc="$1"
-  local want="$2"
+  local want_rc="$1" want="$2" rc=0
   shift 2
-  local rc=0
-  "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
-  if (( rc != want_rc )); then
-    fail "expected exit $want_rc, got $rc for: $*"
-  fi
-  if [[ -n "$want" ]] && ! grep -F -q -- "$want" "$tmp/out" "$tmp/err"; then
-    fail "missing [$want] for: $*"
-  fi
-  if (( want_rc != 0 )) && grep -F -q ' PASS' "$tmp/out"; then
-    fail "unexpected PASS for: $*"
+  "$@" > "$tmp/out" 2> "$tmp/err" || rc=$?
+  (( rc == want_rc )) || fail "expected exit $want_rc, got $rc for $*"
+  grep -Fq -- "$want" "$tmp/out" "$tmp/err" || fail "missing [$want] for $*"
+  if (( want_rc != 0 )) && grep -Eq '^GRAPH .* PASS$' "$tmp/out"; then
+    fail "unexpected gate PASS for $*"
   fi
 }
 
 new_repo() {
-  local dir="$1"
-  mkdir -p "$dir/src"
-  git -C "$dir" init -q
-  git -C "$dir" config user.name "Albert Test"
-  git -C "$dir" config user.email "albert-test@example.com"
-  git -C "$dir" checkout -b main -q
-  printf 'base\n' > "$dir/src/a.py"
-  printf 'base\n' > "$dir/src/b.py"
-  printf 'other\n' > "$dir/src/other.py"
-  printf 'old\n' > "$dir/src/old.py"
-  git -C "$dir" add -A
-  git -C "$dir" commit -q -m "baseline"
+  git init -q -b main "$1"
+  git -C "$1" config user.name 'Quintet Graph Tests'
+  git -C "$1" config user.email 'graph@example.com'
+}
+
+commit_all() {
+  git -C "$1" add -A
+  git -C "$1" commit -qm "$2"
+  git -C "$1" rev-parse HEAD
 }
 
 repo="$tmp/repo"
 new_repo "$repo"
-base="$(git -C "$repo" rev-parse HEAD)"
-short="${base:0:7}"
+mkdir -p "$repo/shared"
+printf 'path content used for rename and copy checks\n' > "$repo/shared/read.txt"
+printf 'literal read\n' > "$repo/shared/owned\."
+printf 'neighbor\n' > "$repo/shared/owned\X"
+hidden_path=$'shared/with\nnewline'
+printf 'hidden\n' > "$repo/$hidden_path"
+printf 'target commit\n' > "$repo/README"
+initial="$(commit_all "$repo" baseline)"
+printf 'advance target\n' >> "$repo/README"
+base="$(commit_all "$repo" 'advance target')"
+base_ref="main@${base:0:7}"
+plan="$tmp/plan"
+evidence="$tmp/evidence"
 
-spec="$tmp/spec.txt"
-
-# ready: disjoint writes pass, including a sibling prefix that must not collide.
-cat > "$spec" <<EOF
-id: a
-write: src/
-
-id: b
-write: src2/a.py
-read: docs/**
-EOF
-run_check 0 "GRAPH READY PASS" "$checker" ready --repo "$repo" "$spec"
-
-# Directory prefix conflicts with a file under it.
-cat > "$spec" <<EOF
-id: a
-write: src/
-
-id: b
-write: src/a.py
-EOF
-run_check 1 "write/write overlap" "$checker" ready --repo "$repo" "$spec"
-
-# Two writers of one exact path, including a repeated write key.
-cat > "$spec" <<EOF
-id: a
-write: docs/a.md
-write: src/a.py
-
-id: b
-write: src/a.py
-EOF
-run_check 1 "write/write overlap" "$checker" ready --repo "$repo" "$spec"
-
-# Read of another stream's write without a dependency.
-cat > "$spec" <<EOF
-id: a
-write: src/a.py
-
-id: b
-read: src/*.py
-EOF
-run_check 1 "read/write overlap without dependency" "$checker" ready --repo "$repo" "$spec"
-
-# Same read is allowed when the reader depends on the writer and the sha resolves.
-cat > "$spec" <<EOF
-id: a
-write: src/a.py
-status: PASS
-ref: main@${short}
-worktree: ${repo}
-
-id: b
-read: src/*.py
-depends: a
-EOF
-run_check 0 "GRAPH READY PASS" "$checker" ready --repo "$repo" "$spec"
-printf 'untracked\n' > "$repo/stray.txt"
-run_check 1 "dependency dirty: a" "$checker" ready "$spec"
-rm -f -- "$repo/stray.txt"
-
-# Unknown dependency.
-cat > "$spec" <<EOF
-id: a
-depends: missing
-EOF
-run_check 1 "unknown dependency" "$checker" ready --repo "$repo" "$spec"
-
-# Missing status is not a pass. Explicit non-PASS is not a pass.
-cat > "$spec" <<EOF
-id: a
-write: src/a.py
-ref: main@${base}
-
-id: b
-depends: a
-EOF
-run_check 1 "dependency not PASS" "$checker" ready --repo "$repo" "$spec"
-
-cat > "$spec" <<EOF
-id: a
-write: src/a.py
-status: FAIL
-ref: main@${base}
-
-id: b
-depends: a
-EOF
-run_check 1 "dependency not PASS" "$checker" ready --repo "$repo" "$spec"
-
-# PASS with a sha that does not resolve.
-cat > "$spec" <<EOF
-id: a
-status: PASS
-ref: main@0123456789abcdef
-
-id: b
-depends: a
-EOF
-run_check 1 "does not resolve" "$checker" ready --repo "$repo" "$spec"
-
-# Dependency cycle.
-cat > "$spec" <<EOF
-id: a
-depends: b
-status: PASS
-ref: main@${base}
-
-id: b
-depends: a
-status: PASS
-ref: main@${base}
-EOF
-run_check 1 "cycle:" "$checker" ready --repo "$repo" "$spec"
-
-# Mutual read/write cycle. Each read is locally depended, and the edges cycle.
-cat > "$spec" <<EOF
-id: a
-write: src/a.py
-read: src/b.py
-depends: b
-status: PASS
-ref: main@${base}
-
-id: b
-write: src/b.py
-read: src/a.py
-depends: a
-status: PASS
-ref: main@${base}
-EOF
-run_check 1 "cycle:" "$checker" ready --repo "$repo" "$spec"
-
-# Segment-bounded globs must not false-conflict.
-cat > "$spec" <<EOF
-id: a
-write: src/*.py
-
-id: b
-write: src/nested/a.py
-EOF
-run_check 0 "GRAPH READY PASS" "$checker" ready --repo "$repo" "$spec"
-
-# A dependency ref binds in its worktree. --repo and cwd are not a fallback.
-other="$tmp/other-repo"
-new_repo "$other"
-printf 'only-other\n' > "$other/src/a.py"
-git -C "$other" add src/a.py
-git -C "$other" commit -q -m "only other"
-other_sha="$(git -C "$other" rev-parse HEAD)"
-cat > "$spec" <<EOF
-id: dep-foreign
-status: PASS
-ref: feature@${other_sha}
+write_plan() {
+  local read_path="${1:-shared/read.txt}"
+  cat > "$plan" <<EOF
+id: leaf
+write: leaf/
+depends: reader
 
 id: reader
-depends: dep-foreign
+write: reader/**
+read: $read_path
+read_depends: up
+
+id: up
+write: shared/**
+write: up/
 EOF
-(
-  cd "$other"
-  run_check 1 "dependency ref does not resolve: dep-foreign" "$checker" ready "$spec"
-)
-run_check 1 "dependency ref does not resolve: dep-foreign" "$checker" ready --repo "$other" "$spec"
-
-# Object existence does not make a branch name true.
-cat > "$spec" <<EOF
-id: dep-alias
-status: PASS
-ref: not-a-branch@${base}
-worktree: ${repo}
-
-id: reader
-depends: dep-alias
-EOF
-run_check 1 "dependency ref mismatch: dep-alias" "$checker" ready --repo "$repo" "$spec"
-
-cat > "$spec" <<EOF
-id: dep-alias
-status: PASS
-ref: not-a-branch@${base}
-
-id: reader
-depends: dep-alias
-EOF
-run_check 1 "dependency ref does not resolve: dep-alias" "$checker" ready --repo "$repo" "$spec"
-
-move_repo="$tmp/move-repo"
-new_repo "$move_repo"
-old_sha="$(git -C "$move_repo" rev-parse HEAD)"
-printf 'moved\n' > "$move_repo/src/a.py"
-git -C "$move_repo" add src/a.py
-git -C "$move_repo" commit -q -m "move main"
-cat > "$spec" <<EOF
-id: dep-slipped
-status: PASS
-ref: main@${old_sha}
-worktree: ${move_repo}
-
-id: reader
-depends: dep-slipped
-EOF
-run_check 1 "dependency ref mismatch: dep-slipped" "$checker" ready --repo "$move_repo" "$spec"
-
-cat > "$spec" <<EOF
-id: dep-slipped
-status: PASS
-ref: main@${old_sha}
-
-id: reader
-depends: dep-slipped
-EOF
-run_check 1 "dependency ref does not resolve: dep-slipped" "$checker" ready --repo "$move_repo" "$spec"
-
-# invalidate fixtures: upstream and reader worktrees.
-wt_up="$tmp/wt-up"
-wt_reader="$tmp/wt-reader"
-git -C "$repo" worktree add -q -b wt/up "$wt_up" "$base"
-git -C "$repo" worktree add -q -b wt/reader "$wt_reader" "$base"
-reader_sha="$(git -C "$wt_reader" rev-parse HEAD)"
-base_args=(--base-ref "main@${base:0:7}")
-
-invalidate() {
-  "$checker" invalidate "${base_args[@]}" "$@"
 }
 
-# Non-overlapping upstream edit does not invalidate.
-printf 'changed\n' > "$wt_up/src/other.py"
-git -C "$wt_up" add src/other.py
-git -C "$wt_up" commit -q -m "edit other"
-up_other="$(git -C "$wt_up" rev-parse HEAD)"
+stream_record() {
+  local id="$1" ref="$2" worktree="$3" verdict_ref="$4" verdict_base="$5"
+  shift 5
+  printf 'id: %s\nstatus: PASS\nref: %s\nworktree: %s\n' "$id" "$ref" "$worktree"
+  if [[ -n "$verdict_ref" ]]; then printf 'verdict_ref: %s\n' "$verdict_ref"; fi
+  if [[ -n "$verdict_base" ]]; then printf 'verdict_base: %s\n' "$verdict_base"; fi
+  if (( $# )); then printf 'verified_against: %s\n' "$@"; fi
+  printf '\n'
+}
 
-cat > "$spec" <<EOF
+pass_record() {
+  local id="$1" ref="$2" worktree="$3"
+  shift 3
+  stream_record "$id" "$ref" "$worktree" "$ref" "$base" "$@"
+}
+
+check() {
+  local stage="$1"
+  shift
+  "$checker" "$stage" --plan "$plan" --base-ref "$base_ref" --repo "$repo" "$@" "$evidence"
+}
+
+write_plan
+: > "$evidence"
+run_check 0 'GRAPH READY PASS' check ready --stream up
+run_check 1 'stream not PASS: up' check ready --stream reader
+run_check 1 'stream not PASS: reader' check ready --stream leaf
+run_check 2 '--plan is required' "$checker" ready --base-ref "$base_ref" "$evidence"
+run_check 2 '--base-ref is required' "$checker" ready --plan "$plan" "$evidence"
+run_check 2 'unknown --stream' check ready --stream ghost
+run_check 2 'plan and evidence must be separate files' "$checker" ready --plan "$plan" --base-ref "$base_ref" "$plan"
+printf 'id: up\nstatus: P\0ASS\n' > "$evidence"
+run_check 2 'NUL byte in evidence file' check ready --stream up
+
+up="$tmp/wt up"
+reader="$tmp/wt-reader"
+leaf="$tmp/wt-leaf"
+int="$tmp/wt-int"
+git -C "$repo" worktree add -qb wt/up "$up" "$base"
+git -C "$repo" worktree add -qb wt/reader "$reader" "$base"
+git -C "$repo" worktree add -qb wt/leaf "$leaf" "$base"
+git -C "$repo" worktree add -qb integration/task "$int" "$base"
+mkdir -p "$up/up" "$reader/reader" "$leaf/leaf"
+printf 'first upstream patch\n' > "$up/up/result"
+printf 'reader patch\n' > "$reader/reader/result"
+printf 'leaf patch\n' > "$leaf/leaf/result"
+old_up="$(commit_all "$up" 'first upstream patch')"
+reader_head="$(commit_all "$reader" 'reader patch')"
+leaf_head="$(commit_all "$leaf" 'leaf patch')"
+reader_ref="wt/reader@$reader_head"
+leaf_ref="wt/leaf@$leaf_head"
+up_head="$old_up"
+up_ref="wt/up@$up_head"
+read_ref="$up_ref"
+
+write_evidence() {
+  {
+    pass_record leaf "$leaf_ref" "$leaf" "reader=$reader_ref"
+    pass_record up "$up_ref" "$up"
+    pass_record reader "$reader_ref" "$reader" "up=$read_ref"
+  } > "$evidence"
+}
+
+pass_record up "$up_ref" "$up" > "$evidence"
+run_check 0 'GRAPH READY PASS' check ready --stream reader
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate --stream up
+run_check 1 'stream not PASS: reader' check ready --stream leaf
+printf 'id: up\nstatus: PASS\nref: %s\n' "$up_ref" > "$evidence"
+run_check 1 'worktree unavailable' check ready --stream reader
+stream_record up "$up_ref" "$up" '' '' > "$evidence"
+run_check 1 'stream up verdict REF mismatch' check ready --stream reader
+run_check 1 'stream up verdict BASE mismatch' check ready --stream reader
+stream_record up "$up_ref" "$up" "wrong@$up_head" "$base" > "$evidence"
+run_check 1 'stream up verdict REF mismatch' check ready --stream reader
+stream_record up "$up_ref" "$up" "$up_ref" "$up_head" > "$evidence"
+run_check 1 'stream up verdict BASE mismatch' check ready --stream reader
+pass_record up "$up_ref" "$up/up" > "$evidence"
+run_check 1 'not a worktree root' check ready --stream reader
+pass_record up "$up_ref" "$up" > "$evidence"
+printf 'untracked\n' > "$up/stray"
+run_check 1 'stream up dirty worktree' check ready --stream reader
+rm -- "$up/stray"
+if [[ ! -e "$up/readme" ]]; then
+  git -C "$up" config core.ignoreCase true
+  printf 'untracked case variant\n' > "$up/readme"
+  run_check 1 'stream up dirty worktree' check ready --stream reader
+  rm -- "$up/readme"
+  git -C "$up" config --unset core.ignoreCase
+fi
+git -C "$up" config core.filemode false
+chmod +x "$up/up/result"
+run_check 1 'stream up dirty worktree' check ready --stream reader
+chmod -x "$up/up/result"
+git -C "$up" config --unset core.filemode
+git -C "$up" update-index --assume-unchanged -- "$hidden_path"
+printf 'edit hidden from status\n' > "$up/$hidden_path"
+[[ -z "$(git -C "$up" status --porcelain --untracked-files=all)" ]] || fail 'assume-unchanged fixture is visible'
+run_check 1 'hidden index path' check ready --stream reader
+git -C "$up" update-index --no-assume-unchanged -- "$hidden_path"
+git -C "$up" restore -- "$hidden_path"
+git -C "$up" update-index --skip-worktree -- shared/read.txt
+run_check 1 'skip-worktree' check invalidate --stream up
+git -C "$up" update-index --no-skip-worktree -- shared/read.txt
+
+# A foreign worktree with the same commit cannot supply a prerequisite.
+foreign="$tmp/foreign"
+git clone -q --no-local "$repo" "$foreign"
+pass_record up "main@$base" "$foreign" > "$evidence"
+run_check 1 'worktree repository differs' check ready --stream reader
+
+write_evidence
+run_check 0 'GRAPH READY PASS' check ready --stream leaf
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate
+run_check 0 'GRAPH INVALIDATE PASS' "$checker" invalidate --plan "$plan" --base-ref "$base_ref" "$evidence"
+run_check 1 'base branch unavailable' "$checker" invalidate --plan "$plan" --base-ref "missing@$base" "$evidence"
+git -C "$repo" branch moved "$old_up"
+run_check 1 'base ref stale' "$checker" invalidate --plan "$plan" --base-ref "moved@$base" "$evidence"
+
+# Plan rules apply across all phases and even outside the selected subgraph.
+integration_head="$base"
+join() {
+  check join --integration-ref "integration/task@${integration_head:0:7}" --integration-worktree "$int" "$@"
+}
+
+for stage in ready invalidate join; do
+  if [[ "$stage" == join ]]; then cmd=(join); else cmd=(check "$stage" --stream up); fi
+  write_plan
+  printf 'write: ./up/**\n' >> "$plan"
+  run_check 2 'duplicate plan attribute: write:up/**' "${cmd[@]}"
+  write_plan
+  printf 'depends: unknown\n' >> "$plan"
+  run_check 1 'unknown depends edge' "${cmd[@]}"
+  write_plan
+  printf 'depends: leaf\n' >> "$plan"
+  run_check 1 'cycle:' "${cmd[@]}"
+  write_plan
+  printf 'write: reader/result\n' >> "$plan"
+  run_check 1 'write/write overlap' "${cmd[@]}"
+  write_plan
+  printf 'read: leaf/**/result\n' >> "$plan"
+  run_check 1 'read/write overlap without dependency' "${cmd[@]}"
+  cat > "$plan" <<'EOF'
 id: up
-write: src/other.py
-status: PASS
-ref: wt/up@${up_other}
-worktree: ${wt_up}
+write: shared/*.txt
 
 id: reader
-read: src/a.py
-status: PASS
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${base}
+write: shared/nested/a.txt
+read: shared/read.txt
 EOF
-spec_sum="$(sha256sum "$spec" | awk '{print $1}')"
-run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
-run_check 2 "--base-ref is required" "$checker" invalidate "$spec"
-run_check 1 "base repository differs" invalidate --repo "$other" "$spec"
-run_check 0 "GRAPH INVALIDATE PASS" invalidate --repo "$repo" "$spec"
-[[ "$(sha256sum "$spec" | awk '{print $1}')" == "$spec_sum" ]] || fail "invalidate rewrote the spec"
-[[ -z "$(git -C "$wt_up" status --porcelain --untracked-files=all)" ]] || fail "invalidate dirtied upstream"
-[[ -z "$(git -C "$wt_reader" status --porcelain --untracked-files=all)" ]] || fail "invalidate dirtied reader"
-
-# A hard dependency requires current PASS and exact evidence, including disjoint reads.
-hard_spec() {
-  local status="$1" verified="${2:-}"
-  cat > "$spec" <<EOF
+  run_check 1 'read/write overlap without dependency' "${cmd[@]}"
+  printf 'depends: up\nread_depends: up\n' >> "$plan"
+  run_check 1 'edge declared as hard and read-only' "${cmd[@]}"
+  cat > "$plan" <<'EOF'
 id: up
-write: src/other.py
-status: ${status}
-ref: wt/up@${up_other}
-worktree: ${wt_up}
+write: shared/*.txt
 
 id: reader
-read: src/a.py
-status: PASS
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
+write: shared/nested/a.txt
+EOF
+  # Incorrect evidence fails after graph validation, proving the glob pair is disjoint.
+  run_check 2 'evidence for unplanned stream: leaf' "${cmd[@]}"
+done
+write_plan
+
+# Upstream movement keeps the read-only verdict when narrow reads are unaffected.
+printf 'non-overlapping edit\n' >> "$up/up/result"
+up_head="$(commit_all "$up" 'edit outside reader paths')"
+run_check 1 'stream up ref mismatch' check ready --stream reader
+run_check 1 'stream up ref mismatch' check invalidate
+up_ref="wt/up@$up_head"
+write_evidence
+run_check 0 'GRAPH READY PASS' check ready --stream leaf
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader"
+  pass_record leaf "$leaf_ref" "$leaf" "reader=$reader_ref"
+} > "$evidence"
+run_check 1 'missing verified_against: reader -> up (read_depends)' check invalidate
+run_check 1 'missing verified_against: reader -> up (read_depends)' check ready --stream leaf
+write_evidence
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$read_ref" "up=$up_ref"
+} > "$evidence"
+run_check 2 'duplicate input ref: reader -> up' check invalidate
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$read_ref" "leaf=$leaf_ref"
+} > "$evidence"
+run_check 2 'verified_against for undeclared edge' check ready --stream up
+
+# A same-tree commit on another branch cannot serve as a historical input.
+other_commit="$(git -C "$repo" commit-tree "${up_head}^{tree}" -p "$base" -m 'parallel history')"
+read_ref="wt/up@$other_commit"
+write_evidence
+run_check 1 'outside upstream ancestry' check invalidate
+read_ref="wt/up@$initial"
+write_evidence
+run_check 1 'predates BASE' check invalidate
+read_ref='wt/up@0123456789abcdef'
+write_evidence
+run_check 1 'invalid historical read ref' check invalidate
+read_ref="other@$up_head"
+write_evidence
+run_check 1 'invalid historical read ref' check invalidate
+
+# An unchanged copy source still counts, and paths with spaces stay intact.
+cp "$up/shared/read.txt" "$up/shared/copy out.txt"
+read_ref="$up_ref"
+up_head="$(commit_all "$up" 'copy read source')"
+up_ref="wt/up@$up_head"
+write_evidence
+run_check 1 'intersects read via shared/read.txt' check invalidate
+run_check 1 'reader has no current PASS' check invalidate
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate --stream up
+write_plan 'shared/copy out.txt'
+run_check 1 'intersects read via shared/copy out.txt' check invalidate
+write_plan
+read_ref="$up_ref"
+git -C "$up" mv -- shared/read.txt 'shared/renamed out.txt'
+up_head="$(commit_all "$up" 'rename read source')"
+up_ref="wt/up@$up_head"
+write_evidence
+run_check 1 'intersects read via shared/read.txt' check invalidate
+write_plan 'shared/renamed out.txt'
+run_check 1 'intersects read via shared/renamed out.txt' check invalidate
+write_plan 'shared/unrelated.txt'
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate
+write_plan
+run_check 1 'intersects read via shared/read.txt' check ready --stream leaf
+run_check 1 'reader has no current PASS' check invalidate --stream leaf
+
+# Rechecking the reader against the current upstream restores its unchanged REF.
+read_ref="$up_ref"
+write_evidence
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate --stream leaf
+
+# The same path syntax governs overlap checks and historical read invalidation.
+write_plan 'shared/owned\.'
+printf 'neighbor edit\n' >> "$up/shared/owned\X"
+printf 'edit newline path\n' >> "$up/$hidden_path"
+up_head="$(commit_all "$up" 'edit neighboring path with a backslash')"
+up_ref="wt/up@$up_head"
+write_evidence
+run_check 0 'GRAPH INVALIDATE PASS' check invalidate
+read_ref="$up_ref"
+printf 'literal path edit\n' >> "$up/shared/owned\."
+up_head="$(commit_all "$up" 'edit literal path with a backslash')"
+up_ref="wt/up@$up_head"
+write_evidence
+run_check 1 'intersects read via shared/owned\.' check invalidate
+read_ref="$up_ref"
+write_plan
+write_evidence
+
+printf 'reader second patch\n' >> "$reader/reader/result"
+new_reader="$(commit_all "$reader" 'move reader')"
+{
+  pass_record leaf "$leaf_ref" "$leaf" "reader=$reader_ref"
+  pass_record up "$up_ref" "$up"
+  pass_record reader "wt/reader@$new_reader" "$reader" "up=$read_ref"
+} > "$evidence"
+run_check 1 'does not match hard dependency' check invalidate
+git -C "$reader" reset -q --hard "$reader_head"
+write_evidence
+
+# Ownership is mandatory for a fresh bound verdict, including inherited paths.
+risky="$tmp/risky"
+git -C "$repo" worktree add -qb wt/risky "$risky" "$up_head"
+mkdir "$risky/reader"
+printf 'inherited baseline\n' > "$risky/reader/result"
+risky_head="$(commit_all "$risky" 'dependent with inherited changes')"
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "wt/risky@$risky_head" "$risky" "up=$up_ref"
+} > "$evidence"
+run_check 1 'stream reader ownership check failed' check invalidate --stream reader
+run_check 1 'out-of-scope path' check invalidate --stream reader
+run_check 1 'stream reader ownership check failed' check ready --stream leaf
+pass_record up "main@$base" "$repo" > "$evidence"
+run_check 1 'no changed paths found' check invalidate --stream up
+run_check 1 'no changed paths found' check ready --stream reader
+
+off_base="$tmp/off-base"
+git -C "$repo" worktree add -qb wt/off-base "$off_base" "$initial"
+mkdir "$off_base/up"
+printf 'owned patch off the current base\n' > "$off_base/up/result"
+off_head="$(commit_all "$off_base" 'edit from old base')"
+pass_record up "wt/off-base@$off_head" "$off_base" > "$evidence"
+run_check 1 'ownership baseline is outside stream ancestry' check ready --stream reader
+run_check 1 'ownership baseline is outside stream ancestry' check invalidate --stream up
+
+printf 'unowned history\n' > "$up/unowned"
+commit_all "$up" 'add unowned path' > /dev/null
+rm -- "$up/unowned"
+foreign_revert="$(commit_all "$up" 'remove unowned path')"
+pass_record up "wt/up@$foreign_revert" "$up" > "$evidence"
+run_check 1 "stream up ownership check failed at commit $foreign_revert" check ready --stream reader
+run_check 1 'out-of-scope path' check invalidate --stream up
+git -C "$up" reset -q --hard "$up_head"
+
+# Integration has its own verdict and must contain the exact planned patches.
+combined_record() {
+  local ref="$1" bound_base="$2" status="$3"
+  shift 3
+  printf 'status: %s\nintegration_ref: %s\nverdict_base: %s\n' "$status" "$ref" "$bound_base"
+  if (( $# )); then printf 'input_ref: %s\n' "$@"; fi
+}
+
+write_join_evidence() {
+  write_evidence
+  combined_record "integration/task@$integration_head" "$base" PASS \
+    "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+}
+
+write_join_evidence
+run_check 1 'input not in integration history: up' join
+run_check 1 'integration branch must differ from the target branch' check join \
+  --integration-ref "main@$base" --integration-worktree "$repo"
+run_check 1 'integration must use a separate branch and worktree from stream up' check join \
+  --integration-ref "$up_ref" --integration-worktree "$up"
+git -C "$int" merge -q --no-ff -m 'land upstream' "$up_head"
+git -C "$int" merge -q --no-ff -m 'land reader' "$reader_head"
+pre_leaf="$(git -C "$int" rev-parse HEAD)"
+integration_head="$pre_leaf"
+write_join_evidence
+run_check 1 'input not in integration history: leaf' join
+git -C "$int" merge -q --no-ff -m 'land leaf' "$leaf_head"
+integration_head="$(git -C "$int" rev-parse HEAD)"
+joined="$integration_head"
+write_join_evidence
+
+for name in "$up" "$reader" "$leaf" "$int"; do
+  "$readonly_checker" snapshot "$name" > "$tmp/snapshot-${name##*/}"
+done
+cp "$evidence" "$tmp/evidence.before"
+cp "$plan" "$tmp/plan.before"
+run_check 0 'GRAPH JOIN PASS' join
+mkdir "$tmp/scratch"
+TMPDIR="$tmp/scratch" run_check 0 'GRAPH JOIN PASS' join
+[[ -z "$(ls -A "$tmp/scratch")" ]] || fail 'join left temporary files behind'
+TMPDIR="$int" run_check 2 'temporary directory must be outside Git repositories' join
+for name in "$up" "$reader" "$leaf" "$int"; do
+  run_check 0 READONLY_OK "$readonly_checker" verify "$tmp/snapshot-${name##*/}" "$name"
+done
+cmp -s "$evidence" "$tmp/evidence.before" || fail 'join rewrote evidence'
+cmp -s "$plan" "$tmp/plan.before" || fail 'join rewrote plan'
+
+write_evidence
+run_check 1 'combined verdict not PASS' join
+combined_record "integration/task@$joined" "$base" FAIL "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+run_check 1 'combined verdict not PASS' join
+write_evidence
+combined_record "integration/task@$pre_leaf" "$base" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+run_check 1 'combined verdict INTEGRATION_REF mismatch' join
+write_evidence
+combined_record "other@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+run_check 1 'combined verdict INTEGRATION_REF mismatch' join
+write_evidence
+combined_record "integration/task@$joined" "$up_head" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+run_check 1 'combined verdict BASE mismatch' join
+write_evidence
+combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref" >> "$evidence"
+run_check 1 'missing combined input_ref: leaf' join
+write_evidence
+combined_record "integration/task@$joined" "$base" PASS "up=wrong@$up_head" "reader=$reader_ref" "leaf=$leaf_ref" >> "$evidence"
+run_check 1 'combined input_ref mismatch: up' join
+write_evidence
+combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "up=wt/up@$old_up" >> "$evidence"
+run_check 2 'duplicate input ref: (join) -> up' join
+
+# Integration ancestry cannot stand in for a missing or stale stream verdict.
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$up_ref"
+  combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref"
+} > "$evidence"
+run_check 1 'stream not PASS: leaf' join
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$up_ref"
+  stream_record leaf "$leaf_ref" "$leaf" '' '' "reader=$reader_ref"
+  combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref"
+} > "$evidence"
+run_check 1 'stream leaf verdict REF mismatch' join
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$up_ref"
+  pass_record leaf "$leaf_ref" "$leaf"
+  combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref"
+} > "$evidence"
+run_check 1 'missing verified_against: leaf -> reader' join
+{
+  pass_record up "$up_ref" "$up"
+  pass_record reader "$reader_ref" "$reader" "up=$up_ref"
+  pass_record leaf "$leaf_ref" "$leaf" "reader=wt/reader@$base"
+  combined_record "integration/task@$joined" "$base" PASS "up=$up_ref" "reader=$reader_ref" "leaf=$leaf_ref"
+} > "$evidence"
+run_check 1 'does not match hard dependency' join
+read_ref="wt/up@$old_up"
+write_join_evidence
+run_check 1 'intersects read' join
+read_ref="$up_ref"
+write_join_evidence
+cat > "$plan" <<'EOF'
+id: leaf
+write: leaf/
+depends: reader
+
+id: reader
+write: reader/
+read: shared/read.txt
+read_depends: up
+
+id: up
+write: up/
+EOF
+run_check 1 'stream up ownership check failed' join
+write_plan
+
+printf 'untracked integration file\n' > "$int/stray"
+run_check 1 'integration dirty worktree' join
+run_check 1 'integration dirty worktree' env GIT_DIR="$repo/.git" GIT_WORK_TREE="$repo" \
+  "$checker" join --plan "$plan" --base-ref "$base_ref" --integration-ref "integration/task@$joined" \
+  --integration-worktree "$int" "$evidence"
+rm -- "$int/stray"
+printf 'unauthorized commit\n' > "$int/extra"
+integration_head="$(commit_all "$int" 'unplanned integration commit')"
+write_join_evidence
+run_check 1 'integration contains a commit outside planned histories' join
+run_check 1 'unplanned integration path: extra' join
+integration_head="$(git -C "$int" commit-tree "${joined}^{tree}" -p "$joined" -p "$initial" -m 'attach pre-base parent')"
+git -C "$int" reset -q --hard "$integration_head"
+write_join_evidence
+run_check 1 'unreviewed parent' join
+integration_head="$(git -C "$int" commit-tree "${joined}^{tree}" -p "$joined" -p "$old_up" -m 'attach a partial stream')"
+git -C "$int" reset -q --hard "$integration_head"
+write_join_evidence
+run_check 1 "unreviewed parent: $old_up" join
+
+git -C "$int" reset -q --hard "$base"
+git -C "$int" merge -q --no-ff --no-commit "$up_head" > /dev/null 2>&1
+printf 'unplanned merge content\n' > "$int/extra"
+foreign_merge="$(commit_all "$int" 'add unplanned merge content')"
+git -C "$int" merge -q --no-ff --no-commit "$reader_head" > /dev/null 2>&1
+rm -- "$int/extra"
+commit_all "$int" 'remove unplanned merge content' > /dev/null
+git -C "$int" merge -q --no-ff -m 'land leaf' "$leaf_head"
+integration_head="$(git -C "$int" rev-parse HEAD)"
+[[ "$(git -C "$int" rev-parse HEAD^{tree})" == "$(git -C "$int" rev-parse "${joined}^{tree}")" ]] ||
+  fail 'tainted merge fixture has a different final tree'
+write_join_evidence
+run_check 1 "unplanned integration path: extra (commit $foreign_merge)" join
+
+git -C "$int" reset -q --hard "$pre_leaf"
+git -C "$int" merge -q --no-ff --no-commit "$leaf_head" > /dev/null 2>&1
+printf 'unreviewed merge resolution\n' > "$int/reader/result"
+integration_head="$(commit_all "$int" 'modify planned path in merge only')"
+write_join_evidence
+run_check 1 'integration path differs from planned patch: reader/result' join
+
+# Populated gitlinks are unsupported, even when Git reports them clean.
+sub="$tmp/sub"
+sub_parent="$tmp/sub-parent"
+new_repo "$sub"
+printf 'versioned\n' > "$sub/data"
+commit_all "$sub" 'submodule base' > /dev/null
+new_repo "$sub_parent"
+git -C "$sub_parent" -c protocol.file.allow=always submodule add -q "$sub" dependency
+git -C "$sub_parent" config submodule.dependency.ignore all
+base="$(commit_all "$sub_parent" 'install submodule')"
+base_ref="main@$base"
+repo="$sub_parent"
+cat > "$plan" <<'EOF'
+id: up
+write: root-file
+
+id: reader
 depends: up
 EOF
-  if [[ -n "$verified" ]]; then
-    printf 'verified_against: up@%s\n' "$verified" >> "$spec"
-  fi
-}
-hard_spec PASS "$base"
-run_check 1 "does not match hard dependency" invalidate "$spec"
-hard_spec PASS
-run_check 1 "missing verified_against for hard dependency" invalidate "$spec"
-hard_spec FAIL "$up_other"
-run_check 1 "dependency not PASS" invalidate "$spec"
-hard_spec "" "$up_other"
-run_check 1 "dependency not PASS" invalidate "$spec"
-hard_spec PASS "${up_other:0:7}"
-run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
+git -C "$sub_parent" switch -qc wt/sub-parent
+printf 'own patch\n' > "$sub_parent/root-file"
+sub_parent_head="$(commit_all "$sub_parent" 'add owned path')"
+pass_record up "wt/sub-parent@$sub_parent_head" "$sub_parent" > "$evidence"
+run_check 1 'populated or unreadable submodule path is unsupported: dependency' check ready --stream reader
+git -C "$sub_parent" submodule deinit --force -- dependency > /dev/null
+mkdir -p "$sub_parent/dependency"
+run_check 0 'GRAPH READY PASS' check ready --stream reader
+printf 'populated without an initialized worktree\n' > "$sub_parent/dependency/data"
+run_check 1 'populated or unreadable submodule path is unsupported: dependency' check ready --stream reader
 
-# A tag cannot stand in for the base branch, and a moved base invalidates evidence.
-git -C "$repo" tag base-tag "$base"
-run_check 1 "base branch unavailable: base-tag" \
-  "$checker" invalidate --base-ref "base-tag@$base" "$spec"
-git -C "$repo" branch base-moved "$up_other"
-run_check 1 "base ref stale" "$checker" invalidate --base-ref "base-moved@$base" "$spec"
-
-# Ignored files are not dirty under the required status command.
-printf '*.log\n' >> "$wt_up/.gitignore"
-git -C "$wt_up" add .gitignore
-git -C "$wt_up" commit -q -m "ignore logs"
-up_ignore="$(git -C "$wt_up" rev-parse HEAD)"
-printf 'noise\n' > "$wt_up/noise.log"
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${up_ignore}
-worktree: ${wt_up}
-
-id: reader
-read: src/a.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${up_other}
-EOF
-run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
-rm -f -- "$wt_up/noise.log"
-
-# Dirty worktree, including an untracked file, fails closed.
-mkdir -p "$wt_reader/notes"
-printf 'stray\n' > "$wt_reader/notes/a.txt"
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${up_ignore}
-worktree: ${wt_up}
-
-id: reader
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "dirty worktree" invalidate "$spec"
-rm -rf -- "$wt_reader/notes"
-
-# Ref mismatch: HEAD moved, spec still names the old sha.
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${base}
-worktree: ${wt_up}
-
-id: reader
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "ref mismatch" invalidate "$spec"
-
-# Branch mismatch with the right commit.
-git -C "$wt_reader" checkout -q -b wt/wrong "$reader_sha"
-cat > "$spec" <<EOF
-id: reader
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "ref mismatch" invalidate "$spec"
-git -C "$wt_reader" checkout -q wt/reader
-
-# Missing old sha is stale. Spec is not rewritten.
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${up_ignore}
-worktree: ${wt_up}
-
-id: reader
-read: src/a.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@0123456789abcdef
-EOF
-spec_sum="$(sha256sum "$spec" | awk '{print $1}')"
-run_check 1 "missing sha" invalidate "$spec"
-[[ "$(sha256sum "$spec" | awk '{print $1}')" == "$spec_sum" ]] || fail "stale invalidate rewrote the spec"
-
-# Upstream rename: either path intersecting a declared read is stale.
-printf 'same\n' > "$wt_up/src/old.py"
-git -C "$wt_up" add src/old.py
-git -C "$wt_up" commit -q -m "snapshot old"
-pre_rename="$(git -C "$wt_up" rev-parse HEAD)"
-git -C "$wt_up" mv "src/old.py" "src/new.py"
-git -C "$wt_up" commit -q -m "rename old"
-post_rename="$(git -C "$wt_up" rev-parse HEAD)"
-
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_rename}
-worktree: ${wt_up}
-
-id: reader
-read: src/old.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_rename}
-EOF
-run_check 1 "intersects read via src/old.py" invalidate "$spec"
-
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_rename}
-worktree: ${wt_up}
-
-id: reader
-read: src/new.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_rename}
-EOF
-run_check 1 "intersects read via src/new.py" invalidate "$spec"
-
-# A rename whose paths do not intersect reads is not stale.
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_rename}
-worktree: ${wt_up}
-
-id: reader
-read: src/a.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_rename}
-EOF
-run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
-
-# Copy records are parsed on both paths. Modify the source in the same commit so -C emits both.
-copy_base="$(git -C "$wt_up" rev-parse HEAD)"
-printf 'copy-body\n' > "$wt_up/src/orig.py"
-git -C "$wt_up" add src/orig.py
-git -C "$wt_up" commit -q -m "add orig"
-pre_copy="$(git -C "$wt_up" rev-parse HEAD)"
-cp "$wt_up/src/orig.py" "$wt_up/src/copy.py"
-printf 'copy-body\nextra\n' > "$wt_up/src/orig.py"
-git -C "$wt_up" add src/orig.py src/copy.py
-git -C "$wt_up" commit -q -m "copy orig"
-post_copy="$(git -C "$wt_up" rev-parse HEAD)"
-git -C "$wt_up" diff --name-status -z -M -C "${pre_copy}..${post_copy}" | tr '\0' '\n' > "$tmp/copy-diff.txt"
-grep -q '^C' "$tmp/copy-diff.txt" || fail "fixture did not produce a copy record: $(cat "$tmp/copy-diff.txt")"
-
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_copy}
-worktree: ${wt_up}
-
-id: reader
-read: src/copy.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_copy}
-EOF
-run_check 1 "intersects read via src/copy.py" invalidate "$spec"
-
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_copy}
-worktree: ${wt_up}
-
-id: reader
-read: src/orig.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_copy}
-EOF
-run_check 1 "intersects read via src/orig.py" invalidate "$spec"
-
-# Space in a renamed path must survive NUL parsing.
-git -C "$wt_up" checkout -q -B wt/up "$copy_base"
-printf 'spaced\n' > "$wt_up/src/my file.py"
-git -C "$wt_up" add "src/my file.py"
-git -C "$wt_up" commit -q -m "add spaced"
-pre_space="$(git -C "$wt_up" rev-parse HEAD)"
-git -C "$wt_up" mv "src/my file.py" "src/other file.py"
-git -C "$wt_up" commit -q -m "rename spaced"
-post_space="$(git -C "$wt_up" rev-parse HEAD)"
-cat > "$spec" <<EOF
-id: up
-ref: wt/up@${post_space}
-worktree: ${wt_up}
-
-id: reader
-read: src/other file.py
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-verified_against: up@${pre_space}
-EOF
-run_check 1 "intersects read via src/other file.py" invalidate "$spec"
-
-# Join requires both verified input commits in integration history.
-up_join="$(git -C "$wt_up" rev-parse HEAD)"
-printf 'reader result\n' > "$wt_reader/src/b.py"
-git -C "$wt_reader" add src/b.py
-git -C "$wt_reader" commit -q -m "reader result"
-reader_sha="$(git -C "$wt_reader" rev-parse HEAD)"
-int_wt="$tmp/wt-int"
-git -C "$repo" worktree add -q -b integration/task "$int_wt" "$base"
-int_sha="$base"
-
-join() {
-  "$checker" join "${base_args[@]}" --integration-ref "integration/task@$int_sha" \
-    --integration-worktree "$int_wt" "$@"
-}
-
-cat > "$spec" <<EOF
-id: up
-status: PASS
-ref: wt/up@${up_join}
-worktree: ${wt_up}
-
-id: reader
-status: PASS
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "input not in integration history: up" join "$spec"
-grep -Fq 'input not in integration history: reader' "$tmp/err" || fail "missing second unlanded input"
-git -C "$int_wt" merge -q --no-ff -m "land upstream" "$up_join"
-int_sha="$(git -C "$int_wt" rev-parse HEAD)"
-run_check 1 "input not in integration history: reader" join "$spec"
-git -C "$int_wt" merge -q --no-ff -m "land reader" "$reader_sha"
-int_sha="$(git -C "$int_wt" rev-parse HEAD)"
-run_check 0 "GRAPH JOIN PASS" join "$spec"
-run_check 0 "GRAPH JOIN PASS" join --repo "$repo" "$spec"
-run_check 1 "base repository differs" join --repo "$other" "$spec"
-
-# A current base tip must also be an ancestor of the integration commit.
-git -C "$repo" branch -f base-moved "$base"
-git -C "$repo" worktree add -q "$tmp/wt-base-moved" base-moved
-printf 'moved base\n' > "$tmp/wt-base-moved/src/a.py"
-git -C "$tmp/wt-base-moved" add src/a.py
-git -C "$tmp/wt-base-moved" commit -q -m "move base outside integration history"
-moved_base="$(git -C "$tmp/wt-base-moved" rev-parse HEAD)"
-run_check 1 "base ref stale" join --base-ref "base-moved@$base" "$spec"
-run_check 1 "base not in integration history" join --base-ref "base-moved@$moved_base" "$spec"
-
-# Short integration sha still binds when it resolves to HEAD.
-run_check 0 "GRAPH JOIN PASS" join --integration-ref "integration/task@${int_sha:0:7}" "$spec"
-
-# Missing bindings are usage failures.
-run_check 2 "--base-ref is required" \
-  "$checker" join --integration-ref "integration/task@$int_sha" --integration-worktree "$int_wt" "$spec"
-run_check 2 "integration-ref" "$checker" join "${base_args[@]}" --integration-worktree "$int_wt" "$spec"
-run_check 2 "integration-worktree" "$checker" join "${base_args[@]}" --integration-ref "integration/task@$int_sha" "$spec"
-
-# Integration checkout stale or dirty.
-printf 'int\n' > "$int_wt/src/a.py"
-git -C "$int_wt" add src/a.py
-git -C "$int_wt" commit -q -m "integration move"
-cat > "$spec" <<EOF
-id: reader
-status: PASS
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "integration ref mismatch" join "$spec"
-
-git -C "$int_wt" reset -q --hard "$int_sha"
-printf 'dirty\n' > "$int_wt/stray.txt"
-run_check 1 "integration dirty" join "$spec"
-run_check 1 "integration dirty" env GIT_DIR="$repo/.git" GIT_WORK_TREE="$repo" \
-  GIT_INDEX_FILE="$repo/.git/index" "$checker" join "${base_args[@]}" \
-  --integration-ref "integration/task@$int_sha" --integration-worktree "$int_wt" "$spec"
-rm -f -- "$int_wt/stray.txt"
-
-# Input not PASS, unresolvable ref, and stale worktree HEAD.
-cat > "$spec" <<EOF
-id: reader
-status: FAIL
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "input not PASS" join "$spec"
-
-cat > "$spec" <<EOF
-id: reader
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "input not PASS" join "$spec"
-
-cat > "$spec" <<EOF
-id: reader
-status: PASS
-ref: wt/reader@0123456789abcdef
-worktree: ${wt_reader}
-EOF
-run_check 1 "input ref does not resolve" join "$spec"
-
-printf 'reader move\n' > "$wt_reader/src/a.py"
-git -C "$wt_reader" add src/a.py
-git -C "$wt_reader" commit -q -m "reader move"
-cat > "$spec" <<EOF
-id: reader
-status: PASS
-ref: wt/reader@${reader_sha}
-worktree: ${wt_reader}
-EOF
-run_check 1 "input ref stale" join "$spec"
-git -C "$wt_reader" reset -q --hard "$reader_sha"
-
-printf 'dirty reader\n' > "$wt_reader/dirty.txt"
-run_check 1 "input dirty" join "$spec"
-rm -f -- "$wt_reader/dirty.txt"
-
-# An object in the integration repo is not an input binding.
-cat > "$spec" <<EOF
-id: join-ghost
-status: PASS
-ref: not-a-branch@${int_sha}
-EOF
-run_check 1 "input ref does not resolve: join-ghost" join "$spec"
-
-cat > "$spec" <<EOF
-id: join-unbound
-status: PASS
-ref: integration/task@${int_sha}
-EOF
-run_check 1 "input ref does not resolve: join-unbound" join "$spec"
-
-cat > "$spec" <<EOF
-id: foreign
-status: PASS
-ref: main@${other_sha}
-worktree: ${other}
-EOF
-run_check 1 "input worktree repository differs" join "$spec"
-
-echo "graph E2E PASS: ready cycles and overlaps, invalidate staleness, join bindings"
+printf 'graph E2E PASS\n'

@@ -1,1091 +1,888 @@
 #!/usr/bin/env bash
-# Fail-closed checks for v2 stream graphs: ready, invalidate, and join.
-# Spec records are blank-line separated. Repeat keys for multiple values.
-# The spec file is only read. Nothing is written into the caller's repository.
+# Read-only gates for a coordinator's declared v2 graph and recorded verdicts.
 set -euo pipefail
-LC_ALL=C
+export LC_ALL=C
 
-# Let Git discover each supplied repository and use its recorded commit history.
+# Discover each supplied repository and use its recorded commit history.
 unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE \
   GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH \
   GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
   GIT_CONFIG GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS GIT_CONFIG_GLOBAL GIT_CONFIG_SYSTEM \
-  GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM
-export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null
+  GIT_CEILING_DIRECTORIES GIT_DISCOVERY_ACROSS_FILESYSTEM GIT_EXTERNAL_DIFF
+export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1 GIT_GRAFT_FILE=/dev/null GIT_NO_LAZY_FETCH=1 GIT_ADVICE=0
 
 usage() {
   cat <<'USAGE'
 Usage:
-  check-graph.sh ready [--repo <dir>] <spec>
-  check-graph.sh invalidate --base-ref BRANCH@SHA [--repo <dir>] <spec>
-  check-graph.sh join --base-ref BRANCH@SHA --integration-ref BRANCH@SHA
-                      --integration-worktree <dir> [--repo <dir>] <spec>
+  check-graph.sh ready --plan PLAN --base-ref BRANCH@SHA [--stream ID] [--repo DIR] EVIDENCE
+  check-graph.sh invalidate --plan PLAN --base-ref BRANCH@SHA [--stream ID] [--repo DIR] EVIDENCE
+  check-graph.sh join --plan PLAN --base-ref BRANCH@SHA --integration-ref BRANCH@SHA
+                      --integration-worktree DIR [--repo DIR] EVIDENCE
 
-Commands:
-  ready        Reject dependency cycles, write/write overlaps, and read/write
-               overlaps without a dependency. Each hard dependency must have
-               PASS and a clean worktree matching its ref.
-  invalidate   Require clean worktrees matching their refs and a current base.
-               Each hard dependency must have PASS and a verified_against SHA
-               matching its current bound commit. For read-only edges, reject
-               missing old commits and changes intersecting reads, including
-               either path of a rename or copy.
-  join         Require a clean integration worktree matching its ref. The current
-               base and every clean, bound PASS input must be in its history.
+Commands share graph, ownership, and evidence validation. Ready checks the
+selected streams' prerequisites. Invalidate checks selected streams and their
+prerequisites. Omit --stream to select all planned streams. Join checks all
+planned streams, integration history, and a separate combined PASS.
 
-Spec fields:
-  id, write, read, depends, status, ref (branch@sha, sha at least 7 hex),
-  worktree, verified_against (id@sha). Repeat write, read, depends, and
-  verified_against for multiple values. Separate records with a blank line.
-
-Options:
-  --base-ref BRANCH@SHA        Required for invalidate and join. The local branch
-                               tip must match the recorded commit.
-  --repo <dir>                 Optional repository for base lookup. Defaults to a
-                               stream worktree for invalidate and the integration
-                               worktree for join. All must share a Git common dir.
-                               Accepted by ready for compatibility.
-  --integration-ref BRANCH@SHA Required for join.
-  --integration-worktree <dir> Required for join.
-  -h, --help                   Show this help message.
+Files use blank-line-separated records with one key: value per line.
+  Plan: id, write, read, depends (hard), read_depends (read-only).
+  Stream evidence: id, ref, worktree, status, verdict_ref, verdict_base,
+                   verified_against (ID=BRANCH@SHA).
+  Combined evidence: status, integration_ref, verdict_base, input_ref (ID=BRANCH@SHA).
+Repeat path, edge, or input fields for distinct values. Verdict bases are bare
+commit SHAs. Abbreviations must resolve unambiguously and use at least 7 hex digits.
+EVIDENCE may be empty at initial readiness. --repo overrides base lookup, which
+otherwise uses integration, a required stream's worktree, or the current directory.
+Set TMPDIR outside Git repositories for scratch files. Bound worktrees with
+populated submodule paths or hidden index entries are unsupported.
 USAGE
 }
 
 die_usage() {
-  echo "check-graph: $1" >&2
+  printf 'check-graph: %s\n' "$1" >&2
   usage >&2
   exit 2
 }
 
-die_spec() {
-  echo "check-graph: $1" >&2
+die_record() {
+  printf 'check-graph: %s\n' "$1" >&2
   exit 2
 }
 
-base_ref=""
-repo_dir=""
-integration_ref=""
-integration_worktree=""
-spec_file=""
-cmd=""
-
-RESULT_PREFIX=""
-FAILURES=()
-TMP_FILES=()
-
-cleanup() {
-  local f
-  for f in "${TMP_FILES[@]+"${TMP_FILES[@]}"}"; do
-    rm -f -- "$f"
-  done
-}
-trap cleanup EXIT
+failures=()
+scratch=""
+trap 'if [[ -n "$scratch" ]]; then rm -rf -- "$scratch"; fi' EXIT
+ownership_checker="$(dirname -- "${BASH_SOURCE[0]}")/check-ownership.sh"
 
 note_fail() {
-  FAILURES+=("$1")
+  failures+=("$1")
 }
 
 finish() {
-  local msg
-  if (( ${#FAILURES[@]} > 0 )); then
-    for msg in "${FAILURES[@]}"; do
-      printf '%s FAIL: %s\n' "$RESULT_PREFIX" "$msg" >&2
+  local prefix="GRAPH ${command^^}" message
+  if (( ${#failures[@]} )); then
+    for message in "${failures[@]}"; do
+      printf '%s FAIL: %s\n' "$prefix" "$message" >&2
     done
     exit 1
   fi
-  printf '%s PASS\n' "$RESULT_PREFIX"
+  printf '%s PASS\n' "$prefix"
   exit 0
 }
 
 trim() {
-  local s="$1"
-  s="${s#"${s%%[![:space:]]*}"}"
-  s="${s%"${s##*[![:space:]]}"}"
-  printf '%s' "$s"
+  trimmed="${1#"${1%%[![:space:]]*}"}"
+  trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
 }
-
-declare -a IDS=()
-declare -a STATUSES=()
-declare -a REFS=()
-declare -a WORKTREES=()
-declare -a WRITES=()
-declare -a READS=()
-declare -a DEPS=()
-declare -a VERIFIED=()
-declare -A ID_INDEX=()
 
 split_fields() {
-  local data="$1"
-  local -n dest=$2
-  dest=()
-  [[ -n "$data" ]] || return 0
-  local item
-  while IFS= read -r item || [[ -n "$item" ]]; do
-    [[ -n "$item" ]] && dest+=("$item")
-  done <<< "$data"
+  local -n items=$2
+  items=()
+  if [[ -n "$1" ]]; then
+    mapfile -t items <<< "$1"
+  fi
 }
 
-parse_at_sha() {
-  local ref="$1"
-  AT_LEFT=""
-  AT_SHA=""
-  local sha="${ref##*@}"
-  local left="${ref%@*}"
-  if [[ -z "$left" || "$left" == "$ref" || -z "$sha" ]]; then
-    return 1
-  fi
-  if [[ ! "$sha" =~ ^[0-9a-fA-F]{7,}$ ]]; then
-    return 1
-  fi
-  if [[ "$left" == *[[:space:]]* ]]; then
-    return 1
-  fi
-  AT_LEFT="$left"
-  AT_SHA="$sha"
-  return 0
+valid_sha() {
+  [[ "$1" =~ ^[0-9a-fA-F]{7,64}$ ]]
 }
+
+parse_ref() {
+  ref_branch="${1%@*}"
+  ref_sha="${1##*@}"
+  [[ "$ref_branch" != "$1" ]] && valid_sha "$ref_sha" &&
+    git check-ref-format "refs/heads/$ref_branch"
+}
+
+normalize_pattern() {
+  pattern="$1"
+  while [[ "$pattern" == ./* ]]; do
+    pattern="${pattern#./}"
+  done
+  [[ -n "$pattern" && "$pattern" != /* && "$pattern" != *//* &&
+    "/$pattern/" != */./* && "/$pattern/" != */../* ]] || die_record "invalid path pattern: $1"
+  if [[ "$pattern" == */ ]]; then
+    pattern+="**"
+  fi
+}
+
+declare -a ids=()
+declare -A planned=() plan=() observed=() evidence=() combined=()
+declare -A edge_kind=() upstreams=() edge_refs=() join_refs=()
 
 parse_record() {
-  local line key val
-  local id="" status="" ref="" worktree=""
-  local writes="" reads="" deps="" verified=""
-  local seen_id=0 seen_status=0 seen_ref=0 seen_wt=0
+  local source="$1" line key value attribute id
+  shift
+  local -A fields=() seen=()
   for line in "$@"; do
-    if [[ "$line" != *:* ]]; then
-      die_spec "invalid spec line: $line"
-    fi
-    key="$(trim "${line%%:*}")"
-    val="$(trim "${line#*:}")"
-    case "$key" in
-      id)
-        seen_id=$((seen_id + 1))
-        id="$val"
+    [[ "$line" == *:* ]] || die_record "invalid $source line: $line"
+    trim "${line%%:*}"
+    key="$trimmed"
+    trim "${line#*:}"
+    value="$trimmed"
+    [[ -n "$value" ]] || die_record "empty $source field: $key"
+    case "$source:$key" in
+      plan:id|evidence:id)
+        [[ "$value" =~ ^[[:alnum:]_.-]+$ ]] || die_record "invalid stream id: $value"
         ;;
-      status)
-        seen_status=$((seen_status + 1))
-        status="$val"
+      plan:write|plan:read)
+        normalize_pattern "$value"
+        value="$pattern"
         ;;
-      ref)
-        seen_ref=$((seen_ref + 1))
-        ref="$val"
+      plan:depends|plan:read_depends|evidence:worktree|evidence:verified_against|evidence:input_ref) ;;
+      evidence:status)
+        case "$value" in
+          PASS|FAIL|'NOT RUN'|BLOCKED) ;;
+          *) die_record "invalid verdict status: $value" ;;
+        esac
         ;;
-      worktree)
-        seen_wt=$((seen_wt + 1))
-        worktree="$val"
+      evidence:ref|evidence:verdict_ref|evidence:integration_ref)
+        parse_ref "$value" || die_record "invalid $key: $value"
         ;;
-      write)
-        [[ -n "$val" ]] || die_spec "empty write pattern"
-        if [[ -n "$writes" ]]; then writes+=$'
-'"$val"; else writes="$val"; fi
+      evidence:verdict_base)
+        valid_sha "$value" || die_record "invalid verdict_base: $value"
         ;;
-      read)
-        [[ -n "$val" ]] || die_spec "empty read pattern"
-        if [[ -n "$reads" ]]; then reads+=$'
-'"$val"; else reads="$val"; fi
-        ;;
-      depends)
-        [[ -n "$val" ]] || die_spec "empty depends value"
-        if [[ -n "$deps" ]]; then deps+=$'
-'"$val"; else deps="$val"; fi
-        ;;
-      verified_against)
-        [[ -n "$val" ]] || die_spec "empty verified_against value"
-        if [[ -n "$verified" ]]; then verified+=$'
-'"$val"; else verified="$val"; fi
-        ;;
-      *)
-        die_spec "unknown spec field: $key"
-        ;;
+      *) die_record "unknown $source field: $key" ;;
     esac
+    case "$key" in
+      write|read|depends|read_depends|verified_against|input_ref) attribute="$key:$value" ;;
+      *) attribute="$key" ;;
+    esac
+    [[ -z "${seen[$attribute]+x}" ]] || die_record "duplicate $source attribute: $attribute"
+    seen[$attribute]=1
+    fields[$key]="${fields[$key]:+${fields[$key]}$'\n'}$value"
   done
-  [[ -n "$id" ]] || die_spec "spec record missing id"
-  (( seen_id == 1 )) || die_spec "stream $id must have exactly one id"
-  (( seen_status <= 1 )) || die_spec "repeated status for $id"
-  (( seen_ref <= 1 )) || die_spec "repeated ref for $id"
-  (( seen_wt <= 1 )) || die_spec "repeated worktree for $id"
-  if [[ "$id" == *[[:space:]]* ]]; then
-    die_spec "invalid id: $id"
+
+  id="${fields[id]:-}"
+  if [[ "$source" == plan ]]; then
+    [[ -n "$id" ]] || die_record "plan record missing id"
+    [[ -z "${planned[$id]+x}" ]] || die_record "duplicate planned stream: $id"
+    ids+=("$id")
+    planned[$id]=1
+    for key in write read depends read_depends; do
+      plan[$id:$key]="${fields[$key]:-}"
+    done
+  elif [[ -n "$id" ]]; then
+    [[ -n "${planned[$id]+x}" ]] || die_record "evidence for unplanned stream: $id"
+    [[ -z "${observed[$id]+x}" ]] || die_record "duplicate stream evidence: $id"
+    [[ -z "${fields[integration_ref]+x}${fields[input_ref]+x}" ]] ||
+      die_record "combined evidence fields on stream: $id"
+    observed[$id]=1
+    for key in ref worktree status verdict_ref verdict_base verified_against; do
+      evidence[$id:$key]="${fields[$key]:-}"
+    done
+  else
+    [[ -n "${fields[integration_ref]+x}" ]] || die_record "evidence record missing id or integration_ref"
+    [[ -z "${combined[integration_ref]+x}" ]] || die_record "duplicate combined evidence"
+    [[ -z "${fields[ref]+x}${fields[worktree]+x}${fields[verdict_ref]+x}${fields[verified_against]+x}" ]] ||
+      die_record "stream evidence fields on combined record"
+    for key in status integration_ref verdict_base input_ref; do
+      combined[$key]="${fields[$key]:-}"
+    done
   fi
-  if [[ -n "${ID_INDEX[$id]+x}" ]]; then
-    die_spec "duplicate stream id: $id"
-  fi
-  local idx=${#IDS[@]}
-  IDS+=("$id")
-  ID_INDEX[$id]=$idx
-  STATUSES+=("$status")
-  REFS+=("$ref")
-  WORKTREES+=("$worktree")
-  WRITES+=("$writes")
-  READS+=("$reads")
-  DEPS+=("$deps")
-  VERIFIED+=("$verified")
 }
 
-parse_spec_file() {
-  local file="$1"
-  [[ -f "$file" && -r "$file" ]] || die_spec "spec not found: $file"
-  local line
+parse_file() {
+  local source="$1" path="$2" line
   local -a lines=()
-  flush_record() {
-    if (( ${#lines[@]} > 0 )); then
-      parse_record "${lines[@]}"
-      lines=()
-    fi
-  }
+  [[ -f "$path" && -r "$path" ]] || die_record "cannot read $source file: $path"
+  if IFS= read -r -d '' line < "$path"; then
+    die_record "NUL byte in $source file: $path"
+  fi
   while IFS= read -r line || [[ -n "$line" ]]; do
     if [[ "$line" =~ ^[[:space:]]*$ ]]; then
-      flush_record
+      if (( ${#lines[@]} )); then
+        parse_record "$source" "${lines[@]}"
+        lines=()
+      fi
     else
       lines+=("$line")
     fi
-  done < "$file"
-  flush_record
-  (( ${#IDS[@]} > 0 )) || die_spec "spec has no stream records"
+  done < "$path"
+  if (( ${#lines[@]} )); then
+    parse_record "$source" "${lines[@]}"
+  fi
 }
 
-# Convert a path glob into an anchored POSIX ERE. Keep in sync with check-ownership.sh.
-glob_to_ere() {
-  local pat="$1"
-  while [[ "$pat" == ./* ]]; do
-    pat="${pat#./}"
-  done
-  if [[ -z "$pat" ]]; then
-    echo "check-graph: empty pattern is not valid" >&2
-    return 2
-  fi
-  if [[ "$pat" == */ ]]; then
-    pat="${pat}**"
-  fi
-
-  local len=${#pat}
-  local i=0
-  local ere="^"
-  local ch prev
-
-  while (( i < len )); do
-    if (( i + 3 <= len )) && [[ "${pat:i:3}" == "**/" ]]; then
-      prev=""
-      if (( i > 0 )); then
-        prev="${pat:i-1:1}"
-      fi
-      if (( i == 0 )) || [[ "$prev" == "/" ]]; then
-        ere+="(.*/)?"
-        i=$((i + 3))
-        continue
-      fi
-    fi
-
-    if (( i + 2 <= len )) && [[ "${pat:i:2}" == "**" ]]; then
-      ere+=".*"
-      i=$((i + 2))
-      continue
-    fi
-
-    ch="${pat:i:1}"
-    case "$ch" in
-      '*') ere+="[^/]*" ;;
-      '?') ere+="[^/]" ;;
-      '.'|'+'|'('|')'|'{'|'}'|'^'|'$'|'|'|'\\'|'['|']') ere+="\\$ch" ;;
-      *) ere+="$ch" ;;
-    esac
-    i=$((i + 1))
-  done
-
-  ere+="$"
-  printf '%s\n' "$ere"
-}
-
-declare -a A_tok=() B_tok=()
-declare -a A_MOVE_KIND=() A_MOVE_CHAR=() A_MOVE_NEXT=() A_MOVE_MODE=()
-declare -a B_MOVE_KIND=() B_MOVE_CHAR=() B_MOVE_NEXT=() B_MOVE_MODE=()
-declare -A INTER_MEMO=() INTER_VIS=()
-
+# Match the path glob syntax in check-ownership.sh. P represents optional **/.
 compile_tokens() {
-  local pat="$1"
-  local -n out=$2
-  out=()
-  while [[ "$pat" == ./* ]]; do
-    pat="${pat#./}"
-  done
-  if [[ "$pat" == */ ]]; then
-    pat="${pat}**"
-  fi
-  if [[ -z "$pat" ]]; then
-    echo "check-graph: empty pattern is not valid" >&2
-    return 2
-  fi
-  local i=0 len=${#pat} ch prev
-  while (( i < len )); do
-    if (( i + 3 <= len )) && [[ "${pat:i:3}" == "**/" ]]; then
-      prev=""
-      if (( i > 0 )); then
-        prev="${pat:i-1:1}"
-      fi
-      if (( i == 0 )) || [[ "$prev" == "/" ]]; then
-        out+=("P")
-        i=$((i + 3))
-        continue
-      fi
-    fi
-    if (( i + 2 <= len )) && [[ "${pat:i:2}" == "**" ]]; then
-      out+=("G")
+  local pattern="$1" i=0 ch
+  local -n compiled=$2
+  compiled=()
+  while (( i < ${#pattern} )); do
+    if [[ "${pattern:i:3}" == '**/' ]] && { (( i == 0 )) || [[ "${pattern:i-1:1}" == / ]]; }; then
+      compiled+=(P)
+      i=$((i + 3))
+    elif [[ "${pattern:i:2}" == '**' ]]; then
+      compiled+=(G)
       i=$((i + 2))
-      continue
+    else
+      ch="${pattern:i:1}"
+      case "$ch" in
+        '*') compiled+=(S) ;;
+        '?') compiled+=(Q) ;;
+        *) compiled+=("L$ch") ;;
+      esac
+      i=$((i + 1))
     fi
-    ch="${pat:i:1}"
-    case "$ch" in
-      '*') out+=("S") ;;
-      '?') out+=("Q") ;;
-      *) out+=("L${ch}") ;;
-    esac
-    i=$((i + 1))
   done
 }
 
-add_move() {
-  local side="$1" kind="$2" char="$3" next="$4" mode="$5"
-  if [[ "$side" == A ]]; then
-    A_MOVE_KIND+=("$kind")
-    A_MOVE_CHAR+=("$char")
-    A_MOVE_NEXT+=("$next")
-    A_MOVE_MODE+=("$mode")
-  else
-    B_MOVE_KIND+=("$kind")
-    B_MOVE_CHAR+=("$char")
-    B_MOVE_NEXT+=("$next")
-    B_MOVE_MODE+=("$mode")
-  fi
+read_regex() {
+  local -a tokens
+  local token ch
+  compile_tokens "$1" tokens
+  regex='^'
+  for token in "${tokens[@]}"; do
+    case "$token" in
+      P) regex+='(.*/)?' ;;
+      G) regex+='.*' ;;
+      S) regex+='[^/]*' ;;
+      Q) regex+='[^/]' ;;
+      L*)
+        ch="${token:1}"
+        case "$ch" in
+          '.'|'+'|'('|')'|'{'|'}'|'^'|'$'|'|'|'\'|'['|']') regex+='\' ;;
+        esac
+        regex+="$ch"
+        ;;
+    esac
+  done
+  regex+='$'
 }
 
-fill_moves() {
-  local side="$1" idx="$2" mode="$3"
-  local -n toks
-  if [[ "$side" == A ]]; then
-    toks=A_tok
-    A_MOVE_KIND=()
-    A_MOVE_CHAR=()
-    A_MOVE_NEXT=()
-    A_MOVE_MODE=()
-  else
-    toks=B_tok
-    B_MOVE_KIND=()
-    B_MOVE_CHAR=()
-    B_MOVE_NEXT=()
-    B_MOVE_MODE=()
-  fi
-  local n=${#toks[@]}
-  if (( idx >= n )); then
-    return 0
-  fi
-  if (( mode == 1 )); then
-    add_move "$side" any "" "$idx" 1
-    add_move "$side" slash "" "$((idx + 1))" 0
-    return 0
-  fi
-  local t="${toks[$idx]}"
-  local kind="${t:0:1}"
-  case "$kind" in
-    G) add_move "$side" any "" "$idx" 0 ;;
-    S) add_move "$side" noslash "" "$idx" 0 ;;
-    Q) add_move "$side" noslash "" "$((idx + 1))" 0 ;;
-    L)
-      local ch="${t:1}"
-      if [[ "$ch" == "/" ]]; then
-        add_move "$side" slash "" "$((idx + 1))" 0
-      else
-        add_move "$side" lit "$ch" "$((idx + 1))" 0
-      fi
-      ;;
-    P) ;;
+# Walk the product of two glob automata. Each move either stays at the current
+# token or advances, so a move that leaves both positions unchanged adds no path.
+move_options() {
+  local token="$1" position="$2" prefix="$3"
+  local -n chars=$4 positions=$5 prefixes=$6
+  chars=() positions=() prefixes=()
+  case "$token:$prefix" in
+    P:1) chars=(G 'L/') positions=("$position" "$((position + 1))") prefixes=(1 0) ;;
+    G:0|S:0) chars=("$token") positions=("$position") prefixes=(0) ;;
+    Q:0) chars=(S) positions=("$((position + 1))") prefixes=(0) ;;
+    L*:0) chars=("$token") positions=("$((position + 1))") prefixes=(0) ;;
   esac
 }
 
-classes_ok() {
-  local ak="$1" ac="$2" bk="$3" bc="$4"
-  case "$ak:$bk" in
-    any:*|*:any) return 0 ;;
-    noslash:noslash|slash:slash) return 0 ;;
-    noslash:slash|slash:noslash) return 1 ;;
-    noslash:lit) [[ "$bc" != "/" ]] ;;
-    lit:noslash) [[ "$ac" != "/" ]] ;;
-    slash:lit) [[ "$bc" == "/" ]] ;;
-    lit:slash) [[ "$ac" == "/" ]] ;;
-    lit:lit) [[ "$ac" == "$bc" ]] ;;
-    *) return 1 ;;
-  esac
-}
+intersects() {
+  local i="$1" j="$2" pa="$3" pb="$4" key="$1,$2,$3,$4"
+  local a="${tokens_a[$i]:-}" b="${tokens_b[$j]:-}"
+  if [[ -n "${disjoint[$key]+x}" ]]; then
+    return 1
+  fi
+  [[ -n "$a$b" ]] || return 0
+  if (( ! pa )); then
+    case "$a" in
+      P|G|S) if intersects "$((i + 1))" "$j" 0 "$pb"; then return 0; fi ;;
+    esac
+    if [[ "$a" == P ]] && intersects "$i" "$j" 1 "$pb"; then return 0; fi
+  fi
+  if (( ! pb )); then
+    case "$b" in
+      P|G|S) if intersects "$i" "$((j + 1))" "$pa" 0; then return 0; fi ;;
+    esac
+    if [[ "$b" == P ]] && intersects "$i" "$j" "$pa" 1; then return 0; fi
+  fi
 
-consume_one() {
-  local i=$1 j=$2 ma=$3 mb=$4
-  fill_moves A "$i" "$ma"
-  fill_moves B "$j" "$mb"
-  local -a ak=("${A_MOVE_KIND[@]+"${A_MOVE_KIND[@]}"}")
-  local -a ac=("${A_MOVE_CHAR[@]+"${A_MOVE_CHAR[@]}"}")
-  local -a an=("${A_MOVE_NEXT[@]+"${A_MOVE_NEXT[@]}"}")
-  local -a am=("${A_MOVE_MODE[@]+"${A_MOVE_MODE[@]}"}")
-  local -a bk=("${B_MOVE_KIND[@]+"${B_MOVE_KIND[@]}"}")
-  local -a bc=("${B_MOVE_CHAR[@]+"${B_MOVE_CHAR[@]}"}")
-  local -a bn=("${B_MOVE_NEXT[@]+"${B_MOVE_NEXT[@]}"}")
-  local -a bm=("${B_MOVE_MODE[@]+"${B_MOVE_MODE[@]}"}")
-  local ai bi
-  for (( ai = 0; ai < ${#ak[@]}; ai++ )); do
-    for (( bi = 0; bi < ${#bk[@]}; bi++ )); do
-      classes_ok "${ak[$ai]}" "${ac[$ai]}" "${bk[$bi]}" "${bc[$bi]}" || continue
-      local ni="${an[$ai]}" nj="${bn[$bi]}" nma="${am[$ai]}" nmb="${bm[$bi]}"
-      if (( ni == i && nj == j && nma == ma && nmb == mb )); then
+  local -a ac ai ap bc bi bp
+  move_options "$a" "$i" "$pa" ac ai ap
+  move_options "$b" "$j" "$pb" bc bi bp
+  local x y
+  for x in "${!ac[@]}"; do
+    for y in "${!bc[@]}"; do
+      if (( ai[x] == i && bi[y] == j && ap[x] == pa && bp[y] == pb )); then
         continue
       fi
-      if inter "$ni" "$nj" "$nma" "$nmb"; then
-        return 0
+      if [[ "${ac[$x]}" == G || "${bc[$y]}" == G || "${ac[$x]}" == "${bc[$y]}" ||
+            ( "${ac[$x]}" == S && "${bc[$y]}" != 'L/' ) ||
+            ( "${bc[$y]}" == S && "${ac[$x]}" != 'L/' ) ]]; then
+        if intersects "${ai[$x]}" "${bi[$y]}" "${ap[$x]}" "${bp[$y]}"; then return 0; fi
       fi
     done
   done
-  return 1
-}
-
-inter() {
-  local i=$1 j=$2 ma=$3 mb=$4
-  local key="$i,$j,$ma,$mb"
-  if [[ -n "${INTER_MEMO[$key]+x}" ]]; then
-    if (( INTER_MEMO[$key] == 1 )); then
-      return 0
-    fi
-    return 1
-  fi
-  if [[ -n "${INTER_VIS[$key]+x}" ]]; then
-    return 1
-  fi
-  INTER_VIS[$key]=1
-  local n=${#A_tok[@]} m=${#B_tok[@]}
-  local ok=1
-  if (( i >= n && j >= m && ma == 0 && mb == 0 )); then
-    ok=0
-  fi
-  if (( ok != 0 && i < n && ma == 0 )); then
-    case "${A_tok[$i]}" in
-      P)
-        inter $((i + 1)) "$j" 0 "$mb" && ok=0
-        (( ok != 0 )) && inter "$i" "$j" 1 "$mb" && ok=0
-        ;;
-      G|S)
-        inter $((i + 1)) "$j" 0 "$mb" && ok=0
-        ;;
-    esac
-  fi
-  if (( ok != 0 && j < m && mb == 0 )); then
-    case "${B_tok[$j]}" in
-      P)
-        inter "$i" $((j + 1)) "$ma" 0 && ok=0
-        (( ok != 0 )) && inter "$i" "$j" "$ma" 1 && ok=0
-        ;;
-      G|S)
-        inter "$i" $((j + 1)) "$ma" 0 && ok=0
-        ;;
-    esac
-  fi
-  if (( ok != 0 )); then
-    consume_one "$i" "$j" "$ma" "$mb" && ok=0
-  fi
-  unset "INTER_VIS[$key]"
-  if (( ok == 0 )); then
-    INTER_MEMO[$key]=1
-    return 0
-  fi
-  INTER_MEMO[$key]=0
+  disjoint[$key]=1
   return 1
 }
 
 patterns_overlap() {
-  compile_tokens "$1" A_tok
-  compile_tokens "$2" B_tok
-  INTER_MEMO=()
-  INTER_VIS=()
-  inter 0 0 0 0
+  local -a tokens_a tokens_b
+  local -A disjoint=()
+  compile_tokens "$1" tokens_a
+  compile_tokens "$2" tokens_b
+  intersects 0 0 0 0
 }
 
-stream_depends_on() {
-  local idx="$1" target="$2"
-  local -a deps=()
-  split_fields "${DEPS[$idx]:-}" deps
-  local dep
-  for dep in "${deps[@]+"${deps[@]}"}"; do
-    if [[ "$dep" == "$target" ]]; then
-      return 0
+declare -A visited=()
+declare -a order=()
+
+visit() {
+  local id="$1" path="$2" upstream
+  case "${visited[$id]:-}" in
+    done) return 0 ;;
+    active) note_fail "cycle: $path$id"; return 1 ;;
+  esac
+  local -a inputs
+  split_fields "${upstreams[$id]:-}" inputs
+  visited[$id]=active
+  for upstream in "${inputs[@]}"; do
+    visit "$upstream" "$path$id -> " || return 1
+  done
+  visited[$id]=done
+  order+=("$id")
+}
+
+validate_graph() {
+  local id kind upstream writer write read left right
+  local -a edges writes reads left_writes right_writes
+  for id in "${ids[@]}"; do
+    for kind in depends read_depends; do
+      split_fields "${plan[$id:$kind]}" edges
+      for upstream in "${edges[@]}"; do
+        if [[ -z "${planned[$upstream]+x}" ]]; then
+          note_fail "unknown $kind edge: $id -> $upstream"
+        elif [[ -n "${edge_kind[$id:$upstream]+x}" ]]; then
+          note_fail "edge declared as hard and read-only: $id -> $upstream"
+        else
+          edge_kind[$id:$upstream]="$kind"
+          upstreams[$id]="${upstreams[$id]:+${upstreams[$id]}$'\n'}$upstream"
+        fi
+      done
+    done
+    if [[ -n "${plan[$id:read_depends]}" && -z "${plan[$id:read]}" ]]; then
+      note_fail "read-only dependencies require read paths: $id"
     fi
   done
-  return 1
+  if (( ${#failures[@]} )); then finish; fi
+
+  local i j
+  for i in "${!ids[@]}"; do
+    left="${ids[$i]}"
+    split_fields "${plan[$left:write]}" left_writes
+    for ((j = i + 1; j < ${#ids[@]}; j++)); do
+      right="${ids[$j]}"
+      split_fields "${plan[$right:write]}" right_writes
+      for write in "${left_writes[@]}"; do
+        for read in "${right_writes[@]}"; do
+          if patterns_overlap "$write" "$read"; then
+            note_fail "write/write overlap: $left and $right ($write vs $read)"
+          fi
+        done
+      done
+    done
+  done
+  for id in "${ids[@]}"; do
+    split_fields "${plan[$id:read]}" reads
+    for writer in "${ids[@]}"; do
+      [[ "$writer" != "$id" && -z "${edge_kind[$id:$writer]+x}" ]] || continue
+      split_fields "${plan[$writer:write]}" writes
+      for read in "${reads[@]}"; do
+        for write in "${writes[@]}"; do
+          if patterns_overlap "$read" "$write"; then
+            note_fail "read/write overlap without dependency: $id reads $writer ($read vs $write)"
+          fi
+        done
+      done
+    done
+    visit "$id" "" || break
+  done
+  if (( ${#failures[@]} )); then finish; fi
+}
+
+validate_input_refs() {
+  local stream="$1" values="$2" entry id ref key
+  local -n refs=$3
+  local -a entries
+  split_fields "$values" entries
+  for entry in "${entries[@]}"; do
+    id="${entry%%=*}"
+    ref="${entry#*=}"
+    [[ -n "$id" && "$entry" == *=* ]] && parse_ref "$ref" ||
+      die_record "invalid input ref on $stream: $entry"
+    [[ -n "${planned[$id]+x}" ]] || die_record "input ref for unplanned stream: $stream -> $id"
+    key="$id"
+    if [[ "$stream" != '(join)' ]]; then
+      key="$stream:$id"
+      [[ -n "${edge_kind[$key]+x}" ]] || die_record "verified_against for undeclared edge: $stream -> $id"
+    fi
+    [[ -z "${refs[$key]+x}" ]] || die_record "duplicate input ref: $stream -> $id"
+    refs[$key]="$ref"
+  done
 }
 
 resolve_commit() {
-  local dir="$1" sha="$2" resolved
-  resolved="$(git -C "$dir" rev-parse --verify --end-of-options "${sha}^{commit}" 2>/dev/null)" || return 1
+  local sha="$2" resolved
+  valid_sha "$sha" || return 1
+  resolved="$(git -C "$1" rev-parse --verify --end-of-options "${sha,,}^{commit}" 2>/dev/null)" || return 1
   [[ "$resolved" == "${sha,,}"* ]] || return 1
   printf '%s\n' "$resolved"
 }
 
-is_worktree() {
-  local dir="$1"
-  [[ -d "$dir" ]] || return 1
-  [[ "$(git -C "$dir" rev-parse --is-inside-work-tree 2>/dev/null || true)" == "true" ]]
-}
-
-common_git_dir() {
-  git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null
+matches_ref() {
+  local resolved
+  parse_ref "$2" && [[ "$ref_branch" == "$3" ]] &&
+    resolved="$(resolve_commit "$1" "$ref_sha")" && [[ "$resolved" == "$4" ]]
 }
 
 check_base() {
-  local checkout="$1" lookup_dir="${repo_dir:-$1}" lookup_common branch tip
-  BASE_COMMON_DIR="$(common_git_dir "$checkout")" || {
-    note_fail "repository unavailable: $checkout"
-    return 1
+  local dir="$1" tip
+  base_common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" || {
+    note_fail "base repository unavailable: $dir"
+    finish
   }
-  if [[ -n "$repo_dir" ]]; then
-    lookup_common="$(common_git_dir "$lookup_dir")" || {
-      note_fail "base repository unavailable: $lookup_dir"
-      return 1
-    }
-    if [[ ! "$lookup_common" -ef "$BASE_COMMON_DIR" ]]; then
-      note_fail "base repository differs from worktree repository: $lookup_dir"
-      return 1
-    fi
+  parse_ref "$base_ref" || die_usage "invalid --base-ref: $base_ref"
+  base_branch="$ref_branch"
+  if ! tip="$(git -C "$dir" show-ref --verify --hash "refs/heads/$base_branch" 2>/dev/null)"; then
+    note_fail "base branch unavailable: $ref_branch"
+    finish
   fi
-  if ! parse_at_sha "$base_ref"; then
-    note_fail "base ref invalid: $base_ref"
-    return 1
-  fi
-  branch="$AT_LEFT"
-  if ! tip="$(git -C "$lookup_dir" show-ref --verify --hash "refs/heads/$branch" 2>/dev/null)"; then
-    note_fail "base branch unavailable: $branch"
-    return 1
-  fi
-  if ! BASE_SHA="$(resolve_commit "$lookup_dir" "$AT_SHA")" || [[ "$tip" != "$BASE_SHA" ]]; then
-    note_fail "base ref stale: expected $base_ref got ${branch}@${tip}"
-    return 1
+  if ! base_sha="$(resolve_commit "$dir" "$ref_sha")" || [[ "$base_sha" != "$tip" ]]; then
+    note_fail "base ref stale: expected $base_ref got $ref_branch@$tip"
+    finish
   fi
 }
 
-is_clean() {
-  local dir="$1"
-  local out
-  if ! out="$(git -C "$dir" status --porcelain --untracked-files=all 2>/dev/null)"; then
-    return 2
-  fi
-  [[ -z "$out" ]]
+run_ownership() {
+  # Keep older installations' Git diff and status settings from hiding changes.
+  TMPDIR="$scratch" GIT_CONFIG_COUNT=8 \
+    GIT_CONFIG_KEY_0=diff.ignoreSubmodules GIT_CONFIG_VALUE_0=none \
+    GIT_CONFIG_KEY_1=diff.relative GIT_CONFIG_VALUE_1=false \
+    GIT_CONFIG_KEY_2=core.ignoreCase GIT_CONFIG_VALUE_2=false \
+    GIT_CONFIG_KEY_3=core.filemode GIT_CONFIG_VALUE_3=true \
+    GIT_CONFIG_KEY_4=core.fsmonitor GIT_CONFIG_VALUE_4=false \
+    GIT_CONFIG_KEY_5=core.untrackedCache GIT_CONFIG_VALUE_5=false \
+    GIT_CONFIG_KEY_6=core.trustctime GIT_CONFIG_VALUE_6=true \
+    GIT_CONFIG_KEY_7=core.checkStat GIT_CONFIG_VALUE_7=default \
+    "$ownership_checker" "$@" > /dev/null
 }
 
-note_dirty() {
-  local dirty_msg="$1"
-  local unread_msg="$2"
-  local dir="$3"
-  local rc=0
-  is_clean "$dir" || rc=$?
-  if (( rc == 2 )); then
-    note_fail "$unread_msg"
-  elif (( rc != 0 )); then
-    note_fail "$dirty_msg"
-  fi
-}
-
-declare -A EDGE_SET=()
-declare -A ADJ=()
-declare -A COLOR=()
-declare -a STACK=()
-CYCLE_MSG=""
-
-add_edge() {
-  local from="$1" to="$2"
-  local key="${from}"$'\n'"${to}"
-  if [[ -n "${EDGE_SET[$key]+x}" ]]; then
-    return 0
-  fi
-  EDGE_SET[$key]=1
-  if [[ -z "${ADJ[$from]:-}" ]]; then
-    ADJ[$from]="$to"
-  else
-    ADJ[$from]+=$'\n'"$to"
-  fi
-}
-
-record_cycle() {
-  local back="$1"
-  local -a path=()
-  local n found=0
-  for n in "${STACK[@]}"; do
-    if [[ "$n" == "$back" ]]; then
-      found=1
-    fi
-    if (( found )); then
-      path+=("$n")
-    fi
-  done
-  path+=("$back")
-  local msg="cycle:"
-  local first=1
-  for n in "${path[@]}"; do
-    if (( first )); then
-      msg+=" $n"
-      first=0
-    else
-      msg+=" -> $n"
-    fi
-  done
-  CYCLE_MSG="$msg"
-}
-
-dfs_cycle() {
-  local node="$1"
-  COLOR[$node]=1
-  STACK+=("$node")
-  local -a neighs=()
-  split_fields "${ADJ[$node]:-}" neighs
-  local neigh c
-  for neigh in "${neighs[@]+"${neighs[@]}"}"; do
-    c="${COLOR[$neigh]:-0}"
-    if [[ "$c" == 1 ]]; then
-      record_cycle "$neigh"
-      return 0
-    fi
-    if [[ "$c" == 0 ]]; then
-      if dfs_cycle "$neigh"; then
-        return 0
-      fi
-    fi
-  done
-  unset 'STACK[-1]'
-  COLOR[$node]=2
-  return 1
-}
-
-find_cycle() {
-  COLOR=()
-  STACK=()
-  CYCLE_MSG=""
-  local id
-  for id in "${IDS[@]}"; do
-    if [[ "${COLOR[$id]:-0}" == 0 ]]; then
-      if dfs_cycle "$id"; then
-        return 0
-      fi
-    fi
-  done
-  return 1
-}
-
-compile_read_regexes() {
-  local idx="$1"
-  local -n dest=$2
-  dest=()
-  local -a reads=()
-  split_fields "${READS[$idx]:-}" reads
-  local pat re
-  for pat in "${reads[@]+"${reads[@]}"}"; do
-    re="$(glob_to_ere "$pat")" || return $?
-    dest+=("$re")
-  done
-}
-
-path_matches_any() {
+unpopulated_gitlink() (
   local path="$1"
-  shift
-  local re
-  for re in "$@"; do
-    if [[ "$path" =~ $re ]]; then
-      return 0
+  [[ ! -L "$path" ]] || return 1
+  [[ -e "$path" ]] || return 0
+  [[ -d "$path" && -r "$path" && -x "$path" ]] || return 1
+  unset GLOBIGNORE
+  shopt -s nullglob dotglob
+  local -a entries=("$path"/*)
+  (( ! ${#entries[@]} ))
+)
+
+check_worktree_clean() {
+  local label="$1" dir="$2" head="$3" entry status path
+  if ! git -C "$dir" ls-files -v -z > "$git_output"; then
+    note_fail "$label index unreadable"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    if [[ "$entry" == [a-zS]' '* ]]; then
+      note_fail "$label hidden index path: ${entry:2} (assume-unchanged or skip-worktree)"
+      return 1
     fi
-  done
-  return 1
+  done < "$git_output"
+
+  if ! git -C "$dir" ls-tree -r -z "$head" -- > "$git_output"; then
+    note_fail "$label committed tree unreadable"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    [[ "$entry" == '160000 commit '* ]] || continue
+    path="${entry#*$'\t'}"
+    if ! unpopulated_gitlink "$dir/$path"; then
+      note_fail "$label populated or unreadable submodule path is unsupported: $path"
+      return 1
+    fi
+  done < "$git_output"
+
+  # A literal dot cannot match any repository-relative Git path.
+  if ! run_ownership --base "$head" --worktree "$dir" -- .; then
+    note_fail "$label dirty worktree or unreadable changes"
+    return 1
+  fi
+  if ! status="$(git -C "$dir" -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+    note_fail "$label status unreadable"
+    return 1
+  elif [[ -n "$status" ]]; then
+    note_fail "$label dirty worktree"
+    return 1
+  fi
 }
 
-collect_diff_paths() {
-  local dir="$1" old="$2" new="$3"
-  local -n dest=$4
-  dest=()
-  local out status path path2
-  out="$(mktemp)"
-  TMP_FILES+=("$out")
-  if ! git -C "$dir" -c core.quotePath=false diff --name-status -z -M -C "${old}..${new}" >"$out"; then
-    return 2
+# On success, expose the branch and commit of the bound worktree.
+check_checkout() {
+  local label="$1" dir="$2" ref="$3" top common
+  checkout_branch="" checkout_head=""
+  if [[ -z "$dir" ]] || ! top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" ||
+    [[ ! "$top" -ef "$dir" ]]; then
+    note_fail "$label worktree unavailable or not a worktree root: ${dir:-missing}"
+    return 1
+  fi
+  if ! common="$(git -C "$dir" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)" ||
+    [[ ! "$common" -ef "$base_common" ]]; then
+    note_fail "$label worktree repository differs from base repository: $dir"
+    return 1
+  fi
+  if ! checkout_branch="$(git -C "$dir" symbolic-ref HEAD 2>/dev/null)" ||
+    [[ "$checkout_branch" != refs/heads/* ]] ||
+    ! checkout_head="$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null)" ||
+    ! matches_ref "$dir" "$ref" "${checkout_branch#refs/heads/}" "$checkout_head"; then
+    note_fail "$label ref mismatch: expected ${ref:-missing} got ${checkout_branch#refs/heads/}@${checkout_head:-unknown}"
+    return 1
+  fi
+  checkout_branch="${checkout_branch#refs/heads/}"
+  check_worktree_clean "$label" "$dir" "$checkout_head"
+}
+
+check_verdict_base() {
+  local checked_base
+  if ! checked_base="$(resolve_commit "$2" "$3")" || [[ "$checked_base" != "$base_sha" ]]; then
+    note_fail "$1 verdict BASE mismatch: expected $base_sha got ${3:-missing}"
+  fi
+}
+
+# Check both paths of each detected rename or copy without shell word splitting.
+check_read_diff() {
+  local stream="$1" upstream="$2" dir="$3" old="$4" current="$5"
+  local status path re
+  local -a reads regexes=()
+  split_fields "${plan[$stream:read]}" reads
+  for path in "${reads[@]}"; do
+    read_regex "$path"
+    regexes+=("$regex")
+  done
+  if ! git -C "$dir" diff --name-status -z -M -C --find-copies-harder -l0 \
+    --no-relative --no-ext-diff --no-textconv --ignore-submodules=none -O/dev/null "$old..$current" -- > "$git_output"; then
+    note_fail "stale: $stream -> $upstream unreadable diff"
+    return 1
   fi
   while IFS= read -r -d '' status; do
-    if [[ "$status" =~ ^[RC][0-9]*$ ]]; then
-      IFS= read -r -d '' path || return 2
-      IFS= read -r -d '' path2 || return 2
-      dest+=("$path" "$path2")
-    else
-      IFS= read -r -d '' path || return 2
-      dest+=("$path")
-    fi
-  done < "$out"
-  return 0
+    local count=1
+    if [[ "$status" == [RC]* ]]; then count=2; fi
+    while (( count-- > 0 )); do
+      if ! IFS= read -r -d '' path; then
+        note_fail "stale: $stream -> $upstream incomplete diff"
+        return 1
+      fi
+      for re in "${regexes[@]}"; do
+        if [[ "$path" =~ $re ]]; then
+          note_fail "stale: $stream -> $upstream intersects read via $path"
+          return 1
+        fi
+      done
+    done
+  done < "$git_output"
 }
 
-checkout_binding() {
-  # Sets BIND_HEAD, BIND_BRANCH, BIND_RESOLVED. Returns 0 when branch and HEAD match.
-  local dir="$1" branch="$2" sha="$3"
-  BIND_HEAD=""
-  BIND_BRANCH=""
-  BIND_RESOLVED=""
-  BIND_RESOLVED="$(resolve_commit "$dir" "$sha")" || return 2
-  BIND_HEAD="$(git -C "$dir" rev-parse --verify HEAD 2>/dev/null)" || return 1
-  if ! BIND_BRANCH="$(git -C "$dir" symbolic-ref HEAD 2>/dev/null)"; then
-    BIND_BRANCH="DETACHED"
+check_owned_patch() {
+  local id="$1" dir="$2" head="$3" history commit parent current="$3"
+  if ! git -C "$dir" merge-base --is-ancestor "$base_sha" "$head"; then
+    note_fail "stream $id ownership baseline is outside stream ancestry: $base_sha"
     return 1
   fi
-  [[ "$BIND_BRANCH" == refs/heads/* ]] || return 1
-  BIND_BRANCH="${BIND_BRANCH#refs/heads/}"
-  [[ "$BIND_HEAD" == "$BIND_RESOLVED" && "$BIND_BRANCH" == "$branch" ]]
+  local -a writes ancestry
+  split_fields "${plan[$id:write]}" writes
+  if (( ! ${#writes[@]} )); then
+    note_fail "stream $id has no declared write ownership"
+    return 1
+  fi
+  if ! run_ownership --repo "$dir" --base "$base_sha" --head "$head" --require-changes -- "${writes[@]}"; then
+    note_fail "stream $id ownership check failed"
+    return 1
+  fi
+  if ! history="$(git -C "$dir" rev-list --parents --topo-order "$base_sha..$head" --)"; then
+    note_fail "stream $id ownership history unreadable"
+    return 1
+  fi
+  while IFS=' ' read -r -a ancestry; do
+    if (( ${#ancestry[@]} != 2 )) || [[ "${ancestry[0]}" != "$current" ]]; then
+      note_fail "stream $id ownership requires a patch without merge commits above BASE"
+      return 1
+    fi
+    commit="${ancestry[0]}"
+    parent="${ancestry[1]}"
+    if [[ "$parent" != "$base_sha" || "$commit" != "$head" ]] &&
+      ! run_ownership --repo "$dir" --base "$parent" --head "$commit" -- "${writes[@]}"; then
+      note_fail "stream $id ownership check failed at commit $commit"
+      return 1
+    fi
+    current="$parent"
+  done <<< "$history"
+  if [[ "$current" != "$base_sha" ]]; then
+    note_fail "stream $id ownership history does not reach BASE"
+    return 1
+  fi
 }
 
-cmd_ready() {
-  RESULT_PREFIX="GRAPH READY"
-  parse_spec_file "$spec_file"
-  local i j id tid idx
-  local -a deps=() writes=() reads=() other_writes=()
-  for i in "${!IDS[@]}"; do
-    id="${IDS[$i]}"
-    split_fields "${DEPS[$i]:-}" deps
-    for tid in "${deps[@]+"${deps[@]}"}"; do
-      if [[ -z "${ID_INDEX[$tid]+x}" ]]; then
-        note_fail "unknown dependency: $id -> $tid"
-        continue
-      fi
-      idx="${ID_INDEX[$tid]}"
-      if [[ "${STATUSES[$idx]}" != "PASS" ]]; then
-        local shown="${STATUSES[$idx]}"
-        [[ -n "$shown" ]] || shown="missing"
-        note_fail "dependency not PASS: $id -> $tid (status: $shown)"
-        continue
-      fi
-      if ! parse_at_sha "${REFS[$idx]}"; then
-        note_fail "dependency ref invalid: $tid"
-        continue
-      fi
-      local branch="$AT_LEFT" sha="$AT_SHA"
-      if [[ -z "${WORKTREES[$idx]}" ]]; then
-        note_fail "dependency ref does not resolve: $tid $sha (missing worktree)"
-      elif ! is_worktree "${WORKTREES[$idx]}"; then
-        note_fail "dependency ref does not resolve: $tid $sha (worktree unavailable)"
+declare -A required=() valid=() heads=() branches=()
+
+require_stream() {
+  local id="$1" upstream
+  [[ -z "${required[$id]+x}" ]] || return 0
+  required[$id]=1
+  local -a inputs
+  split_fields "${upstreams[$id]:-}" inputs
+  for upstream in "${inputs[@]}"; do
+    require_stream "$upstream"
+  done
+}
+
+check_edge() {
+  local id="$1" upstream="$2" ref="${edge_refs[$1:$2]:-}"
+  local kind="${edge_kind[$id:$upstream]}" dir="${evidence[$upstream:worktree]:-}" old
+  if [[ -z "$ref" ]]; then
+    note_fail "missing verified_against: $id -> $upstream ($kind)"
+  elif [[ -z "${valid[$upstream]+x}" ]]; then
+    note_fail "stale: $id -> $upstream has no current PASS"
+  elif [[ "$kind" == depends ]]; then
+    if ! matches_ref "$dir" "$ref" "${branches[$upstream]}" "${heads[$upstream]}"; then
+      note_fail "stale: $id -> $upstream verified_against $ref does not match hard dependency ${branches[$upstream]}@${heads[$upstream]}"
+    fi
+  else
+    parse_ref "$ref" || die_record "invalid verified_against ref: $ref"
+    if [[ "$ref_branch" != "${branches[$upstream]}" ]] || ! old="$(resolve_commit "$dir" "$ref_sha")"; then
+      note_fail "stale: $id -> $upstream invalid historical read ref $ref"
+    elif [[ "$old" != "${heads[$upstream]}" ]]; then
+      if ! git -C "$dir" merge-base --is-ancestor "$old" "${heads[$upstream]}"; then
+        note_fail "stale: $id -> $upstream historical read ref $ref is outside upstream ancestry"
+      elif ! git -C "$dir" merge-base --is-ancestor "$base_sha" "$old"; then
+        note_fail "stale: $id -> $upstream historical read ref $ref predates BASE"
       else
-        note_dirty "dependency dirty: $tid" "dependency status unreadable: $tid" "${WORKTREES[$idx]}"
-        local bind_rc=0
-        checkout_binding "${WORKTREES[$idx]}" "$branch" "$sha" || bind_rc=$?
-        if (( bind_rc == 2 )); then
-          note_fail "dependency ref does not resolve: $tid $sha"
-        elif (( bind_rc != 0 )); then
-          note_fail "dependency ref mismatch: $tid expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
-        fi
+        check_read_diff "$id" "$upstream" "$dir" "$old" "${heads[$upstream]}" || return 1
       fi
-      add_edge "$tid" "$id"
-    done
-  done
-
-  for i in "${!IDS[@]}"; do
-    split_fields "${WRITES[$i]:-}" writes
-    for (( j = i + 1; j < ${#IDS[@]}; j++ )); do
-      split_fields "${WRITES[$j]:-}" other_writes
-      local wa wb
-      for wa in "${writes[@]+"${writes[@]}"}"; do
-        for wb in "${other_writes[@]+"${other_writes[@]}"}"; do
-          if patterns_overlap "$wa" "$wb"; then
-            note_fail "write/write overlap: ${IDS[$i]} and ${IDS[$j]} ($wa vs $wb)"
-          fi
-        done
-      done
-    done
-  done
-
-  for i in "${!IDS[@]}"; do
-    split_fields "${WRITES[$i]:-}" writes
-    for j in "${!IDS[@]}"; do
-      (( j != i )) || continue
-      split_fields "${READS[$j]:-}" reads
-      local wa rb
-      for wa in "${writes[@]+"${writes[@]}"}"; do
-        for rb in "${reads[@]+"${reads[@]}"}"; do
-          if patterns_overlap "$wa" "$rb"; then
-            add_edge "${IDS[$i]}" "${IDS[$j]}"
-            if ! stream_depends_on "$j" "${IDS[$i]}"; then
-              note_fail "read/write overlap without dependency: ${IDS[$j]} reads ${IDS[$i]} ($rb vs $wa)"
-            fi
-          fi
-        done
-      done
-    done
-  done
-
-  if find_cycle; then
-    note_fail "$CYCLE_MSG"
+    fi
   fi
-  finish
 }
 
-cmd_invalidate() {
-  RESULT_PREFIX="GRAPH INVALIDATE"
-  parse_spec_file "$spec_file"
-  local i id repo_bound=0
-  local -a bound_heads=()
-  for i in "${!IDS[@]}"; do
-    id="${IDS[$i]}"
-    if [[ -z "${WORKTREES[$i]}" ]]; then
-      note_fail "missing worktree: $id"
+check_streams() {
+  local id dir ref upstream before
+  local -a inputs
+  for id in "${order[@]}"; do
+    [[ -n "${required[$id]+x}" ]] || continue
+    if [[ "${evidence[$id:status]:-}" != PASS ]]; then
+      note_fail "stream not PASS: $id (status: ${evidence[$id:status]:-missing})"
       continue
     fi
-    if ! is_worktree "${WORKTREES[$i]}"; then
-      note_fail "not a work tree: $id ${WORKTREES[$i]}"
-      continue
+    dir="${evidence[$id:worktree]:-}"
+    ref="${evidence[$id:ref]:-}"
+    check_checkout "stream $id" "$dir" "$ref" || continue
+    heads[$id]="$checkout_head"
+    branches[$id]="$checkout_branch"
+    before=${#failures[@]}
+    if ! matches_ref "$dir" "${evidence[$id:verdict_ref]:-}" "$checkout_branch" "$checkout_head"; then
+      note_fail "stream $id verdict REF mismatch: expected $checkout_branch@$checkout_head got ${evidence[$id:verdict_ref]:-missing}"
     fi
-    if (( ! repo_bound )); then
-      check_base "${WORKTREES[$i]}" || finish
-      repo_bound=1
-    elif [[ ! "$(common_git_dir "${WORKTREES[$i]}")" -ef "$BASE_COMMON_DIR" ]]; then
-      note_fail "worktree repository differs from base repository: $id"
-      continue
-    fi
-    if ! parse_at_sha "${REFS[$i]}"; then
-      note_fail "invalid ref: $id"
-      continue
-    fi
-    local branch="$AT_LEFT" sha="$AT_SHA"
-    note_dirty "dirty worktree: $id" "unreadable status: $id" "${WORKTREES[$i]}"
-    local bind_rc=0
-    checkout_binding "${WORKTREES[$i]}" "$branch" "$sha" || bind_rc=$?
-    if (( bind_rc == 2 )); then
-      note_fail "ref does not resolve: $id $sha"
-    elif (( bind_rc != 0 )); then
-      note_fail "ref mismatch: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
-    else
-      bound_heads[$i]="$BIND_HEAD"
+    check_verdict_base "stream $id" "$dir" "${evidence[$id:verdict_base]:-}"
+    check_owned_patch "$id" "$dir" "$checkout_head" || continue
+    split_fields "${upstreams[$id]:-}" inputs
+    for upstream in "${inputs[@]}"; do
+      check_edge "$id" "$upstream" || continue
+    done
+    if (( ${#failures[@]} == before )); then
+      valid[$id]=1
     fi
   done
-
-  for i in "${!IDS[@]}"; do
-    id="${IDS[$i]}"
-    local -a verified=() reads_re=() deps=()
-    local -A seen_verified=() hard_deps=()
-    split_fields "${DEPS[$i]:-}" deps
-    local dep
-    for dep in "${deps[@]}"; do
-      if [[ -z "${ID_INDEX[$dep]+x}" ]]; then
-        note_fail "unknown dependency: $id -> $dep"
-        continue
-      fi
-      local dep_status="${STATUSES[${ID_INDEX[$dep]}]}"
-      if [[ "$dep_status" != PASS ]]; then
-        note_fail "dependency not PASS: $id -> $dep (status: ${dep_status:-missing})"
-      fi
-      hard_deps[$dep]=1
-    done
-    split_fields "${VERIFIED[$i]:-}" verified
-    compile_read_regexes "$i" reads_re || exit $?
-    local entry
-    for entry in "${verified[@]}"; do
-      if ! parse_at_sha "$entry"; then
-        note_fail "stale: $id verified_against invalid ($entry)"
-        continue
-      fi
-      local upstream="$AT_LEFT" old_sha="$AT_SHA"
-      if [[ -z "${ID_INDEX[$upstream]+x}" ]]; then
-        note_fail "stale: $id verified_against unknown stream $upstream"
-        continue
-      fi
-      local uidx="${ID_INDEX[$upstream]}"
-      seen_verified[$upstream]=1
-      local current="${bound_heads[$uidx]:-}"
-      if [[ -z "$current" ]]; then
-        note_fail "stale: $id verified_against $upstream has no current binding"
-        continue
-      fi
-      local resolved_old=""
-      if ! resolved_old="$(resolve_commit "${WORKTREES[$uidx]}" "$old_sha")"; then
-        note_fail "stale: $id verified_against ${upstream}@${old_sha} missing sha"
-        continue
-      fi
-      if [[ -n "${hard_deps[$upstream]+x}" ]]; then
-        if [[ "$resolved_old" != "$current" ]]; then
-          note_fail "stale: $id verified_against ${upstream}@${old_sha} does not match hard dependency $current"
-        fi
-        continue
-      fi
-      [[ "$resolved_old" != "$current" ]] || continue
-      local -a changed=()
-      local diff_rc=0
-      collect_diff_paths "${WORKTREES[$uidx]}" "$resolved_old" "$current" changed || diff_rc=$?
-      if (( diff_rc != 0 )); then
-        note_fail "stale: $id verified_against ${upstream}@${old_sha} unreadable diff"
-        continue
-      fi
-      local path
-      for path in "${changed[@]+"${changed[@]}"}"; do
-        if path_matches_any "$path" "${reads_re[@]+"${reads_re[@]}"}"; then
-          note_fail "stale: $id verified_against ${upstream}@${old_sha} intersects read via $path"
-          break
-        fi
-      done
-    done
-    for dep in "${!hard_deps[@]}"; do
-      if [[ -z "${seen_verified[$dep]+x}" ]]; then
-        note_fail "missing verified_against for hard dependency: $id -> $dep"
-      fi
-    done
-  done
-  finish
 }
 
-cmd_join() {
-  RESULT_PREFIX="GRAPH JOIN"
-  [[ -n "$integration_ref" ]] || die_usage "--integration-ref is required for join"
-  [[ -n "$integration_worktree" ]] || die_usage "--integration-worktree is required for join"
-  parse_spec_file "$spec_file"
-  if ! parse_at_sha "$integration_ref"; then
-    note_fail "integration ref invalid: $integration_ref"
-    finish
+# Raw diffs record the path, mode, and object ID relative to the same BASE.
+# Compare them without writing a trial merge tree into the repository.
+load_patch() {
+  local dir="$1" head="$2" change path
+  local -n patch=$3 paths=$4
+  if ! git -C "$dir" diff --raw -z --no-abbrev --no-renames --no-relative \
+    --no-ext-diff --no-textconv --ignore-submodules=none -O/dev/null "$base_sha" "$head" -- > "$git_output"; then
+    return 1
   fi
-  local ibranch="$AT_LEFT" isha="$AT_SHA"
-  if ! is_worktree "$integration_worktree"; then
-    note_fail "integration worktree unavailable: $integration_worktree"
-    finish
+  while IFS= read -r -d '' change; do
+    IFS= read -r -d '' path || return 1
+    [[ -n "$path" && -z "${patch[$path]+x}" ]] || return 1
+    patch[$path]="$change"
+    paths+=("$path")
+  done < "$git_output"
+}
+
+check_integration_tree() {
+  local commit="$1" id path rc
+  local -A expected=() actual=()
+  local -a expected_paths=() actual_paths=()
+  for id in "${ids[@]}"; do
+    rc=0
+    git -C "$integration_worktree" merge-base --is-ancestor "${heads[$id]}" "$commit" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) continue ;;
+      *) note_fail "cannot inspect ancestry of $id at integration commit $commit"; return 1 ;;
+    esac
+    if ! load_patch "$integration_worktree" "${heads[$id]}" expected expected_paths; then
+      note_fail "cannot assemble planned integration patches: $id"
+      return 1
+    fi
+  done
+  if ! load_patch "$integration_worktree" "$commit" actual actual_paths; then
+    note_fail "cannot read integration patch at commit $commit"
+    return 1
   fi
-  check_base "$integration_worktree" || finish
-  note_dirty "integration dirty" "integration status unreadable" "$integration_worktree"
-  local bind_rc=0
-  checkout_binding "$integration_worktree" "$ibranch" "$isha" || bind_rc=$?
-  if (( bind_rc == 2 )); then
-    note_fail "integration ref does not resolve: $isha"
-  elif (( bind_rc != 0 )); then
-    note_fail "integration ref mismatch: expected ${ibranch}@${isha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
+  for path in "${actual_paths[@]}"; do
+    if [[ -z "${expected[$path]+x}" ]]; then
+      note_fail "unplanned integration path: $path (commit $commit)"
+    elif [[ "${actual[$path]}" != "${expected[$path]}" ]]; then
+      note_fail "integration path differs from planned patch: $path (commit $commit)"
+    fi
+  done
+  for path in "${expected_paths[@]}"; do
+    if [[ -z "${actual[$path]+x}" ]]; then
+      note_fail "planned patch missing from integration: $path (commit $commit)"
+    fi
+  done
+}
+
+check_integration_content() {
+  local head="$1" id history commit parent
+  local -a ancestry commits exclusions=("^$base_sha")
+  local -A checked=()
+  checked[$base_sha]=1
+  for id in "${ids[@]}"; do
+    exclusions+=("^${heads[$id]}")
+    checked[${heads[$id]}]=1
+  done
+  if ! history="$(git -C "$integration_worktree" rev-list --reverse --parents --topo-order "$head" "${exclusions[@]}" --)"; then
+    note_fail "cannot inspect integration history"
+    return 1
   fi
-  (( bind_rc == 0 )) || finish
-  local integration_head="$BIND_HEAD"
-  if ! git -C "$integration_worktree" merge-base --is-ancestor "$BASE_SHA" "$integration_head"; then
+  split_fields "$history" commits
+  for commit in "${commits[@]}"; do
+    IFS=' ' read -r -a ancestry <<< "$commit"
+    commit="${ancestry[0]}"
+    if (( ${#ancestry[@]} < 3 )); then
+      note_fail "integration contains a commit outside planned histories: $commit"
+      continue
+    fi
+    for parent in "${ancestry[@]:1}"; do
+      if [[ -z "${checked[$parent]+x}" ]]; then
+        note_fail "integration merge $commit has an unreviewed parent: $parent"
+      fi
+    done
+    check_integration_tree "$commit" || return 1
+    checked[$commit]=1
+  done
+  if [[ "$head" != "${commit:-}" || -z "${checked[$head]+x}" ]]; then
+    check_integration_tree "$head" || return 1
+  fi
+}
+
+check_join() {
+  check_checkout integration "$integration_worktree" "$integration_ref" || return 1
+  local head="$checkout_head" branch="$checkout_branch" id dir
+  if [[ "$branch" == "$base_branch" ]]; then
+    note_fail "integration branch must differ from the target branch: $branch"
+  fi
+  if ! git -C "$integration_worktree" merge-base --is-ancestor "$base_sha" "$head"; then
     note_fail "base not in integration history: $base_ref"
   fi
-
-  local i id
-  for i in "${!IDS[@]}"; do
-    id="${IDS[$i]}"
-    if [[ "${STATUSES[$i]}" != "PASS" ]]; then
-      local shown="${STATUSES[$i]}"
-      [[ -n "$shown" ]] || shown="missing"
-      note_fail "input not PASS: $id (status: $shown)"
+  if [[ "${combined[status]:-}" != PASS ]]; then
+    note_fail "combined verdict not PASS (status: ${combined[status]:-missing})"
+  fi
+  if ! matches_ref "$integration_worktree" "${combined[integration_ref]:-}" "$branch" "$head"; then
+    note_fail "combined verdict INTEGRATION_REF mismatch: expected $branch@$head got ${combined[integration_ref]:-missing}"
+  fi
+  check_verdict_base combined "$integration_worktree" "${combined[verdict_base]:-}"
+  for id in "${ids[@]}"; do
+    dir="${evidence[$id:worktree]:-}"
+    if [[ "$branch" == "${branches[$id]:-}" || ( -n "$dir" && "$integration_worktree" -ef "$dir" ) ]]; then
+      note_fail "integration must use a separate branch and worktree from stream $id"
     fi
-    if ! parse_at_sha "${REFS[$i]}"; then
-      note_fail "input ref invalid: $id"
-      continue
+    if [[ -n "${heads[$id]+x}" ]] &&
+      ! git -C "$integration_worktree" merge-base --is-ancestor "${heads[$id]}" "$head"; then
+      note_fail "input not in integration history: $id ${branches[$id]}@${heads[$id]}"
     fi
-    local branch="$AT_LEFT" sha="$AT_SHA"
-    if [[ -z "${WORKTREES[$i]}" ]]; then
-      note_fail "input ref does not resolve: $id $sha (missing worktree)"
-      continue
-    fi
-    if ! is_worktree "${WORKTREES[$i]}"; then
-      note_fail "input ref does not resolve: $id $sha (worktree unavailable)"
-      continue
-    fi
-    if [[ ! "$(common_git_dir "${WORKTREES[$i]}")" -ef "$BASE_COMMON_DIR" ]]; then
-      note_fail "input worktree repository differs from integration repository: $id"
-      continue
-    fi
-    note_dirty "input dirty: $id" "input status unreadable: $id" "${WORKTREES[$i]}"
-    bind_rc=0
-    checkout_binding "${WORKTREES[$i]}" "$branch" "$sha" || bind_rc=$?
-    if (( bind_rc == 2 )); then
-      note_fail "input ref does not resolve: $id $sha"
-    elif (( bind_rc != 0 )); then
-      note_fail "input ref stale: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
-    elif ! git -C "$integration_worktree" merge-base --is-ancestor "$BIND_HEAD" "$integration_head"; then
-      note_fail "input not in integration history: $id ${branch}@${sha}"
+    if [[ -z "${join_refs[$id]+x}" ]]; then
+      note_fail "missing combined input_ref: $id"
+    elif [[ -z "${heads[$id]+x}" ]] ||
+      ! matches_ref "$integration_worktree" "${join_refs[$id]}" "${branches[$id]}" "${heads[$id]}"; then
+      note_fail "combined input_ref mismatch: $id ${join_refs[$id]}"
     fi
   done
-  finish
+  if (( ! ${#failures[@]} )); then
+    check_integration_content "$head" || return 1
+  fi
 }
 
-if [[ $# -lt 1 ]]; then
-  die_usage "command is required"
-fi
-
-case "$1" in
-  -h|--help|help)
-    usage
-    exit 0
-    ;;
-  ready|invalidate|join)
-    cmd="$1"
-    shift
-    ;;
-  *)
-    die_usage "unknown command: $1"
-    ;;
+case "${1:-}" in
+  -h|--help|help) usage; exit 0 ;;
+  ready|invalidate|join) command="$1"; shift ;;
+  *) die_usage "expected ready, invalidate, or join" ;;
 esac
 
-while [[ $# -gt 0 ]]; do
+declare -A options=()
+while (( $# )); do
   case "$1" in
-    --repo)
-      [[ $# -ge 2 && -n "$2" ]] || die_usage "--repo requires an argument"
-      repo_dir="$2"
+    --plan|--repo|--base-ref|--stream|--integration-ref|--integration-worktree)
+      [[ $# -ge 2 && -n "$2" && "$2" != --* ]] || die_usage "$1 requires an argument"
+      [[ -z "${options[$1]+x}" ]] || die_usage "duplicate option: $1"
+      options[$1]="$2"
       shift 2
       ;;
-    --base-ref)
-      [[ $# -ge 2 && -n "$2" ]] || die_usage "--base-ref requires an argument"
-      base_ref="$2"
-      shift 2
-      ;;
-    --integration-ref)
-      [[ $# -ge 2 ]] || die_usage "--integration-ref requires an argument"
-      integration_ref="$2"
-      shift 2
-      ;;
-    --integration-worktree)
-      [[ $# -ge 2 ]] || die_usage "--integration-worktree requires an argument"
-      integration_worktree="$2"
-      shift 2
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    --)
-      shift
-      break
-      ;;
-    -*)
-      die_usage "unknown option: $1"
-      ;;
-    *)
-      if [[ -n "$spec_file" ]]; then
-        die_usage "unexpected argument: $1"
-      fi
-      spec_file="$1"
-      shift
-      ;;
+    -h|--help) usage; exit 0 ;;
+    --) shift; break ;;
+    -*) die_usage "unknown option: $1" ;;
+    *) break ;;
   esac
 done
-
-if [[ $# -gt 0 ]]; then
-  if [[ -n "$spec_file" ]]; then
-    die_usage "unexpected argument: $1"
-  fi
-  spec_file="$1"
-  shift
-  if [[ $# -gt 0 ]]; then
-    die_usage "unexpected argument: $1"
-  fi
-fi
-
-[[ -n "$spec_file" ]] || die_usage "spec file is required"
-if [[ "$cmd" != "join" ]]; then
-  if [[ -n "$integration_ref" || -n "$integration_worktree" ]]; then
-    die_usage "--integration-ref and --integration-worktree are only valid with join"
-  fi
-fi
-
-if [[ "$cmd" == ready ]]; then
-  [[ -z "$base_ref" ]] || die_usage "--base-ref is only valid with invalidate and join"
+(( $# == 1 )) || die_usage "expected one EVIDENCE file after the options"
+plan_file="${options[--plan]:-}"
+base_ref="${options[--base-ref]:-}"
+repo_dir="${options[--repo]:-}"
+selected="${options[--stream]:-}"
+integration_ref="${options[--integration-ref]:-}"
+integration_worktree="${options[--integration-worktree]:-}"
+[[ -n "$plan_file" ]] || die_usage "--plan is required"
+[[ -n "$base_ref" ]] || die_usage "--base-ref is required"
+if [[ "$command" == join ]]; then
+  [[ -z "$selected" ]] || die_usage "--stream is only valid with ready and invalidate"
+  [[ -n "$integration_ref" ]] || die_usage "--integration-ref is required for join"
+  [[ -n "$integration_worktree" ]] || die_usage "--integration-worktree is required for join"
 else
-  [[ -n "$base_ref" ]] || die_usage "--base-ref is required for $cmd"
+  [[ -z "$integration_ref$integration_worktree" ]] || die_usage "integration options are only valid with join"
 fi
 
-case "$cmd" in
-  ready) cmd_ready ;;
-  invalidate) cmd_invalidate ;;
-  join) cmd_join ;;
-esac
+[[ ! "$plan_file" -ef "$1" ]] || die_usage "plan and evidence must be separate files"
+parse_file plan "$plan_file"
+(( ${#ids[@]} )) || die_record "plan has no stream records"
+[[ -z "$selected" || -n "${planned[$selected]+x}" ]] || die_usage "unknown --stream: $selected"
+validate_graph
+parse_file evidence "$1"
+for id in "${ids[@]}"; do
+  validate_input_refs "$id" "${evidence[$id:verified_against]:-}" edge_refs
+done
+validate_input_refs '(join)' "${combined[input_ref]:-}" join_refs
+
+for id in "${ids[@]}"; do
+  [[ -z "$selected" || "$id" == "$selected" ]] || continue
+  if [[ "$command" == ready ]]; then
+    split_fields "${upstreams[$id]:-}" inputs
+    for upstream in "${inputs[@]}"; do
+      require_stream "$upstream"
+    done
+  else
+    require_stream "$id"
+  fi
+done
+if [[ -z "$repo_dir" ]]; then
+  repo_dir="$integration_worktree"
+  for id in "${order[@]}"; do
+    [[ -z "$repo_dir" ]] || break
+    if [[ -n "${required[$id]+x}" && -n "${evidence[$id:worktree]:-}" ]]; then
+      repo_dir="${evidence[$id:worktree]}"
+    fi
+  done
+fi
+check_base "${repo_dir:-.}"
+scratch_root="$(cd -P -- "${TMPDIR:-/tmp}" && pwd -P)" || die_usage "temporary directory is unavailable"
+if git -C "$scratch_root" rev-parse --git-dir >/dev/null 2>&1; then
+  die_usage "temporary directory must be outside Git repositories: $scratch_root"
+fi
+scratch="$(mktemp -d "$scratch_root/quintet-graph.XXXXXXXX")"
+git_output="$scratch/git-output"
+check_streams
+if [[ "$command" == join ]]; then
+  check_join || finish
+fi
+finish
