@@ -2,6 +2,13 @@
 # Verify that changed (and optionally untracked) paths stay within declared WRITE OWNERSHIP patterns.
 set -euo pipefail
 
+# Discover the repository and index for the supplied directory, including in Git hooks.
+unset GIT_DIR GIT_COMMON_DIR GIT_WORK_TREE GIT_IMPLICIT_WORK_TREE GIT_INDEX_FILE \
+  GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_QUARANTINE_PATH \
+  GIT_NAMESPACE GIT_PREFIX GIT_SHALLOW_FILE GIT_REPLACE_REF_BASE \
+  GIT_CONFIG_COUNT GIT_CONFIG_PARAMETERS
+export GIT_OPTIONAL_LOCKS=0 GIT_NO_REPLACE_OBJECTS=1
+
 usage() {
   cat <<'USAGE'
 Usage: check-ownership.sh --base <ref> [--head <ref>] [--worktree <dir>] [--repo <dir>] [--require-changes] -- <allow-pattern>...
@@ -10,11 +17,15 @@ Options:
   --base <ref>        Base commit/ref to diff against (required).
   --head <ref>        Head commit/ref when checking committed diff (default: HEAD).
                       Cannot be combined with --worktree.
-  --worktree <dir>    Inspect uncommitted + staged + untracked (non-ignored) files
-                      in <dir> relative to --base.
+  --worktree <dir>    Check the union of base-to-HEAD, staged, unstaged, and
+                      non-ignored untracked paths in <dir>.
   --repo <dir>        Git repository directory when --worktree is not set (default: .).
   --require-changes   Fail (exit 1) if zero changed paths are found.
   -h, --help          Show this help message.
+
+Paths are relative to the repository root. Submodules are checked at their
+path in the parent repository. Use a stable worktree and index during the scan.
+A worktree with assume-unchanged or skip-worktree entries exits 2.
 
 Allow patterns:
   Exact paths         AGENTS.md, src/app.py
@@ -98,7 +109,6 @@ if [[ ${#patterns[@]} -eq 0 ]]; then
 fi
 
 git_dir="$repo_dir"
-worktree_top=""
 if [[ -n "$worktree" ]]; then
   git_dir="$worktree"
 fi
@@ -113,7 +123,7 @@ if [[ -n "$worktree" ]]; then
     echo "check-ownership: not a git work tree: $git_dir" >&2
     exit 2
   fi
-  worktree_top="$(git -C "$git_dir" rev-parse --show-toplevel)"
+  git_dir="$(git -C "$git_dir" rev-parse --show-toplevel)"
 else
   if ! git -C "$git_dir" rev-parse --git-dir >/dev/null 2>&1; then
     echo "check-ownership: not a git repository: $git_dir" >&2
@@ -121,17 +131,15 @@ else
   fi
 fi
 
-if ! git -C "$git_dir" rev-parse --verify "${base}^{commit}" >/dev/null 2>&1; then
+if ! base_commit="$(git -C "$git_dir" rev-parse --verify --end-of-options "${base}^{commit}" 2>/dev/null)"; then
   echo "check-ownership: invalid --base ref: $base" >&2
   exit 2
 fi
 
-if [[ -z "$worktree" ]]; then
-  head_ref="${head_ref:-HEAD}"
-  if ! git -C "$git_dir" rev-parse --verify "${head_ref}^{commit}" >/dev/null 2>&1; then
-    echo "check-ownership: invalid --head ref: $head_ref" >&2
-    exit 2
-  fi
+head_ref="${head_ref:-HEAD}"
+if ! head_commit="$(git -C "$git_dir" rev-parse --verify --end-of-options "${head_ref}^{commit}" 2>/dev/null)"; then
+  echo "check-ownership: invalid head ref: $head_ref" >&2
+  exit 2
 fi
 
 # Convert a path glob pattern into an anchored POSIX ERE.
@@ -204,36 +212,46 @@ add_unique_path() {
   changed_paths+=("$candidate")
 }
 
-tmp_git_out=""
-cleanup_tmp_git_out() {
-  if [[ -n "$tmp_git_out" ]]; then
-    rm -f -- "$tmp_git_out"
+tmp_git_out="$(mktemp -d)"
+trap 'rm -rf -- "$tmp_git_out"' EXIT
+
+run_git_scan() {
+  # Git can warn about unreadable paths and still exit successfully.
+  if ! git -C "$git_dir" -c core.fsmonitor=false "$@" > "$tmp_git_out/paths" 2> "$tmp_git_out/errors" ||
+    [[ -s "$tmp_git_out/errors" ]]; then
+    cat "$tmp_git_out/errors" >&2
+    printf 'check-ownership: incomplete Git scan (%s)\n' "$*" >&2
+    return 2
   fi
 }
-trap cleanup_tmp_git_out EXIT
 
 collect_git_z_paths() {
-  local rc=0
   local path
-  tmp_git_out="${tmp_git_out:-$(mktemp)}"
-  "$@" > "$tmp_git_out" || rc=$?
-  if (( rc != 0 )); then
-    return "$rc"
-  fi
+  run_git_scan "$@"
   while IFS= read -r -d '' path; do
-    [[ -n "$path" ]] && add_unique_path "$path"
-  done < "$tmp_git_out"
+    add_unique_path "$path"
+  done < "$tmp_git_out/paths"
 }
 
 if [[ -n "$worktree" ]]; then
-  # Union worktree-vs-base, index-vs-base, and untracked files. Index-vs-base is
-  # required when the worktree matches base but the index does not (status MM or AD).
-  # --no-renames keeps both paths of a rename; paths are de-duplicated below.
-  collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false diff --name-only --no-renames -z "$base"
-  collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false diff --cached --name-only --no-renames -z "$base"
-  collect_git_z_paths git -C "$worktree_top" -c core.quotePath=false ls-files --others --exclude-standard -z
-else
-  collect_git_z_paths git -C "$git_dir" -c core.quotePath=false diff --name-only --no-renames -z "$base" "$head_ref"
+  run_git_scan ls-files -v -z
+  while IFS= read -r -d '' entry; do
+    # Lowercase tags are assume-unchanged. S is skip-worktree.
+    if [[ "$entry" == [a-zS]\ * ]]; then
+      printf 'check-ownership: assume-unchanged or skip-worktree path prevents a complete scan\n  %s\n' "${entry:2}" >&2
+      exit 2
+    fi
+  done < "$tmp_git_out/paths"
+fi
+
+# Disabling rename detection includes both names. Compare each pair of adjacent
+# states so an index or worktree change cannot cancel an earlier change.
+diff_options=(--name-only --no-renames --no-relative --ignore-submodules=none -z)
+collect_git_z_paths diff "${diff_options[@]}" "$base_commit" "$head_commit" --
+if [[ -n "$worktree" ]]; then
+  collect_git_z_paths diff --cached "${diff_options[@]}" "$head_commit" --
+  collect_git_z_paths diff "${diff_options[@]}" --
+  collect_git_z_paths ls-files --others --exclude-standard -z
 fi
 
 total=${#changed_paths[@]}

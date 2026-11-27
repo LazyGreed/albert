@@ -137,6 +137,16 @@ fi
 grep -q 'src/b.py' "$tmp/oos-edit.err"
 git -C "$wt_a" checkout -- src/b.py
 
+# Out-of-scope staged deletion must block even when the unstaged diff is empty for that path.
+git -C "$wt_a" rm -q -- src/b.py
+[[ -z "$(git -C "$wt_a" diff --name-only -- src/b.py)" ]]
+rc=0
+"$checker" --base "$base_ref" --worktree "$wt_a" --require-changes -- \
+  src/a.py src/a_helper.py 'tests/test_a*.py' > "$tmp/oos-staged.out" 2> "$tmp/oos-staged.err" || rc=$?
+(( rc == 1 ))
+grep -qx '  src/b\.py' "$tmp/oos-staged.err"
+git -C "$wt_a" restore --source=HEAD --staged --worktree -- src/b.py
+
 # Out-of-scope untracked file must block.
 echo "stray note" > "$wt_a/stray.md"
 if "$checker" --base "$base_ref" --worktree "$wt_a" --require-changes -- \

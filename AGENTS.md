@@ -106,11 +106,15 @@ Deployment requires separate validation and authorization.
   and a landing plan. Serialize when any condition is uncertain. Pause an
   unowned edit until the coordinator reassigns or sequences it.
 - **Independent verification gate.** Before landing each parallel or v2 graph
-  stream, check changed and untracked paths against `WRITE OWNERSHIP`.
-  Use `git diff --name-only` and `git ls-files --others --exclude-standard`
-  or `skills/verification/scripts/check-ownership.sh`. Obtain a separate
-  read-only Vera verdict on each stream's actual diff, ownership, acceptance,
-  and observed checks. Follow the selected workflow's evidence rules. Report
+  stream, require `OWNERSHIP PASS` from
+  `skills/verification/scripts/check-ownership.sh`. Supply the stream's base
+  commit with `--base` and its declared `WRITE OWNERSHIP` patterns after `--`.
+  For v1 point `--worktree` at the actual stream worktree. For v2 use
+  `--repo` with the stream repository, `--base` with the verified `BASE`,
+  and `--head` with the commit in the verified `REF`. Require the workflow's
+  clean worktree evidence. Obtain a separate read-only Vera
+  verdict on each stream's actual diff, ownership, acceptance, and observed
+  checks. Follow the selected workflow's evidence rules. Report
   `PASS | FAIL | NOT RUN | BLOCKED` with exact evidence and gaps. Read-only
   specialists can confirm integrity with `skills/verification/scripts/check-readonly.sh`
   (`snapshot` before checks and `verify` afterward). Use Iris for meaningful E2E.

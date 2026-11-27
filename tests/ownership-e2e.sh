@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
-# Regression checks for worktree ownership collection: staged-only edits, unstaged
-# edits, untracked files, and both paths of a rename.
+# Regression checks for worktree ownership across commits, index and working files.
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -36,17 +35,17 @@ expect_pass() {
   fi
 }
 
-expect_fail() {
-  local want="$1"
-  shift
+expect_reject() {
+  local expected_rc="$1" want="$2"
+  shift 2
   local rc=0
   "$@" >"$tmp/out" 2>"$tmp/err" || rc=$?
-  if (( rc != 1 )); then
+  if (( rc != expected_rc )); then
     echo "stdout:" >&2
     cat "$tmp/out" >&2
     echo "stderr:" >&2
     cat "$tmp/err" >&2
-    fail "expected exit 1, got $rc for: $*"
+    fail "expected exit $expected_rc, got $rc for: $*"
   fi
   if ! grep -F -q -- "$want" "$tmp/err"; then
     cat "$tmp/err" >&2
@@ -55,6 +54,10 @@ expect_fail() {
   if grep -F -q 'OWNERSHIP PASS' "$tmp/out"; then
     fail "unexpected OWNERSHIP PASS on a failing check"
   fi
+}
+
+expect_fail() {
+  expect_reject 1 "$@"
 }
 
 repo="$tmp/repo"
@@ -155,4 +158,87 @@ expect_pass "OWNERSHIP PASS: 2 path(s) verified" \
 grep -F -q '  src/b.py' "$tmp/out" || fail "staged rename did not list old path"
 grep -F -q '  src/c.py' "$tmp/out" || fail "staged rename did not list new path"
 
-echo "ownership E2E PASS: staged MM, staged AD, unstaged edit, untracked file, rename both paths"
+# A staged deletion can cancel a committed addition in a net diff against base.
+git -C "$repo" reset -q --hard "$base"
+printf 'foreign\n' > "$repo/src/foreign file.py"
+git -C "$repo" add -- 'src/foreign file.py'
+git -C "$repo" commit -q -m 'add foreign path'
+git -C "$repo" rm -q -- 'src/foreign file.py'
+printf 'owned\n' > "$repo/src/note.py"
+[[ -z "$(git -C "$repo" diff --name-only "$base")" ]] || fail 'precondition: expected canceled worktree diff'
+[[ -z "$(git -C "$repo" diff --cached --name-only "$base")" ]] || fail 'precondition: expected canceled staged diff'
+expect_fail '  src/foreign file.py' \
+  "$checker" --base "$base" --worktree "$repo" --require-changes -- src/note.py
+expect_pass 'OWNERSHIP PASS: 2 path(s) verified' \
+  "$checker" --base "$base" --worktree "$repo" --require-changes -- 'src/foreign file.py' src/note.py
+
+# An alternate index must not hide a staged edit in the checkout's actual index.
+git -C "$repo" reset -q --hard "$base"
+cp -- "$repo/.git/index" "$tmp/alternate-index"
+printf 'staged only\n' > "$repo/src/b.py"
+git -C "$repo" add -- src/b.py
+printf 'keep\n' > "$repo/src/b.py"
+expect_fail '  src/b.py' env GIT_INDEX_FILE="$tmp/alternate-index" \
+  "$checker" --base "$base" --worktree "$repo" --require-changes -- src/note.py
+
+git -C "$repo" reset -q --hard "$base"
+for flag in assume-unchanged skip-worktree; do
+  git -C "$repo" update-index "--$flag" -- src/b.py
+  printf 'hidden edit\n' > "$repo/src/b.py"
+  expect_reject 2 '  src/b.py' \
+    "$checker" --base "$base" --worktree "$repo" --require-changes -- src/note.py
+  git -C "$repo" update-index "--no-$flag" -- src/b.py
+  git -C "$repo" reset -q --hard "$base"
+done
+
+# A monitor that reports no updates must not hide a working file change.
+printf '%s\n' '#!/bin/sh' 'printf "token\000"' > "$tmp/fsmonitor"
+chmod +x "$tmp/fsmonitor"
+git -C "$repo" config core.fsmonitor "$tmp/fsmonitor"
+git -C "$repo" config core.fsmonitorHookVersion 2
+git -C "$repo" update-index --refresh
+git -C "$repo" update-index --fsmonitor-valid -- src/b.py
+printf 'unreported edit\n' > "$repo/src/b.py"
+expect_fail '  src/b.py' \
+  "$checker" --base "$base" --worktree "$repo" --require-changes -- src/note.py
+git -C "$repo" config --unset core.fsmonitor
+git -C "$repo" reset -q --hard "$base"
+
+# A directory Git cannot read is an incomplete scan, even if Git exits zero.
+mkdir -- "$repo/private"
+printf 'foreign\n' > "$repo/private/note.py"
+(
+  trap 'chmod u+rwx -- "$repo/private"' EXIT
+  chmod u-rwx -- "$repo/private"
+  if [[ ! -r "$repo/private" ]]; then
+    expect_reject 2 'could not open directory' \
+      "$checker" --base "$base" --worktree "$repo" --require-changes -- src/note.py
+  fi
+)
+rm -rf -- "$repo/private"
+
+# Gitlink changes must survive Git's submodule diff preferences in both modes.
+git -C "$repo" update-index --add --cacheinfo "160000,$base,foreign-submodule"
+git -C "$repo" commit -q -m 'add gitlink'
+submodule_base="$(git -C "$repo" rev-parse HEAD)"
+git -C "$repo" update-index --cacheinfo "160000,$submodule_base,foreign-submodule"
+git -C "$repo" config diff.ignoreSubmodules all
+expect_fail '  foreign-submodule' \
+  "$checker" --base "$submodule_base" --worktree "$repo" --require-changes -- src/note.py
+git -C "$repo" commit -q -m 'change gitlink'
+expect_fail '  foreign-submodule' \
+  "$checker" --base "$submodule_base" --head HEAD --repo "$repo" -- src/note.py
+
+# With --repo under the root, diff.relative must not hide other paths.
+git -C "$repo" config --unset diff.ignoreSubmodules
+git -C "$repo" config diff.relative true
+expect_fail '  foreign-submodule' \
+  "$checker" --base "$submodule_base" --head HEAD --repo "$repo/src" -- src/note.py
+git -C "$repo" config --unset diff.relative
+
+# Compare recorded trees even when Git has a local replacement ref.
+git -C "$repo" replace HEAD "$submodule_base"
+expect_fail '  foreign-submodule' \
+  "$checker" --base "$submodule_base" --head HEAD --repo "$repo" -- src/note.py
+
+echo 'ownership E2E PASS: staged and unstaged edits, untracked paths, renames, canceled committed changes, and Git scan overrides'
