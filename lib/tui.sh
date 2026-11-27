@@ -2,7 +2,7 @@
 # Quintet installer TUI. No external TUI programs required.
 # Sourced by install.sh; opens /dev/tty so preview/install output may be redirected.
 
-albert_tui() {
+quintet_tui() {
   if [[ ! -r /dev/tty || ! -w /dev/tty ]]; then
     printf 'Interactive installation needs a terminal. Use --no-tui with --harness/--scope flags.\n' >&2
     return 2
@@ -26,17 +26,17 @@ albert_tui() {
     ti_bold=$'\033[1m'; ti_reset=$'\033[0m'; ti_reverse=$'\033[7m'
   fi
 
-  _albert_tui_cleanup() {
+  _quintet_tui_cleanup() {
     trap - INT TERM RETURN
     printf '\033[?25h%s\n' "$ti_reset" >&3 2>/dev/null || true
     if [[ -n "$ti_preview_file" ]]; then rm -f -- "$ti_preview_file"; ti_preview_file=''; fi
     exec 3>&- 2>/dev/null || true
   }
-  trap '_albert_tui_cleanup; trap - RETURN' RETURN
-  trap '_albert_tui_cleanup; exit 130' INT
-  trap '_albert_tui_cleanup; exit 143' TERM
+  trap '_quintet_tui_cleanup; trap - RETURN' RETURN
+  trap '_quintet_tui_cleanup; exit 130' INT
+  trap '_quintet_tui_cleanup; exit 143' TERM
   # No stty changes; Bash read -s handles each key and preserves terminal settings.
-  _albert_tui_line() {
+  _quintet_tui_line() {
     local idx="$1" txt="$2" mark='  '
     [[ "$ti_focus" -eq "$idx" ]] && mark='> '
     if [[ "$ti_focus" -eq "$idx" ]]; then
@@ -45,34 +45,34 @@ albert_tui() {
       printf ' %s%s\n' "$mark" "$txt" >&3
     fi
   }
-  _albert_tui_draw() {
+  _quintet_tui_draw() {
     printf '\033[?25l\033[H\033[J' >&3
     printf '%sQUINTET  /  INSTALL%s\n' "$ti_bold" "$ti_reset" >&3
     printf 'Native Pi, Claude Code, and Antigravity CLI agents. No extra TUI dependencies.\n\n' >&3
     printf '%sHARNESS%s  (select one or more)\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 0 "[$([[ $ti_pi -eq 1 ]] && echo x || echo ' ')] Pi"
-    _albert_tui_line 1 "[$([[ $ti_claude -eq 1 ]] && echo x || echo ' ')] Claude Code"
-    _albert_tui_line 2 "[$([[ $ti_agy -eq 1 ]] && echo x || echo ' ')] Antigravity CLI"
+    _quintet_tui_line 0 "[$([[ $ti_pi -eq 1 ]] && echo x || echo ' ')] Pi"
+    _quintet_tui_line 1 "[$([[ $ti_claude -eq 1 ]] && echo x || echo ' ')] Claude Code"
+    _quintet_tui_line 2 "[$([[ $ti_agy -eq 1 ]] && echo x || echo ' ')] Antigravity CLI"
     printf '\n%sSCOPE%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 3 "($([[ "$ti_scope" == global ]] && echo '*' || echo ' ')) Global    (~/.pi/agent, ~/.claude, Antigravity)"
-    _albert_tui_line 4 "($([[ "$ti_scope" == project ]] && echo '*' || echo ' ')) Project   (repo-local .pi, .claude, .agents)"
+    _quintet_tui_line 3 "($([[ "$ti_scope" == global ]] && echo '*' || echo ' ')) Global    (~/.pi/agent, ~/.claude, Antigravity)"
+    _quintet_tui_line 4 "($([[ "$ti_scope" == project ]] && echo '*' || echo ' ')) Project   (repo-local .pi, .claude, .agents)"
     if [[ "$ti_scope" == project ]]; then
-      _albert_tui_line 5 "Project directory: $ti_target"
+      _quintet_tui_line 5 "Project directory: $ti_target"
     else
       printf '   Project directory: (choose Project to edit)\n' >&3
     fi
     printf '\n%sWORKFLOW%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 6 "($([[ "$ti_workflow" == v1 ]] && echo '*' || echo ' ')) v1  Coordinator-sequenced handoffs"
-    _albert_tui_line 7 "($([[ "$ti_workflow" == v2 ]] && echo '*' || echo ' ')) v2  Dependency graph and revision-bound review"
+    _quintet_tui_line 6 "($([[ "$ti_workflow" == v1 ]] && echo '*' || echo ' ')) v1  Coordinator-sequenced handoffs"
+    _quintet_tui_line 7 "($([[ "$ti_workflow" == v2 ]] && echo '*' || echo ' ')) v2  Dependency graph and revision-bound review"
     printf '\n%sOPTIONAL%s\n' "$ti_bold" "$ti_reset" >&3
-    _albert_tui_line 8 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude & Antigravity native tools)"
+    _quintet_tui_line 8 "[$([[ $ti_web -eq 1 ]] && echo x || echo ' ')] Web search and fetch (Pi extension / Claude & Antigravity native tools)"
     printf '\n' >&3
-    _albert_tui_line 9 'Review installation →'
-    _albert_tui_line 10 'Cancel'
+    _quintet_tui_line 9 'Review installation →'
+    _quintet_tui_line 10 'Cancel'
     printf '\n↑/↓ or j/k navigate  ·  Space/Enter select  ·  Esc quit\n' >&3
     [[ -z "$ti_message" ]] || printf '\n%s\n' "$ti_message" >&3
   }
-  _albert_tui_readkey() {
+  _quintet_tui_readkey() {
     ti_key=''
     IFS= read -rsn1 ti_key <&3 || return 1
     if [[ "$ti_key" == $'\e' ]]; then
@@ -91,7 +91,7 @@ albert_tui() {
       ti_key=enter
     fi
   }
-  _albert_tui_harness() {
+  _quintet_tui_harness() {
     local hs=()
     ((ti_pi)) && hs+=(pi)
     ((ti_claude)) && hs+=(claude)
@@ -99,19 +99,19 @@ albert_tui() {
     local IFS=','
     printf '%s' "${hs[*]}"
   }
-  _albert_tui_args() {
-    ti_args=(--harness "$(_albert_tui_harness)" --scope "$ti_scope" --workflow "$ti_workflow")
+  _quintet_tui_args() {
+    ti_args=(--harness "$(_quintet_tui_harness)" --scope "$ti_scope" --workflow "$ti_workflow")
     [[ "$ti_scope" != project ]] || ti_args+=(--target "$ti_target")
     if ((ti_web)); then ti_args+=(--with-web); else ti_args+=(--no-web); fi
   }
-  _albert_tui_review() {
+  _quintet_tui_review() {
     if (( !ti_pi && !ti_claude && !ti_agy )); then
       ti_message='Select at least one harness.'; return 1
     fi
     if [[ "$ti_scope" == project && ! -d "$ti_target" ]]; then
       ti_message='Project directory does not exist.'; return 1
     fi
-    _albert_tui_args
+    _quintet_tui_args
     ti_preview_file="$(mktemp)"
     if ! "$source_dir/install.sh" "${ti_args[@]}" --dry-run > "$ti_preview_file" 2>&1; then
       ti_message="Preview failed: $(tail -n 1 "$ti_preview_file")"
@@ -121,9 +121,9 @@ albert_tui() {
     n="$(grep -c '^WRITE ' "$ti_preview_file" || true)"
     relocations="$(grep -c '^RELOCATE RULE ' "$ti_preview_file" || true)"
     if grep -q '^ARCHIVE ' "$ti_preview_file"; then
-      migration='Archive legacy Albert plugin under ~/.gemini/config/quintet-backups.'
+      migration='Archive the previous Antigravity plugin under ~/.gemini/config/quintet-backups.'
     elif grep -q '^KEEP ' "$ti_preview_file"; then
-      migration='Keep legacy Albert plugin in place.'
+      migration='Keep the previous Antigravity plugin in place.'
     fi
     if grep -q '^CARRY ' "$ti_preview_file"; then
       carry='Carry user rules into the new plugin before archiving.'
@@ -134,7 +134,7 @@ albert_tui() {
     while :; do
       printf '\033[?25l\033[H\033[J' >&3
       printf '%sQUINTET  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
-      printf ' Harness   %s\n Scope     %s\n' "$(_albert_tui_harness)" "$ti_scope" >&3
+      printf ' Harness   %s\n Scope     %s\n' "$(_quintet_tui_harness)" "$ti_scope" >&3
       [[ "$ti_scope" != project ]] || printf ' Target    %s\n' "$ti_target" >&3
       printf ' Workflow  %s\n Web       %s\n Planned   %s file writes\n' "$ti_workflow" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
       [[ -z "$migration" ]] || printf ' %s\n' "$migration" >&3
@@ -150,7 +150,7 @@ albert_tui() {
       elif ((preview_focus == 1)); then printf '   Install    %s> Back%s     Cancel\n' "$ti_reverse" "$ti_reset" >&3
       else printf '   Install     Back    %s> Cancel%s\n' "$ti_reverse" "$ti_reset" >&3; fi
       printf '\n←/→ or h/l select  ·  Enter confirm  ·  Esc back\n' >&3
-      _albert_tui_readkey || { result=2; break; }
+      _quintet_tui_readkey || { result=2; break; }
       case "$ti_key" in
         up|left|k|h) preview_focus=$(((preview_focus+2)%3)) ;;
         down|right|j|l) preview_focus=$(((preview_focus+1)%3)) ;;
@@ -164,8 +164,8 @@ albert_tui() {
     return "$result"
   }
   while :; do
-    _albert_tui_draw
-    _albert_tui_readkey || return 2
+    _quintet_tui_draw
+    _quintet_tui_readkey || return 2
     ti_message=''
     case "$ti_key" in
       up|k) ti_focus=$(((ti_focus+10)%11)) ;;
@@ -192,9 +192,9 @@ albert_tui() {
           8) ti_web=$((1-ti_web)) ;;
           9)
             local review_status=0
-            _albert_tui_review || review_status=$?
+            _quintet_tui_review || review_status=$?
             if ((review_status == 0)); then
-              _albert_tui_args
+              _quintet_tui_args
               printf '\033[?25h\033[H\033[J%sQUINTET  /  INSTALLING%s\n\n' "$ti_bold" "$ti_reset" >&3
               "$source_dir/install.sh" "${ti_args[@]}"; return $?
             elif ((review_status == 2)); then return 0; fi ;;

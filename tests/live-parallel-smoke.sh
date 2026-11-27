@@ -7,12 +7,12 @@
 #
 # Usage:
 #   bash tests/live-parallel-smoke.sh
-#   ALBERT_SMOKE_HARNESS=claude bash tests/live-parallel-smoke.sh
-#   ALBERT_SMOKE_KEEP_TMP=1 bash tests/live-parallel-smoke.sh
+#   QUINTET_SMOKE_HARNESS=claude bash tests/live-parallel-smoke.sh
+#   QUINTET_SMOKE_KEEP_TMP=1 bash tests/live-parallel-smoke.sh
 set -euo pipefail
 
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-harness="${ALBERT_SMOKE_HARNESS:-agy}"
+harness="${QUINTET_SMOKE_HARNESS:-agy}"
 
 case "$harness" in
   agy)
@@ -24,7 +24,7 @@ case "$harness" in
     check_script=".claude/skills/verification/scripts/check-ownership.sh"
     ;;
   *)
-    echo "Unsupported ALBERT_SMOKE_HARNESS: $harness (expected agy or claude)" >&2
+    echo "Unsupported QUINTET_SMOKE_HARNESS: $harness (expected agy or claude)" >&2
     exit 2
     ;;
 esac
@@ -34,9 +34,9 @@ command -v "$harness" >/dev/null 2>&1 || {
   exit 1
 }
 
-tmp="$(mktemp -d -t albert-live-smoke-XXXXXX)"
+tmp="$(mktemp -d -t quintet-live-smoke-XXXXXX)"
 cleanup() {
-  if [[ "${ALBERT_SMOKE_KEEP_TMP:-0}" == "1" ]]; then
+  if [[ "${QUINTET_SMOKE_KEEP_TMP:-0}" == "1" ]]; then
     echo "Kept temp dir: $tmp"
   else
     rm -rf -- "$tmp"
@@ -48,8 +48,8 @@ repo="$tmp/repo"
 mkdir -p "$repo/src" "$repo/tests"
 
 git -C "$repo" init -q
-git -C "$repo" config user.name "Albert Smoke"
-git -C "$repo" config user.email "albert-smoke@example.com"
+git -C "$repo" config user.name "Quintet Smoke"
+git -C "$repo" config user.email "quintet-smoke@example.com"
 git -C "$repo" checkout -b main -q
 
 cat > "$repo/.gitignore" <<'EOF'
@@ -135,7 +135,7 @@ EOF
 "$root/install.sh" --harness "$install_harness" --scope project --target "$repo" --no-tui >/dev/null
 
 git -C "$repo" add -A
-git -C "$repo" commit -q -m "chore: baseline project with albert installed"
+git -C "$repo" commit -q -m "chore: baseline project with quintet installed"
 base_ref="$(git -C "$repo" rev-parse HEAD)"
 
 prompt="$(cat <<EOF
@@ -167,8 +167,8 @@ echo "Running live smoke test with harness=$harness in $repo (base=$base_ref)...
   cd "$repo"
   if [[ "$harness" == "agy" ]]; then
     agy_args=(--dangerously-skip-permissions "--print=$prompt")
-    if [[ -n "${ALBERT_SMOKE_TIMEOUT:-}" ]]; then
-      agy_args+=("--print-timeout=$ALBERT_SMOKE_TIMEOUT")
+    if [[ -n "${QUINTET_SMOKE_TIMEOUT:-}" ]]; then
+      agy_args+=("--print-timeout=$QUINTET_SMOKE_TIMEOUT")
     fi
     agy "${agy_args[@]}"
   else

@@ -29,11 +29,15 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude, and/or
 with instructions in root AGENTS.md or CLAUDE.md, or in PROJECT/.agents for Antigravity.
 Both global and project scopes install the full coordinator contract and personality.
 Antigravity installs the quintet plugin (rules/AGENTS.md, worker agents, and skills). A global
-install moves an eligible legacy plugins/albert tree into ~/.gemini/config/quintet-backups
-once the new plugin is written. User rules outside the legacy managed block are carried into
+install moves an eligible previous plugin tree into ~/.gemini/config/quintet-backups
+once the new plugin is written. User rules outside the managed block are carried into
 the new file first. Unrecognized entries keep the old plugin in place and are listed.
-Web research is enabled by default for eligible workers (use --no-web to disable).
-No bundled settings files are copied. Existing model/provider settings are preserved.
+Selecting Pi requires Pi >=1.1.0. The installer runs pi install npm:@tintinweb/pi-subagents
+and pi install npm:pi-web-access when pi list does not already show them, and writes
+subagents.json in the Pi agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent).
+Web research is enabled by default for eligible workers (use --no-web to omit those tool grants).
+--no-web does not skip the Pi package installs. No bundled settings files are copied.
+Existing model/provider settings are preserved.
 USAGE
 }
 while (($#)); do
@@ -63,7 +67,7 @@ if [[ "$tui_mode" == on ]] || [[ "$tui_mode" == auto && "$explicit_args" == 0 ]]
     if ((dry)); then echo "TUI already includes a preview; omit --dry-run or use --no-tui for scripted previews." >&2; exit 2; fi
     # A forced TUI uses supplied options as initial selections.
     source "$source_dir/lib/tui.sh"
-    albert_tui
+    quintet_tui
     exit $?
   fi
   if [[ "$tui_mode" == on || "$explicit_args" == 0 ]]; then
@@ -137,7 +141,7 @@ put() {
   ((dry)) && return 0
   mkparent "$dst" || return 1
   if [[ -z "$rule_backups" && -e "$dst" ]]; then
-    cp -p -- "$dst" "$dst.albert-backup-$(date +%Y%m%d%H%M%S)-$$" || return 1
+    cp -p -- "$dst" "$dst.quintet-backup-$(date +%Y%m%d%H%M%S)-$$" || return 1
   fi
   cp -- "$src" "$dst"
 }
@@ -178,7 +182,8 @@ resolve_personality() {
   # Managed markers must not come from user-controlled personality text.
   if ! awk '{
     sub(/\r$/, "")
-    if ($0 == "<!-- ALBERT MANAGED START -->" || $0 == "<!-- ALBERT MANAGED END -->") exit 1
+    if ($0 == "<!-- QUINTET MANAGED START -->" || $0 == "<!-- QUINTET MANAGED END -->" ||
+        $0 == "<!-- ALBERT MANAGED START -->" || $0 == "<!-- ALBERT MANAGED END -->") exit 1
   }' "$personality_file"; then
     echo "Reserved managed marker in personality: $personality_file" >&2
     return 1
@@ -288,8 +293,10 @@ install_role() {
 
 # One definition of the managed block and of the user text around it, shared by the
 # install merge and the legacy migration.
-managed_begin='<!-- ALBERT MANAGED START -->'
-managed_end='<!-- ALBERT MANAGED END -->'
+managed_begin='<!-- QUINTET MANAGED START -->'
+managed_end='<!-- QUINTET MANAGED END -->'
+old_managed_begin='<!-- ALBERT MANAGED START -->'
+old_managed_end='<!-- ALBERT MANAGED END -->'
 carry_begin='<!-- QUINTET LEGACY CARRY START -->'
 carry_end='<!-- QUINTET LEGACY CARRY END -->'
 
@@ -297,15 +304,17 @@ carry_end='<!-- QUINTET LEGACY CARRY END -->'
 managed_outside_text() {
   local src="$1"
   [[ -e "$src" ]] || return 0
-  if ! grep -Fqx -- "$managed_begin" "$src" && ! grep -Fqx -- "$managed_end" "$src"; then
+  if ! grep -Fqx -e "$managed_begin" -e "$managed_end" -e "$old_managed_begin" -e "$old_managed_end" -- "$src"; then
     cat -- "$src"
-  elif ! awk -v b="$managed_begin" -v e="$managed_end" '
-    $0 == b { if (state) { bad=1; exit }; state=1; next }
-    $0 == e { if (state != 1) { bad=1; exit }; state=2; next }
+  elif ! awk -v b="$managed_begin" -v e="$managed_end" -v ob="$old_managed_begin" -v oe="$old_managed_end" '
+    function is_begin() { return $0 == b || $0 == ob }
+    function is_end() { return $0 == e || $0 == oe }
+    is_begin() { if (state) { bad=1; exit }; state=1; next }
+    is_end() { if (state != 1) { bad=1; exit }; state=2; next }
     state != 1 { print }
     END { if (bad || state != 2) exit 1 }
   ' "$src"; then
-    echo "Malformed Albert markers: $src" >&2
+    echo "Malformed managed markers: $src" >&2
     return 1
   fi
 }
@@ -447,10 +456,9 @@ install_skills() {
   done
 }
 
-# Older Quintet installs wrote the Antigravity coordinator to plugins/albert; Albert was the
-# project's previous name. Only a tree this project generates is ours: a third-party plugin
-# may also be called Albert, so a bare name or a coordinator file cannot identify one.
-# Require all four Quintet worker agents and generated text that names Quintet.
+# Older installs wrote the Antigravity coordinator to plugins/albert.
+# A third-party plugin can use that directory, so the directory name alone cannot
+# identify one. Require all four Quintet worker agents and generated text that names Quintet.
 legacy_antigravity_plugin() {
   local legacy="$HOME/.gemini/config/plugins/albert" agent workers=0
   [[ -d "$legacy" ]] || return 1
@@ -479,7 +487,7 @@ generated_antigravity_paths() {
   {
     _generated_path plugin.json
     _generated_path rules/AGENTS.md
-    # Legacy plugins/albert installs include agents/albert.md, so recognize it during migration.
+    # plugins/albert installs include agents/albert.md, so recognize it during migration.
     for role in albert nora felix vera iris; do _generated_path "agents/$role.md"; done
     for skill in "${installable_skills[@]}"; do
       while IFS= read -r -d '' file; do
@@ -619,17 +627,33 @@ EOF
   install_instructions "$instruction"
   for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
   install_skills "$root"
+  if [[ "$tool" == pi ]]; then install_pi_subagents_config; fi
 }
 
-# Verify the native Pi dependency before touching user files. Preview stays offline.
+# Verify Pi and install its runtime packages before touching user files. Dry-run stays offline.
 pi_in_scope() {
   if [[ "$scope" == project ]]; then (cd "$target" && pi "$@");
   else (cd "$HOME" && pi "$@"); fi
 }
-pi_preflight() {
-  ((dry)) && { report 'CHECK Pi >=1.1.0 and npm:@tintinweb/pi-subagents before install'; return 0; }
+pi_package_listed() {
+  local packages="$1" spec="$2"
+  case "$spec" in
+    npm:@tintinweb/pi-subagents)
+      grep -Fq '@tintinweb/pi-subagents' <<< "$packages" ;;
+    npm:pi-web-access)
+      grep -Eq '(^|[^[:alnum:]_-])pi-web-access([^[:alnum:]_-]|$)' <<< "$packages" ;;
+    *) return 1 ;;
+  esac
+}
+install_pi_runtime() {
+  local spec packages version
+  if ((dry)); then
+    report 'CHECK Pi >=1.1.0 before install'
+    report 'INSTALL IF ABSENT: pi install npm:@tintinweb/pi-subagents'
+    report 'INSTALL IF ABSENT: pi install npm:pi-web-access'
+    return 0
+  fi
   command -v pi >/dev/null || { echo 'Pi missing. Install Pi >=1.1.0 first.' >&2; return 1; }
-  local version
   version="$(pi --version 2>/dev/null)" || { echo 'Cannot check Pi version.' >&2; return 1; }
   if [[ ! "$version" =~ ([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
     printf 'Cannot parse Pi version: %s\n' "$version" >&2; return 1
@@ -637,45 +661,42 @@ pi_preflight() {
   if (( 10#${BASH_REMATCH[1]} < 1 || (10#${BASH_REMATCH[1]} == 1 && 10#${BASH_REMATCH[2]} < 1) )); then
     printf 'Pi >=1.1.0 required (found %s).\n' "$version" >&2; return 1
   fi
-  local packages
   packages="$(pi_in_scope list 2>/dev/null)" || { echo 'Cannot inspect Pi packages (`pi list`).' >&2; return 1; }
-  if ! grep -Fq '@tintinweb/pi-subagents' <<< "$packages"; then
-    echo 'Missing tintinweb agents. Run: pi install npm:@tintinweb/pi-subagents' >&2
-    return 1
-  fi
+  for spec in 'npm:@tintinweb/pi-subagents' 'npm:pi-web-access'; do
+    if pi_package_listed "$packages" "$spec"; then
+      report "SKIP PI PACKAGE: $spec is already registered; unchanged."
+    else
+      report "INSTALL: pi install $spec"
+      pi_in_scope install "$spec"
+    fi
+  done
 }
-
-# Install only when web access is enabled, and reuse any already registered Pi package.
-# Preflight runs first, before changing target files or package settings.
-pi_web_registered() {
-  local packages
-  packages="$(pi_in_scope list 2>/dev/null)" || { echo 'Cannot inspect Pi packages (`pi list`).' >&2; return 2; }
-  grep -Eq '(^|[^[:alnum:]_-])pi-web-access([^[:alnum:]_-]|$)' <<< "$packages"
+install_pi_subagents_config() {
+  local dst="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/subagents.json" temp
+  temp="$(mktemp)"
+  cat > "$temp" <<'EOF'
+{
+  "maxSubagentDepth": 1,
+  "defaultJoinMode": "group",
+  "disableDefaultAgents": true,
+  "packageAgents": false,
+  "fallbackSubagent": "none",
+  "fleetView": false,
+  "widgetMode": "all"
 }
-install_pi_web() {
-  if ((dry)); then
-    report 'CHECK Pi web: install npm:pi-web-access only if absent'
-  elif pi_web_registered; then
-    report 'SKIP PI WEB: pi-web-access is already registered; unchanged.'
-  elif [[ "$scope" == project ]]; then
-    pi_in_scope install -l npm:pi-web-access
-  else
-    pi_in_scope install npm:pi-web-access
-  fi
+EOF
+  put "$temp" "$dst"
+  rm -f -- "$temp"
 }
 
 resolve_personality
 report "WORKFLOW $workflow"
-if has_harness pi; then pi_preflight; fi
+if has_harness pi; then install_pi_runtime; fi
 install_personality
-if ((with_web)) && has_harness pi; then install_pi_web; fi
 has_harness pi && install_one pi
 has_harness claude && install_one claude
 (has_harness antigravity || has_harness agy) && install_one antigravity
 
-if has_harness pi; then
-  report 'OPTIONAL (Pi): one notification per parallel batch needs "defaultJoinMode": "group" in subagents.json; not set here. See docs/workflow.md.'
-fi
 if ((with_web)); then
   report 'WEB: enabled for the coordinator and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
 fi

@@ -16,8 +16,8 @@ repo="$tmp/repo"
 mkdir -p "$repo/src" "$repo/tests"
 
 git -C "$repo" init -q
-git -C "$repo" config user.name "Albert Test"
-git -C "$repo" config user.email "albert-test@example.com"
+git -C "$repo" config user.name "Quintet Test"
+git -C "$repo" config user.email "quintet-test@example.com"
 git -C "$repo" checkout -b main -q
 
 cat > "$repo/.gitignore" <<'EOF'

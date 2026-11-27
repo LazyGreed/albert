@@ -93,7 +93,8 @@ def test_dual_project(root: Path):
         assert rule in text
         assert '## Workflow v1\n' in text
         assert '## Workflow v2\n' not in text
-        assert text.count('<!-- ALBERT MANAGED START -->') == 1
+        assert text.count('<!-- QUINTET MANAGED START -->') == 1
+        assert '<!-- ALBERT MANAGED' not in text
 
 
 def test_antigravity_project(root: Path):
@@ -168,7 +169,6 @@ def test_web_disabled(root: Path, *, explicit: bool):
     session.finish()
     assert 'pi-web-access/' not in (project / '.pi/agents/nora.md').read_text()
     assert 'WebSearch' not in (project / '.claude/agents/vera.md').read_text()
-    assert not (root / 'pi-installs').exists()
 
 
 def test_legacy_archive_review(root: Path):
@@ -187,7 +187,7 @@ def test_legacy_archive_review(root: Path):
     session.expect(b'Cancel')
     session.send(ARROW_DOWN * 9 + ENTER)
     session.expect(b'QUINTET  /  REVIEW')
-    session.expect(b'Archive legacy Albert plugin under ~/.gemini/config/quintet-backups.')
+    session.expect(b'Archive the previous Antigravity plugin under ~/.gemini/config/quintet-backups.')
     session.expect(b'Carry user rules into the new plugin before archiving.')
     session.expect(b' more\r\n')
     assert legacy.is_dir()
@@ -231,7 +231,7 @@ def test_rule_relocation_review(root: Path):
 
 
 if __name__ == '__main__':
-    with tempfile.TemporaryDirectory(prefix='albert-tui-') as td:
+    with tempfile.TemporaryDirectory(prefix='quintet-tui-') as td:
         root = Path(td)
         bin_dir = root / 'bin'
         bin_dir.mkdir()
@@ -256,5 +256,19 @@ esac
         test_antigravity_project(root)
         test_legacy_archive_review(root)
         test_rule_relocation_review(root)
-        assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
+        installs = (root / 'pi-installs').read_text().splitlines()
+        assert installs == ['install npm:pi-web-access'] * 4
+        assert all('-l' not in line for line in installs)
+        subagents = Path(os.environ['PI_CODING_AGENT_DIR']) / 'subagents.json'
+        assert subagents.read_text() == (
+            '{\n'
+            '  "maxSubagentDepth": 1,\n'
+            '  "defaultJoinMode": "group",\n'
+            '  "disableDefaultAgents": true,\n'
+            '  "packageAgents": false,\n'
+            '  "fallbackSubagent": "none",\n'
+            '  "fleetView": false,\n'
+            '  "widgetMode": "all"\n'
+            '}\n'
+        )
     print('TUI E2E PASS: keyboard, review, workflow selection, scopes, web, legacy archive, and rule relocation')

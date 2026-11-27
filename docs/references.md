@@ -1,8 +1,8 @@
 # References and acknowledgements
 
-Quintet began as a personal Pi and Claude Code setup and later used the name
-Albert. This catalogue records active integrations, adapted ideas, former
-integrations, and sources consulted during development.
+Quintet began as a personal Pi and Claude Code setup. This catalogue records
+active integrations, adapted ideas, former integrations, and sources consulted
+during development.
 
 ## Workflow lineage
 
@@ -87,8 +87,6 @@ integrations, and sources consulted during development.
 - [Microsoft TokenEconomizer][token-code] informed discussion of handoff
   efficiency, delegation, and repeated failed attempts. Quintet uses native
   session state. [Research paper][token-paper]
-- `pybot-msgboard` was discussed as a peer coordination example. Its URL
-  remains unverified. Quintet uses the harness's native transports.
 
 For new attributions, record the original source, the exact relationship,
 and the Quintet revision or file that establishes it. Preserve applicable

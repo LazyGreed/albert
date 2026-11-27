@@ -11,11 +11,10 @@ git clone https://github.com/LazyGreed/quintet.git
 cd quintet
 ```
 
-For Pi, install Pi 1.1.0 or later and register its subagent package first.
-
-```sh
-pi install npm:@tintinweb/pi-subagents
-```
+For Pi, install Pi 1.1.0 or later. When that harness is selected, the installer
+runs `pi install npm:@tintinweb/pi-subagents` and
+`pi install npm:pi-web-access` if `pi list` does not already show them. It
+writes `subagents.json` in `${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}`.
 
 Run `./install.sh` in a terminal. Use the arrow keys and Enter or Space to
 select your harness, scope, and workflow. Review the choices before installing.
@@ -31,53 +30,34 @@ selects `v2`.
 ```
 
 Use the current installer with the same harness and scope to switch workflows.
-Do not run an installer from an archived branch: it can recreate the legacy
-Albert plugin. The current installer replaces the managed instructions and
-preserves the text outside that block. Restart the harness session to load the
-updated rules.
+The installer replaces the managed instructions and preserves the text outside
+that block. Restart the harness session to load the updated rules.
 
 | Option | Purpose |
 | --- | --- |
 | `--harness pi,claude,antigravity` | Install any comma-separated subset |
 | `--scope global` | Apply across projects |
 | `--scope project --target PATH` | Apply to one project, defaulting to `.` |
-| `--with-web` / `--no-web` | Enable (default) or skip web access |
+| `--with-web` / `--no-web` | Enable (default) or omit web tool grants |
 | `--dry-run` | Preview without writing files |
 | `--tui` / `--no-tui` | Force or skip the terminal installer |
 
 Project rules take precedence over global workflow rules for the active
 harness. The installer backs up files it replaces and preserves model and
-provider settings. With web access enabled, the installer registers the Pi
-web package when needed. `--no-web` leaves existing registrations in place.
+provider settings. Selecting Pi installs both runtime packages when they are
+absent, including with `--no-web`. `--no-web` omits web tool grants from worker
+profiles. It does not skip those package installs or remove an existing
+registration.
 
-> [!WARNING]
-> Before updating an old checkout, save independent copies of any configuration
-> you symlinked into it. The old bundled `settings.json`, `claude-settings.json`,
-> `antigravity-settings.json`, and `pi-blackhole` configs were removed from the
-> source tree. Point your harness at your saved copies before updating.
-
-### Antigravity upgrades
+### Antigravity
 
 Both workflows install the global `quintet` plugin at
 `~/.gemini/config/plugins/quintet` or use `PROJECT/.agents` for project installs.
-The coordinator loads through `rules/AGENTS.md`. A global install archives an
-eligible legacy `plugins/albert` tree intact under
-`~/.gemini/config/quintet-backups` after writing the new plugin. It carries user
-rules outside the legacy managed block into the new rules. If the old tree
-contains extra entries, the installer lists them and leaves the tree in place.
-Preview with `--dry-run` or the terminal installer's review screen.
-
-Antigravity coordinator rule backups live outside rule discovery: in
-`~/.gemini/config/quintet-rule-backups` for global installs or
-`PROJECT/.quintet-rule-backups` for project installs. Reinstalling also moves
-old `AGENTS.md.albert-backup-<timestamp>-<pid>` files out of the active rules
-folder, including backups with only user instructions. If the installer reports
-`KEEP RULE`, inspect the named path and move the old backup out of rule discovery
-before retrying. Use `--dry-run` to see the planned moves.
-
-An earlier project install may still have `.agents/agents/albert.md`. If you
-previously selected that coordinator, move the file somewhere outside agent
-discovery to keep the old profile and use the new project rules.
+The coordinator loads through `rules/AGENTS.md`. Coordinator rule backups live
+outside rule discovery, in `~/.gemini/config/quintet-rule-backups` for global
+installs or `PROJECT/.quintet-rule-backups` for project installs. If the
+installer reports `KEEP RULE`, inspect the named path and move that backup out
+of rule discovery before retrying. Use `--dry-run` to see the planned moves.
 
 ## Agents and personality
 
@@ -89,7 +69,7 @@ discovery to keep the old profile and use the new project rules.
 | **Vera** | Independently reviews diffs and evidence | Read-only |
 | **Iris** | Runs acceptance and smoke checks | Read-only on source |
 
-Denia is the default coordinator. Edit `PERSONALITY.md` in the Quintet checkout
+Denia is the default coordinator. Edit [PERSONALITY.md](PERSONALITY.md) in the Quintet checkout
 for global installs. For project installs, edit `PROJECT/PERSONALITY.md`. The
 installer creates it if missing and keeps your edits on reinstall. The first
 line must be `Name: Your Name`.
