@@ -943,8 +943,8 @@ rc=0
 "$root/install.sh" --harness claude --scope project --target "$blocked" --workflow v2 --no-tui --no-web \
   > "$tmp/blocked-out" 2> "$tmp/blocked-err" || rc=$?
 [[ "$rc" -ne 0 ]]
-grep -Fq 'Not a directory' "$tmp/blocked-err"
-grep -Fq 'Install failed; undid writes from this run.' "$tmp/blocked-err"
+grep -Fxq "WRITE $blocked/.claude/skills/verification/SKILL.md" "$tmp/blocked-out"
+grep -Fxq 'Install failed; undid writes from this run.' "$tmp/blocked-err"
 assert_absent '^DONE$' "$tmp/blocked-out"
 snapshot_tree "$blocked" "$tmp/blocked-after"
 diff -u "$tmp/blocked-before" "$tmp/blocked-after"
@@ -987,7 +987,8 @@ HOME="$legacy_block_home" XDG_CONFIG_HOME="$legacy_block_home/.config" \
   "$root/install.sh" --harness antigravity --scope global --workflow v2 --no-tui --no-web \
   > "$tmp/legacy-block-out" 2> "$tmp/legacy-block-err" || rc=$?
 [[ "$rc" -ne 0 ]]
-grep -Fq 'Not a directory' "$tmp/legacy-block-err"
+grep -Fxq "WRITE $legacy_block_quintet/skills/verification/SKILL.md" "$tmp/legacy-block-out"
+grep -Fxq 'Install failed; undid writes from this run.' "$tmp/legacy-block-err"
 assert_absent '^ARCHIVE \|^DONE$' "$tmp/legacy-block-out"
 snapshot_tree "$legacy_block_home/.gemini" "$tmp/legacy-block-after"
 diff -u "$tmp/legacy-block-before" "$tmp/legacy-block-after"
