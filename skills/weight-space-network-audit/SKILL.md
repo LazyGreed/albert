@@ -1,6 +1,6 @@
 ---
 name: weight-space-network-audit
-description: Three-mode weight-space skill: default audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol; read-only checkpoint audit (AUDIT_ONLY) when inspection is requested without edits; or broader universal model improvement (AUTO_IMPROVE, DIRECT_ONLY, RESEARCH) only when explicitly requested. Never apply to unrelated tasks or unrequested general LLM weight editing.
+description: Three-mode weight-space skill. Default audit or authorized repair of a small feed-forward ReLU decision network with accessible weights and an explicit protocol; read-only checkpoint audit (AUDIT_ONLY) when inspection is requested without edits; or broader universal model improvement (AUTO_IMPROVE, DIRECT_ONLY, RESEARCH) only when explicitly requested. Never apply to unrelated tasks or unrequested general LLM weight editing.
 ---
 
 # Universal Weight-Space & Operator-Space Audit & Autonomous Model Improvement
