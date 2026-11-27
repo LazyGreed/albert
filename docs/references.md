@@ -6,9 +6,10 @@ during development.
 
 ## Workflow lineage
 
-- [Archived v1][v1] contains the coordinator-sequenced workflow before the
-  shared installer. The [archived v2][v2] contains the original graph-aware
-  contract. Both workflows now use the same profiles and approval boundaries.
+- The [historical v1 revision][v1] contains the coordinator-sequenced workflow
+  before the shared installer. The [historical v2 revision][v2] contains the
+  original graph-aware contract. Both workflows now use the same profiles and
+  approval boundaries.
 - Kanade's supplied *Quintet Graph-Aware Coordination: Final Proposal*,
   revision v3 targeting `6715d8d5`, informed the v2 readiness, invalidation,
   and join rules. The proposal's revision number is independent of the
@@ -30,6 +31,7 @@ during development.
 - [Antigravity CLI][agy] supports [custom subagents][agy-agents]. An active
   [Antigravity swarm][agy-swarm] can expose optional peer messaging. Start and
   manage the swarm in Antigravity.
+- [Codex subagents][codex-agents] support custom agents in standalone TOML files.
 - [Oh My Pi][omp] is a peer messaging compatibility reference. Availability
   of `agent://` depends on the active runtime. [Peer messaging](peer-messaging.md)
 - [pi-web-access][pi-web] supplies Pi search and fetch when enabled.
@@ -110,6 +112,7 @@ The weight-space audit entry was added on 2026-11-24 from the supplied bundle.
 [agy]: https://github.com/google-antigravity/antigravity-cli
 [agy-agents]: https://antigravity.google/docs/subagents
 [agy-swarm]: https://antigravity.google/docs/swarm/
+[codex-agents]: https://developers.openai.com/codex/subagents
 [omp]: https://github.com/can1357/oh-my-pi
 [pi-web]: https://github.com/nicobailon/pi-web-access
 [alien-paper]: https://arxiv.org/abs/2603.01092
