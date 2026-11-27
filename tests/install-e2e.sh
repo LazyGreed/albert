@@ -91,6 +91,7 @@ export PATH="$tmp/bin:$PATH" MOCK_PI_LOG="$tmp/pi-actions" MOCK_PI_CALLS="$tmp/p
 export MOCK_PI_PACKAGES=$'npm:@tintinweb/pi-subagents\nnpm:pi-web-access'
 both_pi_packages="$MOCK_PI_PACKAGES"
 export HOME="$tmp/home" XDG_CONFIG_HOME="$tmp/home/.config" PI_CODING_AGENT_DIR="$tmp/home/.pi/agent"
+unset CODEX_HOME
 mkdir -p "$HOME"
 
 # Validate before the TUI, Pi preflight, or any project writes. A later valid flag
@@ -1135,6 +1136,15 @@ for role, desc in expected.items():
         raise SystemExit(f"agent mismatch: {role}")
 PY
 }
+assert_codex_skills() {
+  local skills_dir="$1" skill tool
+  for skill in architecture domain-modeling documentation research verification alien-science-ideation weight-space-network-audit; do
+    diff -r -- "$root/skills/$skill" "$skills_dir/$skill"
+  done
+  for tool in check-graph.sh check-ownership.sh check-readonly.sh; do
+    [[ -x "$skills_dir/verification/scripts/$tool" ]] || return 1
+  done
+}
 write_personality() {
   local dest="$1" extra="$2"
   python3 - "$dest" "$extra" <<'PY'
@@ -1156,9 +1166,10 @@ TMPDIR="$codex_dry_tmp" "$root/install.sh" --harness codex --scope project --tar
 snapshot_tree "$codex_project" "$tmp/codex-dry-after"
 diff -u "$tmp/codex-dry-before" "$tmp/codex-dry-after"
 [[ -z "$(find "$codex_dry_tmp" -mindepth 1 -print -quit)" ]]
-[[ -z "$(find "$codex_project" -name '*.toml' -o -name '*size*' -print -quit)" ]]
+[[ -z "$(find "$codex_project" \( -name '*.toml' -o -name '*size*' \) -print -quit)" ]]
 grep -Fxq "WRITE $codex_project/AGENTS.md" "$tmp/codex-dry"
 grep -Fxq "WRITE $codex_project/.codex/agents/nora.toml" "$tmp/codex-dry"
+grep -Fxq "WRITE $codex_project/.agents/skills/verification/SKILL.md" "$tmp/codex-dry"
 assert_absent 'pi install\|subagents.json' "$tmp/codex-dry"
 : > "$MOCK_PI_CALLS"
 "$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --no-web \
@@ -1168,10 +1179,14 @@ assert_workflow v2 "$codex_project/AGENTS.md"
 [[ "$(find "$codex_project" -name AGENTS.md | wc -l)" -eq 1 ]]
 [[ ! -e "$codex_project/.codex/config.toml" && ! -e "$codex_project/.pi" && ! -e "$codex_project/.claude" ]]
 assert_codex_agents "$codex_project/.codex/agents"
+assert_codex_skills "$codex_project/.agents/skills"
+[[ ! -e "$codex_project/.codex/skills" ]]
 [[ "$(wc -c < "$codex_project/AGENTS.md")" -le 32768 ]]
-"$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --no-web \
+printf 'web_search = "cached"\n' > "$codex_project/.codex/config.toml"
+"$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v2 --no-tui --with-web \
   > "$tmp/codex-project-again"
-assert_absent '^WRITE ' "$tmp/codex-project-again"
+assert_absent '^WRITE \|^WEB:' "$tmp/codex-project-again"
+cmp -- <(printf 'web_search = "cached"\n') "$codex_project/.codex/config.toml"
 "$root/install.sh" --harness codex --scope project --target "$codex_project" --workflow v1 --no-tui --no-web \
   > "$tmp/codex-v1"
 assert_workflow v1 "$codex_project/AGENTS.md"
@@ -1200,6 +1215,8 @@ HOME="$codex_global_home" PI_CODING_AGENT_DIR="$codex_global_home/.pi/agent" \
   "$root/install.sh" --harness codex --scope global --workflow v2 --no-tui --no-web > "$tmp/codex-global-out"
 assert_workflow v2 "$codex_global_home/.codex/AGENTS.md"
 assert_codex_agents "$codex_global_home/.codex/agents"
+assert_codex_skills "$codex_global_home/.codex/skills"
+[[ ! -e "$codex_global_home/.agents" ]]
 cmp -- <(printf 'leave config\n') "$codex_global_home/.codex/config.toml"
 cmp -- <(printf 'leave pi\n') "$codex_global_home/.pi/agent/keep"
 cmp -- <(printf 'leave claude\n') "$codex_global_home/.claude/keep"
@@ -1213,6 +1230,8 @@ HOME="$codex_alt_parent" CODEX_HOME="$codex_alt" PI_CODING_AGENT_DIR="$codex_alt
   "$root/install.sh" --harness codex --scope global --workflow v2 --no-tui --no-web > "$tmp/codex-alt-out"
 assert_workflow v2 "$codex_alt/AGENTS.md"
 assert_codex_agents "$codex_alt/agents"
+assert_codex_skills "$codex_alt/skills"
+[[ ! -e "$codex_alt_parent/.agents" ]]
 cmp -- <(printf 'alt config\n') "$codex_alt/config.toml"
 [[ ! -e "$codex_alt_parent/.codex" && ! -e "$codex_alt_parent/.pi" && ! -e "$codex_alt_parent/.claude" ]]
 
@@ -1244,6 +1263,7 @@ TMPDIR="$size_dry_tmp" "$root/install.sh" --harness antigravity --scope project 
 assert_absent '^DONE$' "$tmp/size-agy-dry"
 assert_absent 'truncat' "$tmp/size-agy-dry-err"
 assert_absent 'tail' "$tmp/size-agy-dry-err"
+grep -Fq "Cannot publish $size_agy/.agents/rules/AGENTS.md:" "$tmp/size-agy-dry-err"
 grep -Fq 'exceeds 24000' "$tmp/size-agy-dry-err"
 grep -Fq 'cannot load this file whole' "$tmp/size-agy-dry-err"
 [[ -z "$(find "$size_dry_tmp" -mindepth 1 -print -quit)" ]]
@@ -1280,8 +1300,9 @@ rc=0
   > "$tmp/size-codex-out" 2> "$tmp/size-codex-err" || rc=$?
 [[ "$rc" -ne 0 ]]
 assert_absent '^DONE$' "$tmp/size-codex-out"
+grep -Fq "Cannot publish $size_codex/AGENTS.md:" "$tmp/size-codex-err"
 grep -Fq 'exceeds 32768' "$tmp/size-codex-err"
-grep -Fq 'cannot load this file whole' "$tmp/size-codex-err"
+grep -Fq 'cannot load this file whole with the default Codex budget' "$tmp/size-codex-err"
 assert_absent 'truncat' "$tmp/size-codex-err"
 assert_absent 'tail' "$tmp/size-codex-err"
 cmp -- "$tmp/size-codex-user" "$size_codex/AGENTS.md"
@@ -1293,6 +1314,49 @@ diff -u "$tmp/size-codex-before" "$tmp/size-codex-after"
 grep -Fxq 'DONE' "$tmp/size-pi-out"
 pi_large_bytes="$(wc -c < "$size_pi/AGENTS.md" | tr -d '[:space:]')"
 [[ "$pi_large_bytes" -gt 32768 ]]
+
+# An unchanged managed block is accepted at the byte boundary. Adding user text
+# then refuses the same block on a reinstall without changing the rule.
+size_boundary="$tmp/size-boundary"
+mkdir -p "$size_boundary"
+write_personality "$size_boundary/PERSONALITY.md" "$((32768 - fit_bytes))"
+"$root/install.sh" --harness codex --scope project --target "$size_boundary" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-boundary-ok"
+grep -Fxq 'DONE' "$tmp/size-boundary-ok"
+[[ "$(wc -c < "$size_boundary/AGENTS.md")" -eq 32768 ]]
+printf '\n' >> "$size_boundary/AGENTS.md"
+cp -- "$size_boundary/AGENTS.md" "$tmp/size-boundary-before"
+rc=0
+"$root/install.sh" --harness codex --scope project --target "$size_boundary" --workflow v2 --no-tui --no-web \
+  > "$tmp/size-boundary-out" 2> "$tmp/size-boundary-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+assert_absent '^DONE$\|^WRITE ' "$tmp/size-boundary-out"
+grep -Fq '32769 bytes exceeds 32768' "$tmp/size-boundary-err"
+cmp -- "$tmp/size-boundary-before" "$size_boundary/AGENTS.md"
+
+# The legacy text can push an otherwise valid global rule over the cap.
+size_legacy_home="$tmp/size-legacy-home"
+size_legacy_plugins="$size_legacy_home/.gemini/config/plugins"
+seed_legacy "$size_legacy_home"
+printf '\nKeep the legacy user rule.\n' >> "$size_legacy_plugins/albert/rules/AGENTS.md"
+python3 -c 'print("x" * 24000)' >> "$size_legacy_plugins/albert/rules/AGENTS.md"
+snapshot_tree "$size_legacy_home" "$tmp/size-legacy-before"
+for mode in preview write; do
+  args=()
+  if [[ "$mode" == preview ]]; then args+=(--dry-run); fi
+  rc=0
+  HOME="$size_legacy_home" TMPDIR="$size_dry_tmp" \
+    "$root/install.sh" --harness antigravity --scope global --workflow v2 --no-tui --no-web "${args[@]}" \
+    > "$tmp/size-legacy-$mode-out" 2> "$tmp/size-legacy-$mode-err" || rc=$?
+  [[ "$rc" -ne 0 ]]
+  assert_absent '^DONE$\|^CARRY \|^ARCHIVE ' "$tmp/size-legacy-$mode-out"
+  grep -Fq "Cannot publish $size_legacy_plugins/quintet/rules/AGENTS.md:" "$tmp/size-legacy-$mode-err"
+  grep -Fq 'exceeds 24000' "$tmp/size-legacy-$mode-err"
+  [[ -z "$(find "$size_dry_tmp" -mindepth 1 -print -quit)" ]]
+  snapshot_tree "$size_legacy_home" "$tmp/size-legacy-$mode-after"
+  diff -u "$tmp/size-legacy-before" "$tmp/size-legacy-$mode-after"
+done
+cmp -- "$tmp/size-legacy-preview-err" <(grep -F 'Cannot publish ' "$tmp/size-legacy-write-err")
 
 # A later size failure rolls back writes from earlier harnesses in the same run.
 size_roll="$tmp/size-roll"

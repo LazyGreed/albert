@@ -62,10 +62,13 @@ of rule discovery before retrying. Use `--dry-run` to see the planned moves.
 
 ### Codex
 
-Project installs write `PROJECT/AGENTS.md` (the same file as Pi) and
-`PROJECT/.codex/agents/*.toml`. Global installs write `AGENTS.md` and
-`agents/*.toml` under `${CODEX_HOME:-~/.codex}`. The installer does not edit
-`config.toml`.
+Project installs write `PROJECT/AGENTS.md` (the same file as Pi),
+`PROJECT/.codex/agents/*.toml`, and skills under `PROJECT/.agents/skills`.
+Global installs write `AGENTS.md`, `agents/*.toml`, and `skills/` under
+`${CODEX_HOME:-~/.codex}`. Codex uses its existing `config.toml`, including
+its web settings and project trust. Trust the project in Codex to load its
+project-local agents. `--no-web` controls
+web tool grants Quintet adds for Pi, Claude Code, and Antigravity CLI.
 
 ## Agents and personality
 
@@ -84,10 +87,10 @@ line must be `Name: Your Name`.
 Rerun the installer to apply the name and style to the coordinator, including
 its global Antigravity display name. The four workers keep their roles.
 
-The installer does not publish an Antigravity rule over 24,000 bytes or a
-Codex `AGENTS.md` over 32,768 bytes. A file over that limit cannot be loaded
-whole. The default personality fits either workflow. A long custom personality
-can exceed the limit.
+The installer refuses Antigravity rules over 24,000 bytes and applies the
+32,768-byte default Codex budget to `AGENTS.md`. The check includes existing
+user instructions and any Antigravity legacy rules being carried over. Long
+custom personalities can exceed these limits.
 
 ## Compare the workflows
 

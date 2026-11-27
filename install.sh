@@ -28,19 +28,21 @@ Global: installs in ~/.pi/agent (or PI_CODING_AGENT_DIR), ~/.claude,
 ~/.gemini/config/plugins/quintet, and/or ${CODEX_HOME:-~/.codex}.
 Project: installs in PROJECT/.pi, PROJECT/.claude, or PROJECT/.agents, with
 instructions in root AGENTS.md or CLAUDE.md. Codex project agents are
-PROJECT/.codex/agents. Codex and Pi share one PROJECT/AGENTS.md.
-Codex does not edit config.toml.
+PROJECT/.codex/agents and project skills are in PROJECT/.agents/skills. Global
+Codex skills are in ${CODEX_HOME:-~/.codex}/skills. Codex and Pi share PROJECT/AGENTS.md.
+The installer preserves Codex config.toml.
 Both global and project scopes install the full coordinator contract and personality.
 Antigravity installs the quintet plugin (rules/AGENTS.md, worker agents, and skills). A global
 install moves an eligible previous plugin tree into ~/.gemini/config/quintet-backups
 once the new plugin is written. User rules outside the managed block are carried into
 the new file first. Unrecognized entries keep the old plugin in place and are listed.
-The installer does not publish an Antigravity rule over 24000 bytes or a Codex
-AGENTS.md over 32768 bytes. A file over that limit cannot be loaded whole.
+The installer refuses Antigravity rules over 24000 bytes and checks Codex
+AGENTS.md against the default Codex budget of 32768 bytes.
 Selecting Pi requires Pi >=1.1.0. The installer runs pi install npm:@tintinweb/pi-subagents
 and pi install npm:pi-web-access when pi list does not already show them, and writes
 subagents.json in the Pi agent directory (PI_CODING_AGENT_DIR or ~/.pi/agent).
-Web research is enabled by default for eligible workers (use --no-web to omit those tool grants).
+Use --no-web to omit web tool grants the installer adds to worker profiles.
+Codex uses its own web settings.
 --no-web does not skip the Pi package installs. No bundled settings files are copied.
 Existing model/provider settings are preserved.
 USAGE
@@ -471,46 +473,49 @@ instruction_byte_limit() {
   printf '%s' 0
 }
 
-# A coordinator file over the harness limit cannot be loaded whole. Refuse it
-# instead of publishing a partial file. The message must not claim a tail cut.
 refuse_oversized() {
-  local path="$1" limit bytes
-  limit="$(instruction_byte_limit "$path")" || return 1
+  local rendered="$1" dst="$2" limit bytes qualification=''
+  limit="$(instruction_byte_limit "$dst")" || return 1
   [[ "$limit" -gt 0 ]] || return 0
-  bytes="$(wc -c < "$path" | tr -d '[:space:]')" || return 1
-  [[ "$bytes" =~ ^[0-9]+$ ]] || return 1
-  if (( bytes > limit )); then
+  if ! bytes="$(wc -c < "$rendered" | tr -d '[:space:]')" || [[ ! "$bytes" =~ ^[0-9]+$ ]]; then
+    printf 'Cannot measure the rendered instructions for %s\n' "$dst" >&2
     instruction_refused=1
-    printf 'Cannot publish %s: %s bytes exceeds %s. The harness cannot load this file whole, so it was not published.\n' \
-      "$path" "$bytes" "$limit" >&2
     return 1
   fi
+  (( bytes <= limit )) && return 0
+  if (( limit == codex_agents_max_bytes )); then qualification=' with the default Codex budget'; fi
+  instruction_refused=1
+  printf 'Cannot publish %s: %s bytes exceeds %s. The harness cannot load this file whole%s.\n' \
+    "$dst" "$bytes" "$limit" "$qualification" >&2
+  return 1
 }
 
-# Add/update only our clearly delimited section. Never discard project instructions.
-# One rendered copy feeds the idempotence comparison and the write, so a global re-install
-# and a project re-install are both exact no-ops after the first run.
-install_instructions() {
-  local dst="$1" rule_backups="${2:-}" rendered temp
-  rendered="$(mktemp)"
-  if ! render_instructions > "$rendered"; then rm -f -- "$rendered"; return 1; fi
-  if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst"; then
-    if managed_block_text "$dst" | cmp -s "$rendered" -; then
-      rm -f -- "$rendered"
-      refuse_oversized "$dst" || return 1
-      return 0
-    fi
+# Preserve the installed bytes when the managed block already matches.
+render_instruction_update() {
+  local dst="$1" rendered="$2" temp="$3"
+  if [[ -f "$dst" ]] && grep -Fqx -- "$managed_begin" "$dst" && grep -Fqx -- "$managed_end" "$dst" &&
+    managed_block_text "$dst" | cmp -s "$rendered" -; then
+    cp -- "$dst" "$temp"
+    return
   fi
-  temp="$(mktemp)"
   if [[ -f "$dst" ]]; then
-    if ! managed_outside_text "$dst" > "$temp"; then rm -f -- "$temp" "$rendered"; return 1; fi
+    managed_outside_text "$dst" > "$temp" || return 1
   fi
-  if ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
-    ! refuse_oversized "$temp" ||
+  append_block "$temp" "$rendered" "$managed_begin" "$managed_end"
+}
+
+install_instructions() {
+  local dst="$1" rule_backups="${2:-}" rendered temp result=0
+  rendered="$(mktemp)" || return 1
+  if ! temp="$(mktemp)"; then rm -f -- "$rendered"; return 1; fi
+  if ! render_instructions > "$rendered" ||
+    ! render_instruction_update "$dst" "$rendered" "$temp" ||
+    ! refuse_oversized "$temp" "$dst" ||
     ! put "$temp" "$dst" "$rule_backups"; then
-    rm -f -- "$temp" "$rendered"; return 1
+    result=1
   fi
   rm -f -- "$temp" "$rendered"
+  return "$result"
 }
 
 # There is one legacy rules source. Replace its carry block in place; a fenced
@@ -548,36 +553,25 @@ write_carried_rules() {
   fi
 }
 
+# The caller reports the planned carry during preview without publishing it.
 merge_carried_instructions() {
-  local dst="$1" carried="$2" rule_backups="$3" rendered outside temp result=0
-  rendered="$(mktemp)" || return 1
-  if ! outside="$(mktemp)"; then rm -f -- "$rendered"; return 1; fi
-  if ! temp="$(mktemp)"; then rm -f -- "$rendered" "$outside"; return 1; fi
-  if ! render_instructions > "$rendered" || ! managed_outside_text "$dst" > "$outside" ||
+  local dst="$1" carried="$2" rule_backups="$3" rendered outside temp current="$1" result=0
+  rendered="$(mktemp)" || return 2
+  if ! outside="$(mktemp)"; then rm -f -- "$rendered"; return 2; fi
+  if ! temp="$(mktemp)"; then rm -f -- "$rendered" "$outside"; return 2; fi
+  if ((dry)); then current="$temp"; fi
+  if ! render_instructions > "$rendered" ||
+    { ((dry)) && ! render_instruction_update "$dst" "$rendered" "$temp"; } ||
+    ! managed_outside_text "$current" > "$outside" ||
     ! write_carried_rules "$temp" "$outside" "$carried" ||
     ! append_block "$temp" "$rendered" "$managed_begin" "$managed_end" ||
-    ! refuse_oversized "$temp" ||
-    ! put "$temp" "$dst" "$rule_backups"; then
+    ! refuse_oversized "$temp" "$dst"; then
     result=1
+  elif ((!dry)); then
+    put "$temp" "$dst" "$rule_backups" || result=1
   fi
   rm -f -- "$temp" "$outside" "$rendered"
   return "$result"
-}
-
-# Dry-run still has to refuse a carried rule that cannot be loaded whole, without
-# leaving a size-check file in the install tree or in TMPDIR.
-carried_rule_fits() {
-  local dst="$1" carried="$2" rendered outside temp status=0
-  rendered="$(mktemp)" || return 0
-  if ! outside="$(mktemp)"; then rm -f -- "$rendered"; return 0; fi
-  if ! temp="$(mktemp)"; then rm -f -- "$rendered" "$outside"; return 0; fi
-  if render_instructions > "$rendered" && managed_outside_text "$dst" > "$outside" &&
-    write_carried_rules "$temp" "$outside" "$carried" &&
-    append_block "$temp" "$rendered" "$managed_begin" "$managed_end"; then
-    refuse_oversized "$temp" || status=1
-  fi
-  rm -f -- "$temp" "$outside" "$rendered"
-  return "$status"
 }
 
 has_old_rule_backup_name() {
@@ -671,7 +665,7 @@ generated_antigravity_paths() {
 # Archive plugins/albert only after the replacement tree is complete. Generated files
 # may also contain user edits, so preserve the entire legacy tree outside plugin discovery.
 migrate_legacy_antigravity_plugin() {
-  local root="$1" rule_backups="$2" legacy="$3" rel entry list extras=() extra_count=0 total=0 carried
+  local root="$1" rule_backups="$2" legacy="$3" rel entry list extras=() extra_count=0 total=0 carried carry_status=0
   local backup_root="$HOME/.gemini/config/quintet-backups" backup_dir
   local legacy_rule="$legacy/rules/AGENTS.md" rule="$root/rules/AGENTS.md"
   check_antigravity_rule_backups "$legacy_rule" || return 1
@@ -709,21 +703,17 @@ migrate_legacy_antigravity_plugin() {
     fi
     if grep -q '[^[:space:]]' "$carried" ||
       { [[ -f "$rule" ]] && grep -Fqx -e "$carry_begin" -e "$carry_end" -- "$rule"; }; then
-      if ((dry)); then
-        if ! carried_rule_fits "$rule" "$carried"; then
-          rm -f -- "$carried"
-          return 1
-        fi
-        report "CARRY '$legacy_rule' -> '$rule' (dry run; your text outside the managed block would be preserved)"
-        report "BACKUP RULE '$rule' under '$rule_backups' (dry run; if carrying rules changes the file)"
-      elif ! merge_carried_instructions "$rule" "$carried" "$rule_backups"; then
+      merge_carried_instructions "$rule" "$carried" "$rule_backups" || carry_status=$?
+      if (( carry_status )); then
         rm -f -- "$carried"
-        if (( instruction_refused )); then
-          return 1
-        fi
+        if (( instruction_refused || carry_status == 2 )); then return 1; fi
         report "KEEP '$legacy': '$legacy_rule' could not be merged into '$rule'."
+        if ((dry)); then return 1; fi
         relocate_antigravity_rule_backups "$legacy_rule" "$rule_backups"
         return
+      elif ((dry)); then
+        report "CARRY '$legacy_rule' -> '$rule' (dry run; your text outside the managed block would be preserved)"
+        report "BACKUP RULE '$rule' under '$rule_backups' (dry run; if carrying rules changes the file)"
       else
         report "CARRY '$legacy_rule' -> '$rule' (your text outside the managed block was preserved)"
       fi
@@ -770,8 +760,8 @@ install_one() {
     relocate_antigravity_rule_backups "$instruction" "$rule_backups" || return 1
     if [[ "$scope" == global ]]; then
       local manifest="$root/plugin.json"
-      local temp_manifest; temp_manifest="$(mktemp)"
-      cat > "$temp_manifest" <<EOF
+      local temp_manifest; temp_manifest="$(mktemp)" || return 1
+      if ! cat > "$temp_manifest" <<EOF
 {
   "name": "quintet",
   "displayName": "$coordinator_json_name",
@@ -784,6 +774,10 @@ install_one() {
   ]
 }
 EOF
+      then
+        rm -f -- "$temp_manifest"
+        return 1
+      fi
       put "$temp_manifest" "$manifest" || { rm -f -- "$temp_manifest"; return 1; }
       rm -f -- "$temp_manifest"
     fi
@@ -792,12 +786,9 @@ EOF
       install_role "$tool" "$role" "$root/agents/$role.md" || return 1
     done
     install_skills "$root" || return 1
-    # The replacement tree is complete. Migration may keep the legacy plugin;
-    # a failure there must not erase the new tree or archive the old one.
+    # A successful archive is the last filesystem operation of the install.
     if [[ -n "$legacy" ]]; then
-      rollback_armed=0
       migrate_legacy_antigravity_plugin "$root" "$rule_backups" "$legacy" || return 1
-      rollback_armed=1
     fi
     return 0
   fi
@@ -926,19 +917,22 @@ install_codex_role() {
 }
 
 install_codex() {
-  local root instruction role
+  local root instruction skills_root role
   if [[ "$scope" == global ]]; then
     root="${CODEX_HOME:-$HOME/.codex}"
     instruction="$root/AGENTS.md"
+    skills_root="$root"
   else
     root="$target/.codex"
     instruction="$target/AGENTS.md"
+    skills_root="$target/.agents"
   fi
   codex_agents_embeddable || return 1
   install_instructions "$instruction" || return 1
   for role in nora felix vera iris; do
     install_codex_role "$role" "$root/agents/$role.toml" || return 1
   done
+  install_skills "$skills_root"
 }
 
 trap 'abort_install $?' ERR
@@ -948,13 +942,14 @@ if has_harness pi; then install_pi_runtime || abort_install $?; fi
 install_personality || abort_install $?
 if has_harness pi; then install_one pi || abort_install $?; fi
 if has_harness claude; then install_one claude || abort_install $?; fi
-if has_harness antigravity || has_harness agy; then install_one antigravity || abort_install $?; fi
 if has_harness codex; then install_codex || abort_install $?; fi
+# Antigravity can archive a legacy plugin after completing all install writes.
+if has_harness antigravity || has_harness agy; then install_one antigravity || abort_install $?; fi
 # Summary lines are not part of the tree. Do not undo a finished install if one fails.
 rollback_armed=0
 
-if ((with_web)); then
-  report 'WEB: enabled for the coordinator and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'
+if ((with_web)) && { has_harness pi || has_harness claude || has_harness antigravity || has_harness agy; }; then
+  report 'WEB: added worker tool grants for Nora/Felix/Vera. Runtime access depends on the harness and provider configuration.'
 fi
 report 'MODELS: choose per-agent model/effort; model and provider settings unchanged.'
 report 'DONE'

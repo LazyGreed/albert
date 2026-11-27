@@ -23,8 +23,11 @@ workflow when both are loaded.
 
 Pi honors `$PI_CODING_AGENT_DIR/AGENTS.md` when configured. Antigravity's
 global `rules/AGENTS.md` is inside `~/.gemini/config/plugins/quintet`.
-Codex project agents live in `PROJECT/.codex/agents`. Global Codex agents live
-in `${CODEX_HOME:-~/.codex}/agents`. Project Codex and Pi share `PROJECT/AGENTS.md`.
+Codex project agents live in `PROJECT/.codex/agents`, with skills in
+`PROJECT/.agents/skills`. Global Codex installs put `agents/` and `skills/`
+under `${CODEX_HOME:-~/.codex}`. Project Codex and Pi share
+`PROJECT/AGENTS.md`. Codex requires project trust to load
+project-local agents. The installer preserves the existing trust settings.
 
 When working directly in Quintet with no project installation, the root
 [AGENTS.md](../AGENTS.md) points to the default [v2 workflow](../workflows/v2.md).
@@ -195,16 +198,18 @@ python3 tests/live-graph.py --help
   `6715d8d52a1d69480be2f2bec778184fb7abd3cf`. Pass clean source checkouts
   with `--q0` and `--q1`, and pin `Q1` with `--q1-sha <40-char-sha>`.
   The runner's Q1 install uses the v2 default from this checkout.
-- By default the Q1 commit must be a strict descendant of Q0. To use a sibling
-  checkout, such as the [archived v1 tip][v1-tip], pass `--allow-diverged-q0`.
+- By default the Q1 commit must be a strict descendant of Q0. To compare a
+  historical checkout with a diverged history, pass `--allow-diverged-q0`.
   The driver records `merge_base` in the revision metadata.
+- To compare v1 and v2 from the same clean checkout, pass `--same-revision`
+  with `--q1 <checkout>` and `--q1-sha <full SHA>`. This mode takes a single
+  source checkout. Live execution requires `--live`, `--out`, `--model`, and
+  a positive `--budget`.
 - Live runs use Claude Code, matching model and permissions, and `--no-web`.
   Run at least five trials per scenario per variant. `--budget` sets the
   per-invocation budget. S5 allows up to three invocations and S3 and S5b
   allow two. Keep raw JSONL, fixture repos, snapshots, and results in an
   `--out` directory outside the runner and both source checkouts.
-
-[v1-tip]: https://github.com/LazyGreed/quintet/tree/460f9e9c4ce2d057d9fb72365489fe9a132c03af
 
 ### Scenario gates
 
