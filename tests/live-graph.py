@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Opt-in Q0/Q1 fixture trials using Claude Code; no provider call in self-test."""
+"""Opt-in Q0/Q1 or same-revision workflow trials using Claude Code; no provider call in self-test."""
 
 import argparse
 import json
@@ -498,11 +498,24 @@ def initial_join_failure(repo, base, seed, snap, text):
             'observed': all(p['passed'] for p in isolated) and observed['exit'] == 1}
 
 
-def trial(source, out, args, scenario, *, legacy):
+def install_command(source, target, workflow=None):
+    # Historical Q0 install.sh rejects an unknown --workflow flag. Omit it unless a trial selects one.
+    command = ['bash', str(Path(source) / 'install.sh'), '--harness', 'claude', '--scope', 'project', '--target', str(target)]
+    if workflow is not None:
+        if workflow not in ('v1', 'v2'):
+            raise ValueError(f'workflow must be v1 or v2, not {workflow!r}')
+        command.extend(('--workflow', workflow))
+    command.extend(('--no-tui', '--no-web'))
+    return tuple(command)
+
+
+def trial(source, out, args, scenario, *, legacy, workflow=None):
+    if getattr(args, 'same_revision', False) and workflow not in ('v1', 'v2'):
+        raise ValueError('same-revision trial requires workflow v1 or v2')
     start = time.monotonic()
     repo = out / 'repo'
     request = fixture(repo, scenario)
-    run(repo, 'bash', str(source / 'install.sh'), '--harness', 'claude', '--scope', 'project', '--target', str(repo), '--no-tui', '--no-web')
+    run(repo, *install_command(source, repo, workflow))
     base = commit(repo, 'Fixture baseline and installed instructions')
     git(repo, 'update-ref', '--create-reflog', '-m', 'runner seed ' + uuid.uuid4().hex, 'refs/heads/' + BRANCH, base)
     seed = integration_log(repo)
@@ -576,6 +589,7 @@ def self_test():
     assert records('PASS') == []
     sample = 'STREAM b; VERDICT PASS; REF wt/b@1234567; BASE abcdef1; VERIFIED_AGAINST a=wt/a@abcdef2; ACCEPT done'
     assert records(sample) == [('b', 'wt/b@1234567', 'abcdef1', 'a=wt/a@abcdef2')]
+    prove_same_revision()
     with tempfile.TemporaryDirectory() as tmp:
         for scenario in SCENARIOS:
             repo = Path(tmp) / scenario
@@ -876,7 +890,7 @@ def self_test():
         first = initial_join_failure(repo, base, seed, snap, '')
         assert first['observed'] and first['inputs'] == {'api': api_head, 'consumer': consumer_head}
         assert not first['reported_binding']
-    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources')
+    print('PASS: offline fixtures, S3 verdict tuple, S4 worker and integration ownership, S5 landing history, S5b first join, pinned clean sources, same-revision split')
 
 
 def source_head(source):
@@ -915,15 +929,129 @@ def source_revisions(sources, expected_q1, baseline=Q0, allow_diverged_q0=False)
     return {**revisions, 'merge_base': mb}
 
 
+def same_revision(checkout, expected):
+    if not expected or not re.fullmatch(r'[a-f0-9]{40}', expected):
+        raise ValueError('--q1-sha must be a full lowercase 40-character commit SHA')
+    checkout = Path(checkout).resolve()
+    found = source_head(checkout)
+    if found != expected:
+        raise ValueError(f'checkout must be at {expected}, found {found}')
+    return found
+
+
+def comparison_plan(scenarios, trials, *, same_revision):
+    if not isinstance(trials, int) or trials < 1:
+        raise ValueError('trials must be positive')
+    variants = (('v1', 'v1'), ('v2', 'v2')) if same_revision else (('Q0', None), ('Q1', None))
+    return [{'scenario': scenario, 'trial': index, 'variant': variant, 'workflow': workflow}
+            for scenario in scenarios for index in range(1, trials + 1) for variant, workflow in variants]
+
+
+def prove_same_revision():
+    help_text = run(HERE, sys.executable, str(Path(__file__).resolve()), '--help', text=True).stdout
+    assert '--same-revision' in help_text
+    with tempfile.TemporaryDirectory() as tmp:
+        root = Path(tmp)
+        source = root / 'source'
+        source.mkdir()
+        (source / 'install.sh').write_text(
+            '#!/bin/sh\n'
+            'target=\n'
+            'prev=\n'
+            'for arg in "$@"; do\n'
+            '  if [ "$prev" = "--target" ]; then\n'
+            '    target=$arg\n'
+            '  fi\n'
+            '  prev=$arg\n'
+            'done\n'
+            'test -n "$target" || exit 2\n'
+            "printf '%s\\n' \"$@\" > \"$target/install-argv\"\n")
+        plan = comparison_plan(('S1',), 1, same_revision=True)
+        assert [(item['variant'], item['workflow']) for item in plan] == [('v1', 'v1'), ('v2', 'v2')]
+        recorded = []
+        for item in plan:
+            target = root / item['workflow']
+            target.mkdir()
+            command = install_command(source, target, item['workflow'])
+            assert command[:2] == ('bash', str(source / 'install.sh'))
+            run(target, *command)
+            recorded.append((target / 'install-argv').read_text().splitlines())
+            assert recorded[-1] == [
+                '--harness', 'claude', '--scope', 'project', '--target', str(target),
+                '--workflow', item['workflow'], '--no-tui', '--no-web']
+        def without(row, flag):
+            row = list(row)
+            index = row.index(flag)
+            del row[index:index + 2]
+            return row
+
+        assert recorded[0] != recorded[1]
+        assert [row[row.index('--workflow') + 1] for row in recorded] == ['v1', 'v2']
+        assert without(without(recorded[0], '--target'), '--workflow') == without(without(recorded[1], '--target'), '--workflow')
+        try:
+            install_command(source, root, 'v3')
+        except ValueError as exc:
+            assert 'v1 or v2' in str(exc)
+        else:
+            raise AssertionError('invalid workflow accepted')
+        plain = root / 'plain'
+        plain.mkdir()
+        historical = install_command(source, plain, None)
+        assert historical == (
+            'bash', str(source / 'install.sh'), '--harness', 'claude', '--scope', 'project',
+            '--target', str(plain), '--no-tui', '--no-web')
+        run(plain, *historical)
+        assert '--workflow' not in (plain / 'install-argv').read_text().splitlines()
+        assert comparison_plan(('S1',), 1, same_revision=False) == [
+            {'scenario': 'S1', 'trial': 1, 'variant': 'Q0', 'workflow': None},
+            {'scenario': 'S1', 'trial': 1, 'variant': 'Q1', 'workflow': None}]
+
+        repo = root / 'checkout'
+        repo.mkdir()
+        git(repo, 'init', '-q', '-b', 'main')
+        git(repo, 'config', 'user.name', 'Quintet fixture')
+        git(repo, 'config', 'user.email', 'fixture@example.invalid')
+        put(repo, 'a.txt', 'shared\n')
+        sha = commit(repo, 'Shared revision')
+        assert same_revision(repo, sha) == sha
+        put(repo, 'dirty.txt', 'dirty\n')
+        try:
+            same_revision(repo, sha)
+        except ValueError as exc:
+            assert 'not a clean Git source checkout' in str(exc)
+        else:
+            raise AssertionError('dirty same-revision checkout accepted')
+        (repo / 'dirty.txt').unlink()
+        assert same_revision(repo, sha) == sha
+        put(repo, 'a.txt', 'changed\n')
+        other = commit(repo, 'Later revision')
+        try:
+            same_revision(repo, sha)
+        except ValueError as exc:
+            assert f'checkout must be at {sha}' in str(exc)
+        else:
+            raise AssertionError('stale same-revision SHA accepted')
+        assert same_revision(repo, other) == other
+        for bad in (None, '', sha[:12], sha.upper()):
+            try:
+                same_revision(repo, bad)
+            except ValueError as exc:
+                assert 'full lowercase' in str(exc), str(exc)
+            else:
+                raise AssertionError(f'short or empty SHA accepted: {bad!r}')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--self-test', action='store_true')
     parser.add_argument('--live', action='store_true', help='explicit opt-in to authenticated, potentially billed calls')
     for name in ('q0', 'q1', 'out'):
         parser.add_argument('--' + name, type=Path)
-    parser.add_argument('--q1-sha', help='required for --live: exact full commit SHA of the Q1 candidate')
+    parser.add_argument('--q1-sha', help='required for --live: exact full commit SHA of the --q1 checkout')
     parser.add_argument('--allow-diverged-q0', action='store_true',
                         help='allow Q0 to be a diverged sibling branch checkout (such as v1) and record merge_base')
+    parser.add_argument('--same-revision', action='store_true',
+                        help='compare workflow v1 and v2 from one clean --q1 checkout at --q1-sha')
     parser.add_argument('--model', help='same pinned model for both variants')
     parser.add_argument('--budget', type=float, help='USD per invocation (up to three for S5, two for S3 and S5b)')
     parser.add_argument('--timeout', type=int, default=600)
@@ -933,33 +1061,51 @@ def main():
     if args.self_test and not args.live:
         self_test()
         return
-    if not (args.live and args.q0 and args.q1 and args.out and args.model and args.budget and args.budget > 0 and args.trials > 0 and args.timeout > 0):
-        parser.error('use --self-test or supply --live --q0 --q1 --q1-sha --out --model and a positive --budget')
+    if args.same_revision:
+        if args.q0 or args.allow_diverged_q0:
+            parser.error('--same-revision uses one --q1 checkout; omit --q0 and --allow-diverged-q0')
+        if not (args.live and args.q1 and args.out and args.model and args.budget and args.budget > 0 and args.trials > 0 and args.timeout > 0):
+            parser.error('use --self-test or supply --live --same-revision --q1 --q1-sha --out --model and a positive --budget')
+        source = args.q1.resolve()
+        sources = {'v1': source, 'v2': source}
+        try:
+            revision = same_revision(source, args.q1_sha)
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            parser.error(str(exc))
+        revisions = {'v1': revision, 'v2': revision}
+        outside = 'the source checkout'
+    else:
+        if not (args.live and args.q0 and args.q1 and args.out and args.model and args.budget and args.budget > 0 and args.trials > 0 and args.timeout > 0):
+            parser.error('use --self-test or supply --live --q0 --q1 --q1-sha --out --model and a positive --budget')
+        sources = {'Q0': args.q0.resolve(), 'Q1': args.q1.resolve()}
+        try:
+            revisions = source_revisions(sources, args.q1_sha, allow_diverged_q0=args.allow_diverged_q0)
+        except (ValueError, OSError, subprocess.CalledProcessError) as exc:
+            parser.error(str(exc))
+        outside = 'both source checkouts'
     root = args.out.resolve()
-    sources = {'Q0': args.q0.resolve(), 'Q1': args.q1.resolve()}
     if any(root.is_relative_to(source) for source in (HERE, *sources.values())):
-        parser.error('--out must be outside the runner and both source checkouts')
-    try:
-        revisions = source_revisions(sources, args.q1_sha, allow_diverged_q0=args.allow_diverged_q0)
-    except (ValueError, OSError, subprocess.CalledProcessError) as exc:
-        parser.error(str(exc))
+        parser.error(f'--out must be outside the runner and {outside}')
     version = run(HERE, 'claude', '--version', text=True).stdout.strip()
     root.mkdir(parents=True, exist_ok=False)
-    for scenario in args.scenario or SCENARIOS:
-        for i in range(args.trials):
-            for variant, source in sources.items():
-                out = root / f'{scenario}-{i + 1}-{variant}'
-                out.mkdir()
-                try:
-                    if source_head(source) != revisions[variant]:
-                        raise ValueError(f'{variant} source revision changed')
-                    result = trial(source, out, args, scenario, legacy=variant == 'Q0')
-                except (RuntimeError, subprocess.SubprocessError, ValueError, OSError) as exc:
-                    result = {'accepted': False, 'blocked': str(exc)}
-                result.update(scenario=scenario, trial=i + 1, variant=variant, claude=version, model=args.model,
-                              source_revisions=revisions)
-                put(out, 'result.json', json.dumps(result, indent=2) + '\n')
-                print(json.dumps(result), flush=True)
+    for item in comparison_plan(args.scenario or SCENARIOS, args.trials, same_revision=args.same_revision):
+        scenario, index, variant, workflow = item['scenario'], item['trial'], item['variant'], item['workflow']
+        source = sources[variant]
+        out = root / f'{scenario}-{index}-{variant}'
+        out.mkdir()
+        try:
+            if source_head(source) != revisions[variant]:
+                raise ValueError(f'{variant} source revision changed')
+            # v1 may report a legacy HEAD line. v2 still requires bound verdicts.
+            result = trial(source, out, args, scenario, legacy=variant == 'Q0' or workflow == 'v1', workflow=workflow)
+        except (RuntimeError, subprocess.SubprocessError, ValueError, OSError) as exc:
+            result = {'accepted': False, 'blocked': str(exc)}
+        result.update(scenario=scenario, trial=index, variant=variant, claude=version, model=args.model,
+                      source_revisions=revisions)
+        if workflow:
+            result['workflow'] = workflow
+        put(out, 'result.json', json.dumps(result, indent=2) + '\n')
+        print(json.dumps(result), flush=True)
 
 
 if __name__ == '__main__':
