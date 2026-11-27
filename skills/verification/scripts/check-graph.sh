@@ -16,14 +16,16 @@ Commands:
   ready        Reject unknown dependencies, dependency cycles, mutual read/write
                cycles, write/write overlaps, and a read of another stream's write
                unless the reader depends on that writer. A depends target must be
-               status PASS with a resolvable ref sha. Missing status is not a pass.
+               status PASS, with a worktree whose branch and HEAD equal ref.
+               A missing worktree is not a pass. Missing status is not a pass.
   invalidate   Require each stream worktree clean and its branch plus HEAD equal
                to ref. A verified_against input is stale when its old sha is missing
                or the upstream diff intersects that stream's read patterns, including
                either path of a rename or copy. A non-overlapping diff is not stale.
   join         Require a clean integration checkout at --integration-ref and every
-               input stream status PASS with a resolvable ref. Missing, stale, or
-               dirty bindings fail.
+               input status PASS with a worktree whose branch and HEAD equal ref.
+               A missing, stale, or dirty binding fails. An object in the
+               integration repo is not an input binding.
 
 Spec fields:
   id, write, read, depends, status, ref (branch@sha, sha at least 7 hex),
@@ -31,10 +33,8 @@ Spec fields:
   verified_against for multiple values. Separate records with a blank line.
 
 Options:
-  --repo <dir>                 Git directory used to resolve a sha when a stream
-                               has no worktree (default: .). ready only falls back
-                               here. invalidate and join do not treat a fallback as
-                               a substitute for a required checkout.
+  --repo <dir>                 Accepted and ignored. Ref binding uses each stream
+                               worktree, never this directory or the current one.
   --integration-ref <branch@sha>
                                Required for join.
   --integration-worktree <dir> Required for join.
@@ -53,7 +53,6 @@ die_spec() {
   exit 2
 }
 
-repo_dir="."
 integration_ref=""
 integration_worktree=""
 spec_file=""
@@ -711,18 +710,19 @@ cmd_ready() {
         note_fail "dependency ref invalid: $tid"
         continue
       fi
-      local resolve_dir=""
-      if [[ -n "${WORKTREES[$idx]}" ]]; then
-        if ! is_worktree "${WORKTREES[$idx]}"; then
-          note_fail "dependency ref does not resolve: $tid ${AT_SHA} (worktree unavailable)"
-          continue
-        fi
-        resolve_dir="${WORKTREES[$idx]}"
+      local branch="$AT_LEFT" sha="$AT_SHA"
+      if [[ -z "${WORKTREES[$idx]}" ]]; then
+        note_fail "dependency ref does not resolve: $tid $sha (missing worktree)"
+      elif ! is_worktree "${WORKTREES[$idx]}"; then
+        note_fail "dependency ref does not resolve: $tid $sha (worktree unavailable)"
       else
-        resolve_dir="$repo_dir"
-      fi
-      if ! resolve_commit "$resolve_dir" "$AT_SHA" >/dev/null; then
-        note_fail "dependency ref does not resolve: $tid $AT_SHA"
+        local bind_rc=0
+        checkout_binding "${WORKTREES[$idx]}" "$branch" "$sha" || bind_rc=$?
+        if (( bind_rc == 2 )); then
+          note_fail "dependency ref does not resolve: $tid $sha"
+        elif (( bind_rc != 0 )); then
+          note_fail "dependency ref mismatch: $tid expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
+        fi
       fi
       add_edge "$tid" "$id"
     done
@@ -886,23 +886,21 @@ cmd_join() {
       continue
     fi
     local branch="$AT_LEFT" sha="$AT_SHA"
-    if [[ -n "${WORKTREES[$i]}" ]]; then
-      if ! is_worktree "${WORKTREES[$i]}"; then
-        note_fail "input ref does not resolve: $id $sha (worktree unavailable)"
-        continue
-      fi
-      note_dirty "input dirty: $id" "input status unreadable: $id" "${WORKTREES[$i]}"
-      bind_rc=0
-      checkout_binding "${WORKTREES[$i]}" "$branch" "$sha" || bind_rc=$?
-      if (( bind_rc == 2 )); then
-        note_fail "input ref does not resolve: $id $sha"
-      elif (( bind_rc != 0 )); then
-        note_fail "input ref stale: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
-      fi
-    else
-      if ! resolve_commit "$integration_worktree" "$sha" >/dev/null; then
-        note_fail "input ref does not resolve: $id $sha"
-      fi
+    if [[ -z "${WORKTREES[$i]}" ]]; then
+      note_fail "input ref does not resolve: $id $sha (missing worktree)"
+      continue
+    fi
+    if ! is_worktree "${WORKTREES[$i]}"; then
+      note_fail "input ref does not resolve: $id $sha (worktree unavailable)"
+      continue
+    fi
+    note_dirty "input dirty: $id" "input status unreadable: $id" "${WORKTREES[$i]}"
+    bind_rc=0
+    checkout_binding "${WORKTREES[$i]}" "$branch" "$sha" || bind_rc=$?
+    if (( bind_rc == 2 )); then
+      note_fail "input ref does not resolve: $id $sha"
+    elif (( bind_rc != 0 )); then
+      note_fail "input ref stale: $id expected ${branch}@${sha} got ${BIND_BRANCH}@${BIND_HEAD:-unknown}"
     fi
   done
   finish
@@ -930,7 +928,6 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --repo)
       [[ $# -ge 2 ]] || die_usage "--repo requires an argument"
-      repo_dir="$2"
       shift 2
       ;;
     --integration-ref)

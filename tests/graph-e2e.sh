@@ -109,6 +109,7 @@ id: a
 write: src/a.py
 status: PASS
 ref: main@${short}
+worktree: ${repo}
 
 id: b
 read: src/*.py
@@ -197,6 +198,76 @@ id: b
 write: src/nested/a.py
 EOF
 run_check 0 "GRAPH READY PASS" "$checker" ready --repo "$repo" "$spec"
+
+# A dependency ref binds in its worktree. --repo and cwd are not a fallback.
+other="$tmp/other-repo"
+new_repo "$other"
+printf 'only-other\n' > "$other/src/a.py"
+git -C "$other" add src/a.py
+git -C "$other" commit -q -m "only other"
+other_sha="$(git -C "$other" rev-parse HEAD)"
+cat > "$spec" <<EOF
+id: dep-foreign
+status: PASS
+ref: feature@${other_sha}
+
+id: reader
+depends: dep-foreign
+EOF
+(
+  cd "$other"
+  run_check 1 "dependency ref does not resolve: dep-foreign" "$checker" ready "$spec"
+)
+run_check 1 "dependency ref does not resolve: dep-foreign" "$checker" ready --repo "$other" "$spec"
+
+# Object existence does not make a branch name true.
+cat > "$spec" <<EOF
+id: dep-alias
+status: PASS
+ref: not-a-branch@${base}
+worktree: ${repo}
+
+id: reader
+depends: dep-alias
+EOF
+run_check 1 "dependency ref mismatch: dep-alias" "$checker" ready --repo "$repo" "$spec"
+
+cat > "$spec" <<EOF
+id: dep-alias
+status: PASS
+ref: not-a-branch@${base}
+
+id: reader
+depends: dep-alias
+EOF
+run_check 1 "dependency ref does not resolve: dep-alias" "$checker" ready --repo "$repo" "$spec"
+
+move_repo="$tmp/move-repo"
+new_repo "$move_repo"
+old_sha="$(git -C "$move_repo" rev-parse HEAD)"
+printf 'moved\n' > "$move_repo/src/a.py"
+git -C "$move_repo" add src/a.py
+git -C "$move_repo" commit -q -m "move main"
+cat > "$spec" <<EOF
+id: dep-slipped
+status: PASS
+ref: main@${old_sha}
+worktree: ${move_repo}
+
+id: reader
+depends: dep-slipped
+EOF
+run_check 1 "dependency ref mismatch: dep-slipped" "$checker" ready --repo "$move_repo" "$spec"
+
+cat > "$spec" <<EOF
+id: dep-slipped
+status: PASS
+ref: main@${old_sha}
+
+id: reader
+depends: dep-slipped
+EOF
+run_check 1 "dependency ref does not resolve: dep-slipped" "$checker" ready --repo "$move_repo" "$spec"
 
 # invalidate fixtures: upstream and reader worktrees.
 wt_up="$tmp/wt-up"
@@ -507,5 +578,22 @@ printf 'dirty reader\n' > "$wt_reader/dirty.txt"
 run_check 1 "input dirty" \
   "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
 rm -f -- "$wt_reader/dirty.txt"
+
+# An object in the integration repo is not an input binding.
+cat > "$spec" <<EOF
+id: join-ghost
+status: PASS
+ref: not-a-branch@${int_sha}
+EOF
+run_check 1 "input ref does not resolve: join-ghost" \
+  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+
+cat > "$spec" <<EOF
+id: join-unbound
+status: PASS
+ref: integration/task@${int_sha}
+EOF
+run_check 1 "input ref does not resolve: join-unbound" \
+  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
 
 echo "graph E2E PASS: ready cycles and overlaps, invalidate staleness, join bindings"
