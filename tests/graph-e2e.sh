@@ -116,6 +116,9 @@ read: src/*.py
 depends: a
 EOF
 run_check 0 "GRAPH READY PASS" "$checker" ready --repo "$repo" "$spec"
+printf 'untracked\n' > "$repo/stray.txt"
+run_check 1 "dependency dirty: a" "$checker" ready "$spec"
+rm -f -- "$repo/stray.txt"
 
 # Unknown dependency.
 cat > "$spec" <<EOF
@@ -275,6 +278,11 @@ wt_reader="$tmp/wt-reader"
 git -C "$repo" worktree add -q -b wt/up "$wt_up" "$base"
 git -C "$repo" worktree add -q -b wt/reader "$wt_reader" "$base"
 reader_sha="$(git -C "$wt_reader" rev-parse HEAD)"
+base_args=(--base-ref "main@${base:0:7}")
+
+invalidate() {
+  "$checker" invalidate "${base_args[@]}" "$@"
+}
 
 # Non-overlapping upstream edit does not invalidate.
 printf 'changed\n' > "$wt_up/src/other.py"
@@ -297,10 +305,52 @@ worktree: ${wt_reader}
 verified_against: up@${base}
 EOF
 spec_sum="$(sha256sum "$spec" | awk '{print $1}')"
-run_check 0 "GRAPH INVALIDATE PASS" "$checker" invalidate "$spec"
+run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
+run_check 2 "--base-ref is required" "$checker" invalidate "$spec"
+run_check 1 "base repository differs" invalidate --repo "$other" "$spec"
+run_check 0 "GRAPH INVALIDATE PASS" invalidate --repo "$repo" "$spec"
 [[ "$(sha256sum "$spec" | awk '{print $1}')" == "$spec_sum" ]] || fail "invalidate rewrote the spec"
 [[ -z "$(git -C "$wt_up" status --porcelain --untracked-files=all)" ]] || fail "invalidate dirtied upstream"
 [[ -z "$(git -C "$wt_reader" status --porcelain --untracked-files=all)" ]] || fail "invalidate dirtied reader"
+
+# A hard dependency requires current PASS and exact evidence, including disjoint reads.
+hard_spec() {
+  local status="$1" verified="${2:-}"
+  cat > "$spec" <<EOF
+id: up
+write: src/other.py
+status: ${status}
+ref: wt/up@${up_other}
+worktree: ${wt_up}
+
+id: reader
+read: src/a.py
+status: PASS
+ref: wt/reader@${reader_sha}
+worktree: ${wt_reader}
+depends: up
+EOF
+  if [[ -n "$verified" ]]; then
+    printf 'verified_against: up@%s\n' "$verified" >> "$spec"
+  fi
+}
+hard_spec PASS "$base"
+run_check 1 "does not match hard dependency" invalidate "$spec"
+hard_spec PASS
+run_check 1 "missing verified_against for hard dependency" invalidate "$spec"
+hard_spec FAIL "$up_other"
+run_check 1 "dependency not PASS" invalidate "$spec"
+hard_spec "" "$up_other"
+run_check 1 "dependency not PASS" invalidate "$spec"
+hard_spec PASS "${up_other:0:7}"
+run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
+
+# A tag cannot stand in for the base branch, and a moved base invalidates evidence.
+git -C "$repo" tag base-tag "$base"
+run_check 1 "base branch unavailable: base-tag" \
+  "$checker" invalidate --base-ref "base-tag@$base" "$spec"
+git -C "$repo" branch base-moved "$up_other"
+run_check 1 "base ref stale" "$checker" invalidate --base-ref "base-moved@$base" "$spec"
 
 # Ignored files are not dirty under the required status command.
 printf '*.log\n' >> "$wt_up/.gitignore"
@@ -319,7 +369,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${up_other}
 EOF
-run_check 0 "GRAPH INVALIDATE PASS" "$checker" invalidate "$spec"
+run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
 rm -f -- "$wt_up/noise.log"
 
 # Dirty worktree, including an untracked file, fails closed.
@@ -334,7 +384,7 @@ id: reader
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "dirty worktree" "$checker" invalidate "$spec"
+run_check 1 "dirty worktree" invalidate "$spec"
 rm -rf -- "$wt_reader/notes"
 
 # Ref mismatch: HEAD moved, spec still names the old sha.
@@ -347,7 +397,7 @@ id: reader
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "ref mismatch" "$checker" invalidate "$spec"
+run_check 1 "ref mismatch" invalidate "$spec"
 
 # Branch mismatch with the right commit.
 git -C "$wt_reader" checkout -q -b wt/wrong "$reader_sha"
@@ -356,7 +406,7 @@ id: reader
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "ref mismatch" "$checker" invalidate "$spec"
+run_check 1 "ref mismatch" invalidate "$spec"
 git -C "$wt_reader" checkout -q wt/reader
 
 # Missing old sha is stale. Spec is not rewritten.
@@ -372,7 +422,7 @@ worktree: ${wt_reader}
 verified_against: up@0123456789abcdef
 EOF
 spec_sum="$(sha256sum "$spec" | awk '{print $1}')"
-run_check 1 "missing sha" "$checker" invalidate "$spec"
+run_check 1 "missing sha" invalidate "$spec"
 [[ "$(sha256sum "$spec" | awk '{print $1}')" == "$spec_sum" ]] || fail "stale invalidate rewrote the spec"
 
 # Upstream rename: either path intersecting a declared read is stale.
@@ -395,7 +445,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_rename}
 EOF
-run_check 1 "intersects read via src/old.py" "$checker" invalidate "$spec"
+run_check 1 "intersects read via src/old.py" invalidate "$spec"
 
 cat > "$spec" <<EOF
 id: up
@@ -408,7 +458,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_rename}
 EOF
-run_check 1 "intersects read via src/new.py" "$checker" invalidate "$spec"
+run_check 1 "intersects read via src/new.py" invalidate "$spec"
 
 # A rename whose paths do not intersect reads is not stale.
 cat > "$spec" <<EOF
@@ -422,7 +472,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_rename}
 EOF
-run_check 0 "GRAPH INVALIDATE PASS" "$checker" invalidate "$spec"
+run_check 0 "GRAPH INVALIDATE PASS" invalidate "$spec"
 
 # Copy records are parsed on both paths. Modify the source in the same commit so -C emits both.
 copy_base="$(git -C "$wt_up" rev-parse HEAD)"
@@ -449,7 +499,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_copy}
 EOF
-run_check 1 "intersects read via src/copy.py" "$checker" invalidate "$spec"
+run_check 1 "intersects read via src/copy.py" invalidate "$spec"
 
 cat > "$spec" <<EOF
 id: up
@@ -462,7 +512,7 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_copy}
 EOF
-run_check 1 "intersects read via src/orig.py" "$checker" invalidate "$spec"
+run_check 1 "intersects read via src/orig.py" invalidate "$spec"
 
 # Space in a renamed path must survive NUL parsing.
 git -C "$wt_up" checkout -q -B wt/up "$copy_base"
@@ -484,14 +534,22 @@ ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 verified_against: up@${pre_space}
 EOF
-run_check 1 "intersects read via src/other file.py" "$checker" invalidate "$spec"
+run_check 1 "intersects read via src/other file.py" invalidate "$spec"
 
-# join: clean integration checkout bound to its ref, inputs PASS and resolvable.
-git -C "$wt_up" checkout -q wt/up
+# Join requires both verified input commits in integration history.
 up_join="$(git -C "$wt_up" rev-parse HEAD)"
+printf 'reader result\n' > "$wt_reader/src/b.py"
+git -C "$wt_reader" add src/b.py
+git -C "$wt_reader" commit -q -m "reader result"
+reader_sha="$(git -C "$wt_reader" rev-parse HEAD)"
 int_wt="$tmp/wt-int"
 git -C "$repo" worktree add -q -b integration/task "$int_wt" "$base"
-int_sha="$(git -C "$int_wt" rev-parse HEAD)"
+int_sha="$base"
+
+join() {
+  "$checker" join "${base_args[@]}" --integration-ref "integration/task@$int_sha" \
+    --integration-worktree "$int_wt" "$@"
+}
 
 cat > "$spec" <<EOF
 id: up
@@ -504,16 +562,35 @@ status: PASS
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 0 "GRAPH JOIN PASS" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input not in integration history: up" join "$spec"
+grep -Fq 'input not in integration history: reader' "$tmp/err" || fail "missing second unlanded input"
+git -C "$int_wt" merge -q --no-ff -m "land upstream" "$up_join"
+int_sha="$(git -C "$int_wt" rev-parse HEAD)"
+run_check 1 "input not in integration history: reader" join "$spec"
+git -C "$int_wt" merge -q --no-ff -m "land reader" "$reader_sha"
+int_sha="$(git -C "$int_wt" rev-parse HEAD)"
+run_check 0 "GRAPH JOIN PASS" join "$spec"
+run_check 0 "GRAPH JOIN PASS" join --repo "$repo" "$spec"
+run_check 1 "base repository differs" join --repo "$other" "$spec"
+
+# A current base tip must also be an ancestor of the integration commit.
+git -C "$repo" branch -f base-moved "$base"
+git -C "$repo" worktree add -q "$tmp/wt-base-moved" base-moved
+printf 'moved base\n' > "$tmp/wt-base-moved/src/a.py"
+git -C "$tmp/wt-base-moved" add src/a.py
+git -C "$tmp/wt-base-moved" commit -q -m "move base outside integration history"
+moved_base="$(git -C "$tmp/wt-base-moved" rev-parse HEAD)"
+run_check 1 "base ref stale" join --base-ref "base-moved@$base" "$spec"
+run_check 1 "base not in integration history" join --base-ref "base-moved@$moved_base" "$spec"
 
 # Short integration sha still binds when it resolves to HEAD.
-run_check 0 "GRAPH JOIN PASS" \
-  "$checker" join --integration-ref "integration/task@${int_sha:0:7}" --integration-worktree "$int_wt" "$spec"
+run_check 0 "GRAPH JOIN PASS" join --integration-ref "integration/task@${int_sha:0:7}" "$spec"
 
-# Missing integration binding is usage failure, not a pass.
-run_check 2 "integration-ref" "$checker" join --integration-worktree "$int_wt" "$spec"
-run_check 2 "integration-worktree" "$checker" join --integration-ref "integration/task@${int_sha}" "$spec"
+# Missing bindings are usage failures.
+run_check 2 "--base-ref is required" \
+  "$checker" join --integration-ref "integration/task@$int_sha" --integration-worktree "$int_wt" "$spec"
+run_check 2 "integration-ref" "$checker" join "${base_args[@]}" --integration-worktree "$int_wt" "$spec"
+run_check 2 "integration-worktree" "$checker" join "${base_args[@]}" --integration-ref "integration/task@$int_sha" "$spec"
 
 # Integration checkout stale or dirty.
 printf 'int\n' > "$int_wt/src/a.py"
@@ -525,13 +602,14 @@ status: PASS
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "integration ref mismatch" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "integration ref mismatch" join "$spec"
 
 git -C "$int_wt" reset -q --hard "$int_sha"
 printf 'dirty\n' > "$int_wt/stray.txt"
-run_check 1 "integration dirty" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "integration dirty" join "$spec"
+run_check 1 "integration dirty" env GIT_DIR="$repo/.git" GIT_WORK_TREE="$repo" \
+  GIT_INDEX_FILE="$repo/.git/index" "$checker" join "${base_args[@]}" \
+  --integration-ref "integration/task@$int_sha" --integration-worktree "$int_wt" "$spec"
 rm -f -- "$int_wt/stray.txt"
 
 # Input not PASS, unresolvable ref, and stale worktree HEAD.
@@ -541,16 +619,14 @@ status: FAIL
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "input not PASS" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input not PASS" join "$spec"
 
 cat > "$spec" <<EOF
 id: reader
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "input not PASS" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input not PASS" join "$spec"
 
 cat > "$spec" <<EOF
 id: reader
@@ -558,8 +634,7 @@ status: PASS
 ref: wt/reader@0123456789abcdef
 worktree: ${wt_reader}
 EOF
-run_check 1 "input ref does not resolve" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input ref does not resolve" join "$spec"
 
 printf 'reader move\n' > "$wt_reader/src/a.py"
 git -C "$wt_reader" add src/a.py
@@ -570,13 +645,11 @@ status: PASS
 ref: wt/reader@${reader_sha}
 worktree: ${wt_reader}
 EOF
-run_check 1 "input ref stale" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input ref stale" join "$spec"
 git -C "$wt_reader" reset -q --hard "$reader_sha"
 
 printf 'dirty reader\n' > "$wt_reader/dirty.txt"
-run_check 1 "input dirty" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input dirty" join "$spec"
 rm -f -- "$wt_reader/dirty.txt"
 
 # An object in the integration repo is not an input binding.
@@ -585,15 +658,21 @@ id: join-ghost
 status: PASS
 ref: not-a-branch@${int_sha}
 EOF
-run_check 1 "input ref does not resolve: join-ghost" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input ref does not resolve: join-ghost" join "$spec"
 
 cat > "$spec" <<EOF
 id: join-unbound
 status: PASS
 ref: integration/task@${int_sha}
 EOF
-run_check 1 "input ref does not resolve: join-unbound" \
-  "$checker" join --integration-ref "integration/task@${int_sha}" --integration-worktree "$int_wt" "$spec"
+run_check 1 "input ref does not resolve: join-unbound" join "$spec"
+
+cat > "$spec" <<EOF
+id: foreign
+status: PASS
+ref: main@${other_sha}
+worktree: ${other}
+EOF
+run_check 1 "input worktree repository differs" join "$spec"
 
 echo "graph E2E PASS: ready cycles and overlaps, invalidate staleness, join bindings"
