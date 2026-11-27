@@ -152,6 +152,18 @@ pass_record up "$up_ref" "$up" > "$evidence"
 printf 'untracked\n' > "$up/stray"
 run_check 1 'stream up dirty worktree' check ready --stream reader
 rm -- "$up/stray"
+if [[ ! -e "$up/readme" ]]; then
+  git -C "$up" config core.ignoreCase true
+  printf 'untracked case variant\n' > "$up/readme"
+  run_check 1 'stream up dirty worktree' check ready --stream reader
+  rm -- "$up/readme"
+  git -C "$up" config --unset core.ignoreCase
+fi
+git -C "$up" config core.filemode false
+chmod +x "$up/up/result"
+run_check 1 'stream up dirty worktree' check ready --stream reader
+chmod -x "$up/up/result"
+git -C "$up" config --unset core.filemode
 git -C "$up" update-index --assume-unchanged -- "$hidden_path"
 printf 'edit hidden from status\n' > "$up/$hidden_path"
 [[ -z "$(git -C "$up" status --porcelain --untracked-files=all)" ]] || fail 'assume-unchanged fixture is visible'
@@ -337,8 +349,28 @@ risky_head="$(commit_all "$risky" 'dependent with inherited changes')"
 } > "$evidence"
 run_check 1 'stream reader ownership check failed' check invalidate --stream reader
 run_check 1 'out-of-scope path' check invalidate --stream reader
+run_check 1 'stream reader ownership check failed' check ready --stream leaf
 pass_record up "main@$base" "$repo" > "$evidence"
 run_check 1 'no changed paths found' check invalidate --stream up
+run_check 1 'no changed paths found' check ready --stream reader
+
+off_base="$tmp/off-base"
+git -C "$repo" worktree add -qb wt/off-base "$off_base" "$initial"
+mkdir "$off_base/up"
+printf 'owned patch off the current base\n' > "$off_base/up/result"
+off_head="$(commit_all "$off_base" 'edit from old base')"
+pass_record up "wt/off-base@$off_head" "$off_base" > "$evidence"
+run_check 1 'ownership baseline is outside stream ancestry' check ready --stream reader
+run_check 1 'ownership baseline is outside stream ancestry' check invalidate --stream up
+
+printf 'unowned history\n' > "$up/unowned"
+commit_all "$up" 'add unowned path' > /dev/null
+rm -- "$up/unowned"
+foreign_revert="$(commit_all "$up" 'remove unowned path')"
+pass_record up "wt/up@$foreign_revert" "$up" > "$evidence"
+run_check 1 "stream up ownership check failed at commit $foreign_revert" check ready --stream reader
+run_check 1 'out-of-scope path' check invalidate --stream up
+git -C "$up" reset -q --hard "$up_head"
 
 # Integration has its own verdict and must contain the exact planned patches.
 combined_record() {
@@ -356,6 +388,10 @@ write_join_evidence() {
 
 write_join_evidence
 run_check 1 'input not in integration history: up' join
+run_check 1 'integration branch must differ from the target branch' check join \
+  --integration-ref "main@$base" --integration-worktree "$repo"
+run_check 1 'integration must use a separate branch and worktree from stream up' check join \
+  --integration-ref "$up_ref" --integration-worktree "$up"
 git -C "$int" merge -q --no-ff -m 'land upstream' "$up_head"
 git -C "$int" merge -q --no-ff -m 'land reader' "$reader_head"
 pre_leaf="$(git -C "$int" rev-parse HEAD)"
@@ -373,7 +409,10 @@ done
 cp "$evidence" "$tmp/evidence.before"
 cp "$plan" "$tmp/plan.before"
 run_check 0 'GRAPH JOIN PASS' join
-TMPDIR="$int" run_check 0 'GRAPH JOIN PASS' join
+mkdir "$tmp/scratch"
+TMPDIR="$tmp/scratch" run_check 0 'GRAPH JOIN PASS' join
+[[ -z "$(ls -A "$tmp/scratch")" ]] || fail 'join left temporary files behind'
+TMPDIR="$int" run_check 2 'temporary directory must be outside Git repositories' join
 for name in "$up" "$reader" "$leaf" "$int"; do
   run_check 0 READONLY_OK "$readonly_checker" verify "$tmp/snapshot-${name##*/}" "$name"
 done
@@ -466,7 +505,26 @@ run_check 1 'unplanned integration path: extra' join
 integration_head="$(git -C "$int" commit-tree "${joined}^{tree}" -p "$joined" -p "$initial" -m 'attach pre-base parent')"
 git -C "$int" reset -q --hard "$integration_head"
 write_join_evidence
-run_check 1 'parent outside BASE ancestry' join
+run_check 1 'unreviewed parent' join
+integration_head="$(git -C "$int" commit-tree "${joined}^{tree}" -p "$joined" -p "$old_up" -m 'attach a partial stream')"
+git -C "$int" reset -q --hard "$integration_head"
+write_join_evidence
+run_check 1 "unreviewed parent: $old_up" join
+
+git -C "$int" reset -q --hard "$base"
+git -C "$int" merge -q --no-ff --no-commit "$up_head" > /dev/null 2>&1
+printf 'unplanned merge content\n' > "$int/extra"
+foreign_merge="$(commit_all "$int" 'add unplanned merge content')"
+git -C "$int" merge -q --no-ff --no-commit "$reader_head" > /dev/null 2>&1
+rm -- "$int/extra"
+commit_all "$int" 'remove unplanned merge content' > /dev/null
+git -C "$int" merge -q --no-ff -m 'land leaf' "$leaf_head"
+integration_head="$(git -C "$int" rev-parse HEAD)"
+[[ "$(git -C "$int" rev-parse HEAD^{tree})" == "$(git -C "$int" rev-parse "${joined}^{tree}")" ]] ||
+  fail 'tainted merge fixture has a different final tree'
+write_join_evidence
+run_check 1 "unplanned integration path: extra (commit $foreign_merge)" join
+
 git -C "$int" reset -q --hard "$pre_leaf"
 git -C "$int" merge -q --no-ff --no-commit "$leaf_head" > /dev/null 2>&1
 printf 'unreviewed merge resolution\n' > "$int/reader/result"
@@ -474,7 +532,7 @@ integration_head="$(commit_all "$int" 'modify planned path in merge only')"
 write_join_evidence
 run_check 1 'integration path differs from planned patch: reader/result' join
 
-# Submodule configuration cannot hide untracked files or index flags.
+# Populated gitlinks are unsupported, even when Git reports them clean.
 sub="$tmp/sub"
 sub_parent="$tmp/sub-parent"
 new_repo "$sub"
@@ -488,17 +546,20 @@ base_ref="main@$base"
 repo="$sub_parent"
 cat > "$plan" <<'EOF'
 id: up
-write: dependency
+write: root-file
 
 id: reader
 depends: up
 EOF
-pass_record up "$base_ref" "$sub_parent" > "$evidence"
+git -C "$sub_parent" switch -qc wt/sub-parent
+printf 'own patch\n' > "$sub_parent/root-file"
+sub_parent_head="$(commit_all "$sub_parent" 'add owned path')"
+pass_record up "wt/sub-parent@$sub_parent_head" "$sub_parent" > "$evidence"
+run_check 1 'populated or unreadable submodule path is unsupported: dependency' check ready --stream reader
+git -C "$sub_parent" submodule deinit --force -- dependency > /dev/null
+mkdir -p "$sub_parent/dependency"
 run_check 0 'GRAPH READY PASS' check ready --stream reader
-printf 'dirty submodule\n' > "$sub_parent/dependency/untracked"
-run_check 1 'stream up dirty worktree' check ready --stream reader
-rm -- "$sub_parent/dependency/untracked"
-git -C "$sub_parent/dependency" update-index --assume-unchanged -- data
-run_check 1 'hidden index path: dependency/data' check ready --stream reader
+printf 'populated without an initialized worktree\n' > "$sub_parent/dependency/data"
+run_check 1 'populated or unreadable submodule path is unsupported: dependency' check ready --stream reader
 
 printf 'graph E2E PASS\n'

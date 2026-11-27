@@ -19,10 +19,10 @@ Usage:
   check-graph.sh join --plan PLAN --base-ref BRANCH@SHA --integration-ref BRANCH@SHA
                       --integration-worktree DIR [--repo DIR] EVIDENCE
 
-Commands share graph validation. Ready checks the selected streams' prerequisites.
-Invalidate checks selected streams and their prerequisites. Omit --stream to
-select all planned streams. Join checks all planned streams, integration history,
-and a separate combined PASS. See workflows/v2.md for the trust boundary.
+Commands share graph, ownership, and evidence validation. Ready checks the
+selected streams' prerequisites. Invalidate checks selected streams and their
+prerequisites. Omit --stream to select all planned streams. Join checks all
+planned streams, integration history, and a separate combined PASS.
 
 Files use blank-line-separated records with one key: value per line.
   Plan: id, write, read, depends (hard), read_depends (read-only).
@@ -33,6 +33,8 @@ Repeat path, edge, or input fields for distinct values. Verdict bases are bare
 commit SHAs. Abbreviations must resolve unambiguously and use at least 7 hex digits.
 EVIDENCE may be empty at initial readiness. --repo overrides base lookup, which
 otherwise uses integration, a required stream's worktree, or the current directory.
+Set TMPDIR outside Git repositories for scratch files. Bound worktrees with
+populated submodule paths or hidden index entries are unsupported.
 USAGE
 }
 
@@ -48,8 +50,8 @@ die_record() {
 }
 
 failures=()
-git_output=""
-trap 'if [[ -n "$git_output" ]]; then rm -f -- "$git_output"; fi' EXIT
+scratch=""
+trap 'if [[ -n "$scratch" ]]; then rm -rf -- "$scratch"; fi' EXIT
 ownership_checker="$(dirname -- "${BASH_SOURCE[0]}")/check-ownership.sh"
 
 note_fail() {
@@ -429,7 +431,8 @@ check_base() {
     finish
   }
   parse_ref "$base_ref" || die_usage "invalid --base-ref: $base_ref"
-  if ! tip="$(git -C "$dir" show-ref --verify --hash "refs/heads/$ref_branch" 2>/dev/null)"; then
+  base_branch="$ref_branch"
+  if ! tip="$(git -C "$dir" show-ref --verify --hash "refs/heads/$base_branch" 2>/dev/null)"; then
     note_fail "base branch unavailable: $ref_branch"
     finish
   fi
@@ -439,9 +442,74 @@ check_base() {
   fi
 }
 
+run_ownership() {
+  # Keep older installations' Git diff and status settings from hiding changes.
+  TMPDIR="$scratch" GIT_CONFIG_COUNT=8 \
+    GIT_CONFIG_KEY_0=diff.ignoreSubmodules GIT_CONFIG_VALUE_0=none \
+    GIT_CONFIG_KEY_1=diff.relative GIT_CONFIG_VALUE_1=false \
+    GIT_CONFIG_KEY_2=core.ignoreCase GIT_CONFIG_VALUE_2=false \
+    GIT_CONFIG_KEY_3=core.filemode GIT_CONFIG_VALUE_3=true \
+    GIT_CONFIG_KEY_4=core.fsmonitor GIT_CONFIG_VALUE_4=false \
+    GIT_CONFIG_KEY_5=core.untrackedCache GIT_CONFIG_VALUE_5=false \
+    GIT_CONFIG_KEY_6=core.trustctime GIT_CONFIG_VALUE_6=true \
+    GIT_CONFIG_KEY_7=core.checkStat GIT_CONFIG_VALUE_7=default \
+    "$ownership_checker" "$@" > /dev/null
+}
+
+unpopulated_gitlink() (
+  local path="$1"
+  [[ ! -L "$path" ]] || return 1
+  [[ -e "$path" ]] || return 0
+  [[ -d "$path" && -r "$path" && -x "$path" ]] || return 1
+  unset GLOBIGNORE
+  shopt -s nullglob dotglob
+  local -a entries=("$path"/*)
+  (( ! ${#entries[@]} ))
+)
+
+check_worktree_clean() {
+  local label="$1" dir="$2" head="$3" entry status path
+  if ! git -C "$dir" ls-files -v -z > "$git_output"; then
+    note_fail "$label index unreadable"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    if [[ "$entry" == [a-zS]' '* ]]; then
+      note_fail "$label hidden index path: ${entry:2} (assume-unchanged or skip-worktree)"
+      return 1
+    fi
+  done < "$git_output"
+
+  if ! git -C "$dir" ls-tree -r -z "$head" -- > "$git_output"; then
+    note_fail "$label committed tree unreadable"
+    return 1
+  fi
+  while IFS= read -r -d '' entry; do
+    [[ "$entry" == '160000 commit '* ]] || continue
+    path="${entry#*$'\t'}"
+    if ! unpopulated_gitlink "$dir/$path"; then
+      note_fail "$label populated or unreadable submodule path is unsupported: $path"
+      return 1
+    fi
+  done < "$git_output"
+
+  # A literal dot cannot match any repository-relative Git path.
+  if ! run_ownership --base "$head" --worktree "$dir" -- .; then
+    note_fail "$label dirty worktree or unreadable changes"
+    return 1
+  fi
+  if ! status="$(git -C "$dir" -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"; then
+    note_fail "$label status unreadable"
+    return 1
+  elif [[ -n "$status" ]]; then
+    note_fail "$label dirty worktree"
+    return 1
+  fi
+}
+
 # On success, expose the branch and commit of the bound worktree.
 check_checkout() {
-  local label="$1" dir="$2" ref="$3" top common status entry
+  local label="$1" dir="$2" ref="$3" top common
   checkout_branch="" checkout_head=""
   if [[ -z "$dir" ]] || ! top="$(git -C "$dir" rev-parse --show-toplevel 2>/dev/null)" ||
     [[ ! "$top" -ef "$dir" ]]; then
@@ -461,23 +529,7 @@ check_checkout() {
     return 1
   fi
   checkout_branch="${checkout_branch#refs/heads/}"
-  if ! git -C "$dir" ls-files -v --recurse-submodules --full-name -z > "$git_output"; then
-    note_fail "$label index unreadable"
-    return 1
-  fi
-  while IFS= read -r -d '' entry; do
-    if [[ "$entry" == [a-zS]' '* ]]; then
-      note_fail "$label hidden index path: ${entry:2} (assume-unchanged or skip-worktree)"
-      return 1
-    fi
-  done < "$git_output"
-  if ! status="$(git -C "$dir" -c core.fsmonitor=false status --porcelain --untracked-files=all --ignore-submodules=none)"; then
-    note_fail "$label status unreadable"
-    return 1
-  elif [[ -n "$status" ]]; then
-    note_fail "$label dirty worktree"
-    return 1
-  fi
+  check_worktree_clean "$label" "$dir" "$checkout_head"
 }
 
 check_verdict_base() {
@@ -521,26 +573,41 @@ check_read_diff() {
 }
 
 check_owned_patch() {
-  local id="$1" dir="$2" head="$3" merges
+  local id="$1" dir="$2" head="$3" history commit parent current="$3"
   if ! git -C "$dir" merge-base --is-ancestor "$base_sha" "$head"; then
     note_fail "stream $id ownership baseline is outside stream ancestry: $base_sha"
     return 1
   fi
-  if ! merges="$(git -C "$dir" rev-list --merges --max-count=1 "$base_sha..$head" --)" || [[ -n "$merges" ]]; then
-    note_fail "stream $id ownership requires a patch without merge commits above BASE"
-    return 1
-  fi
-  local -a writes
+  local -a writes ancestry
   split_fields "${plan[$id:write]}" writes
   if (( ! ${#writes[@]} )); then
     note_fail "stream $id has no declared write ownership"
     return 1
   fi
-  # Override diff settings that could hide paths from the sibling checker.
-  if ! TMPDIR=/tmp GIT_CONFIG_COUNT=2 GIT_CONFIG_KEY_0=diff.ignoreSubmodules GIT_CONFIG_VALUE_0=none \
-    GIT_CONFIG_KEY_1=diff.relative GIT_CONFIG_VALUE_1=false \
-    "$ownership_checker" --repo "$dir" --base "$base_sha" --head "$head" --require-changes -- "${writes[@]}" > /dev/null; then
+  if ! run_ownership --repo "$dir" --base "$base_sha" --head "$head" --require-changes -- "${writes[@]}"; then
     note_fail "stream $id ownership check failed"
+    return 1
+  fi
+  if ! history="$(git -C "$dir" rev-list --parents --topo-order "$base_sha..$head" --)"; then
+    note_fail "stream $id ownership history unreadable"
+    return 1
+  fi
+  while IFS=' ' read -r -a ancestry; do
+    if (( ${#ancestry[@]} != 2 )) || [[ "${ancestry[0]}" != "$current" ]]; then
+      note_fail "stream $id ownership requires a patch without merge commits above BASE"
+      return 1
+    fi
+    commit="${ancestry[0]}"
+    parent="${ancestry[1]}"
+    if [[ "$parent" != "$base_sha" || "$commit" != "$head" ]] &&
+      ! run_ownership --repo "$dir" --base "$parent" --head "$commit" -- "${writes[@]}"; then
+      note_fail "stream $id ownership check failed at commit $commit"
+      return 1
+    fi
+    current="$parent"
+  done <<< "$history"
+  if [[ "$current" != "$base_sha" ]]; then
+    note_fail "stream $id ownership history does not reach BASE"
     return 1
   fi
 }
@@ -604,9 +671,7 @@ check_streams() {
       note_fail "stream $id verdict REF mismatch: expected $checkout_branch@$checkout_head got ${evidence[$id:verdict_ref]:-missing}"
     fi
     check_verdict_base "stream $id" "$dir" "${evidence[$id:verdict_base]:-}"
-    if [[ "$command" != ready ]]; then
-      check_owned_patch "$id" "$dir" "$checkout_head" || continue
-    fi
+    check_owned_patch "$id" "$dir" "$checkout_head" || continue
     split_fields "${upstreams[$id]:-}" inputs
     for upstream in "${inputs[@]}"; do
       check_edge "$id" "$upstream" || continue
@@ -634,55 +699,81 @@ load_patch() {
   done < "$git_output"
 }
 
-check_integration_content() {
-  local head="$1" id path
+check_integration_tree() {
+  local commit="$1" id path rc
   local -A expected=() actual=()
-  local -a expected_paths=() actual_paths=() exclusions=("^$base_sha")
+  local -a expected_paths=() actual_paths=()
   for id in "${ids[@]}"; do
-    exclusions+=("^${heads[$id]}")
+    rc=0
+    git -C "$integration_worktree" merge-base --is-ancestor "${heads[$id]}" "$commit" || rc=$?
+    case "$rc" in
+      0) ;;
+      1) continue ;;
+      *) note_fail "cannot inspect ancestry of $id at integration commit $commit"; return 1 ;;
+    esac
     if ! load_patch "$integration_worktree" "${heads[$id]}" expected expected_paths; then
       note_fail "cannot assemble planned integration patches: $id"
       return 1
     fi
   done
-  local parent
-  local -a commit_and_parents
-  if ! git -C "$integration_worktree" rev-list --parents --topo-order "$head" "${exclusions[@]}" -- > "$git_output"; then
-    note_fail "cannot inspect integration history"
-    return 1
-  fi
-  while IFS=' ' read -r -a commit_and_parents; do
-    if (( ${#commit_and_parents[@]} < 3 )); then
-      note_fail "integration contains a commit outside planned histories: ${commit_and_parents[0]}"
-      break
-    fi
-    for parent in "${commit_and_parents[@]:1}"; do
-      if ! git -C "$integration_worktree" merge-base --is-ancestor "$base_sha" "$parent"; then
-        note_fail "integration merge ${commit_and_parents[0]} has a parent outside BASE ancestry: $parent"
-      fi
-    done
-  done < "$git_output"
-  if ! load_patch "$integration_worktree" "$head" actual actual_paths; then
-    note_fail "cannot read integration patch"
+  if ! load_patch "$integration_worktree" "$commit" actual actual_paths; then
+    note_fail "cannot read integration patch at commit $commit"
     return 1
   fi
   for path in "${actual_paths[@]}"; do
     if [[ -z "${expected[$path]+x}" ]]; then
-      note_fail "unplanned integration path: $path"
+      note_fail "unplanned integration path: $path (commit $commit)"
     elif [[ "${actual[$path]}" != "${expected[$path]}" ]]; then
-      note_fail "integration path differs from planned patch: $path"
+      note_fail "integration path differs from planned patch: $path (commit $commit)"
     fi
   done
   for path in "${expected_paths[@]}"; do
     if [[ -z "${actual[$path]+x}" ]]; then
-      note_fail "planned patch missing from integration: $path"
+      note_fail "planned patch missing from integration: $path (commit $commit)"
     fi
   done
 }
 
+check_integration_content() {
+  local head="$1" id history commit parent
+  local -a ancestry commits exclusions=("^$base_sha")
+  local -A checked=()
+  checked[$base_sha]=1
+  for id in "${ids[@]}"; do
+    exclusions+=("^${heads[$id]}")
+    checked[${heads[$id]}]=1
+  done
+  if ! history="$(git -C "$integration_worktree" rev-list --reverse --parents --topo-order "$head" "${exclusions[@]}" --)"; then
+    note_fail "cannot inspect integration history"
+    return 1
+  fi
+  split_fields "$history" commits
+  for commit in "${commits[@]}"; do
+    IFS=' ' read -r -a ancestry <<< "$commit"
+    commit="${ancestry[0]}"
+    if (( ${#ancestry[@]} < 3 )); then
+      note_fail "integration contains a commit outside planned histories: $commit"
+      continue
+    fi
+    for parent in "${ancestry[@]:1}"; do
+      if [[ -z "${checked[$parent]+x}" ]]; then
+        note_fail "integration merge $commit has an unreviewed parent: $parent"
+      fi
+    done
+    check_integration_tree "$commit" || return 1
+    checked[$commit]=1
+  done
+  if [[ "$head" != "${commit:-}" || -z "${checked[$head]+x}" ]]; then
+    check_integration_tree "$head" || return 1
+  fi
+}
+
 check_join() {
   check_checkout integration "$integration_worktree" "$integration_ref" || return 1
-  local head="$checkout_head" branch="$checkout_branch" id
+  local head="$checkout_head" branch="$checkout_branch" id dir
+  if [[ "$branch" == "$base_branch" ]]; then
+    note_fail "integration branch must differ from the target branch: $branch"
+  fi
   if ! git -C "$integration_worktree" merge-base --is-ancestor "$base_sha" "$head"; then
     note_fail "base not in integration history: $base_ref"
   fi
@@ -694,6 +785,10 @@ check_join() {
   fi
   check_verdict_base combined "$integration_worktree" "${combined[verdict_base]:-}"
   for id in "${ids[@]}"; do
+    dir="${evidence[$id:worktree]:-}"
+    if [[ "$branch" == "${branches[$id]:-}" || ( -n "$dir" && "$integration_worktree" -ef "$dir" ) ]]; then
+      note_fail "integration must use a separate branch and worktree from stream $id"
+    fi
     if [[ -n "${heads[$id]+x}" ]] &&
       ! git -C "$integration_worktree" merge-base --is-ancestor "${heads[$id]}" "$head"; then
       note_fail "input not in integration history: $id ${branches[$id]}@${heads[$id]}"
@@ -780,7 +875,12 @@ if [[ -z "$repo_dir" ]]; then
   done
 fi
 check_base "${repo_dir:-.}"
-git_output="$(mktemp /tmp/quintet-graph.XXXXXXXX)"
+scratch_root="$(cd -P -- "${TMPDIR:-/tmp}" && pwd -P)" || die_usage "temporary directory is unavailable"
+if git -C "$scratch_root" rev-parse --git-dir >/dev/null 2>&1; then
+  die_usage "temporary directory must be outside Git repositories: $scratch_root"
+fi
+scratch="$(mktemp -d "$scratch_root/quintet-graph.XXXXXXXX")"
+git_output="$scratch/git-output"
 check_streams
 if [[ "$command" == join ]]; then
   check_join || finish
