@@ -92,7 +92,78 @@ fi
 
 has_harness() { [[ ",$harness," == *",$1,"* ]]; }
 report() { printf '%s\n' "$*"; }
-mkparent() { if (( !dry )); then mkdir -p -- "$(dirname -- "$1")"; fi; }
+
+# Writes from this invocation. A failed install undoes only these, so a partial
+# tree is not left behind and files that already existed are restored.
+rb_op=()
+rb_a=()
+rb_b=()
+rollback_armed=1
+rule_backup_saved=''
+note_rollback() {
+  rb_op+=("$1")
+  rb_a+=("$2")
+  rb_b+=("${3-}")
+}
+note_missing_dirs() {
+  local dir="$1" parent i
+  local -a missing=()
+  parent="$dir"
+  while [[ "$parent" != "/" && "$parent" != "." && ! -e "$parent" && ! -L "$parent" ]]; do
+    missing+=("$parent")
+    parent="$(dirname -- "$parent")"
+  done
+  for ((i=${#missing[@]}-1; i>=0; i--)); do
+    note_rollback create_dir "${missing[i]}"
+  done
+}
+mkparent() {
+  local dir
+  ((dry)) && return 0
+  dir="$(dirname -- "$1")"
+  note_missing_dirs "$dir"
+  mkdir -p -- "$dir" || return 1
+}
+rollback_this_run() {
+  local i status=0
+  ((${#rb_op[@]})) || return 0
+  for ((i=${#rb_op[@]}-1; i>=0; i--)); do
+    case "${rb_op[i]}" in
+      create_file)
+        rm -f -- "${rb_a[i]}" || status=1
+        ;;
+      create_dir)
+        if [[ -d "${rb_a[i]}" ]] && ! rmdir -- "${rb_a[i]}" 2>/dev/null; then
+          status=1
+        fi
+        ;;
+      replace)
+        # cp -p keeps a symlink in place; mv would replace the link with a regular file.
+        cp -p -- "${rb_b[i]}" "${rb_a[i]}" && rm -f -- "${rb_b[i]}" || status=1
+        ;;
+      move)
+        rename_only "${rb_b[i]}" "${rb_a[i]}" || status=1
+        ;;
+      *)
+        status=1
+        ;;
+    esac
+  done
+  if ((status)); then
+    printf 'Install failed and rollback could not restore every file from this run.\n' >&2
+  else
+    printf 'Install failed; undid writes from this run.\n' >&2
+  fi
+}
+abort_install() {
+  local status="${1:-1}"
+  trap - ERR
+  set +e
+  if ((rollback_armed)); then
+    rollback_this_run
+  fi
+  exit "$status"
+}
 
 # Never let mv silently switch to copying and unlinking a source across filesystems.
 rename_only() {
@@ -115,35 +186,51 @@ save_antigravity_rule() {
     return 0
   fi
   # An install and a legacy carry can both write the same rule in one invocation.
-  if [[ -L "$backup_root" || -L "${rule%/*}" ]] || ! mkdir -p -- "$backup_root" ||
-    ! dir="$(mktemp -d "$backup_root/rule.XXXXXXXX")"; then
+  if [[ -L "$backup_root" || -L "${rule%/*}" ]]; then
     printf 'Cannot create a safe rule backup for %s under %s\n' "$rule" "$backup_root" >&2
     return 1
   fi
+  note_missing_dirs "$backup_root"
+  if ! mkdir -p -- "$backup_root" || ! dir="$(mktemp -d "$backup_root/rule.XXXXXXXX")"; then
+    printf 'Cannot create a safe rule backup for %s under %s\n' "$rule" "$backup_root" >&2
+    return 1
+  fi
+  note_rollback create_dir "$dir"
   saved="$dir/${rule##*/}"
-  if { [[ "$action" == BACKUP ]] && cp -p -- "$rule" "$saved"; } ||
-    { [[ "$action" == RELOCATE ]] && rename_only "$rule" "$saved"; }; then
-    report "$action RULE '$rule' -> '$saved'"
+  rule_backup_saved="$saved"
+  if [[ "$action" == BACKUP ]] && cp -p -- "$rule" "$saved"; then
+    note_rollback create_file "$saved"
+  elif [[ "$action" == RELOCATE ]] && rename_only "$rule" "$saved"; then
+    note_rollback move "$rule" "$saved"
   else
     rmdir -- "$dir" 2>/dev/null || true
     return 1
   fi
+  report "$action RULE '$rule' -> '$saved'"
 }
 
 # Never overwrite an existing nonidentical file silently.
 put() {
-  local src="$1" dst="$2" rule_backups="${3:-}"
-  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then return; fi
+  local src="$1" dst="$2" rule_backups="${3:-}" replaced_from='' backup
+  if [[ -f "$dst" ]] && cmp -s "$src" "$dst"; then return 0; fi
   report "WRITE $dst"
   if [[ -n "$rule_backups" && -e "$dst" ]]; then
     save_antigravity_rule BACKUP "$dst" "$rule_backups" || return 1
+    replaced_from="$rule_backup_saved"
   fi
   ((dry)) && return 0
   mkparent "$dst" || return 1
   if [[ -z "$rule_backups" && -e "$dst" ]]; then
-    cp -p -- "$dst" "$dst.quintet-backup-$(date +%Y%m%d%H%M%S)-$$" || return 1
+    backup="$dst.quintet-backup-$(date +%Y%m%d%H%M%S)-$$"
+    cp -p -- "$dst" "$backup" || return 1
+    replaced_from="$backup"
   fi
-  cp -- "$src" "$dst"
+  if [[ -n "$replaced_from" ]]; then
+    note_rollback replace "$dst" "$replaced_from"
+  elif [[ ! -e "$dst" && ! -L "$dst" ]]; then
+    note_rollback create_file "$dst"
+  fi
+  cp -- "$src" "$dst" || return 1
 }
 
 # Personality belongs to the main agent; specialist roles are unchanged.
@@ -194,7 +281,8 @@ install_personality() {
   report "WRITE $project_personality"
   ((dry)) && return 0
   # Create the user-editable project override once. Never overwrite user edits.
-  cp -- "$source_dir/PERSONALITY.md" "$project_personality"
+  note_rollback create_file "$project_personality"
+  cp -- "$source_dir/PERSONALITY.md" "$project_personality" || return 1
   personality_file="$project_personality"
 }
 render_coordinator() {
@@ -287,8 +375,10 @@ install_role() {
     fi
     cat -- "$source_dir/agents/$role.md"
   } > "$temp"
-  put "$temp" "$dst"
-  rm -f -- "$temp"
+  local status=0
+  put "$temp" "$dst" || status=$?
+  rm -f -- "$temp" || true
+  return "$status"
 }
 
 # One definition of the managed block and of the user text around it, shared by the
@@ -451,7 +541,7 @@ install_skills() {
   for skill in "${installable_skills[@]}"; do
     while IFS= read -r -d '' file; do
       rel="${file#"$source_dir"/skills/}"
-      put "$file" "$root/skills/$rel"
+      put "$file" "$root/skills/$rel" || return 1
     done < <(find "$source_dir/skills/$skill" -type f -print0 | sort -z)
   done
 }
@@ -607,15 +697,22 @@ install_one() {
   ]
 }
 EOF
-      put "$temp_manifest" "$manifest"
+      put "$temp_manifest" "$manifest" || { rm -f -- "$temp_manifest"; return 1; }
       rm -f -- "$temp_manifest"
     fi
     install_instructions "$instruction" "$rule_backups" || return 1
-    for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-    install_skills "$root"
-    # Migrate only after the replacement tree is fully written and verified above.
-    if [[ -n "$legacy" ]]; then migrate_legacy_antigravity_plugin "$root" "$rule_backups" "$legacy" || return 1; fi
-    return
+    for role in nora felix vera iris; do
+      install_role "$tool" "$role" "$root/agents/$role.md" || return 1
+    done
+    install_skills "$root" || return 1
+    # The replacement tree is complete. Migration may keep the legacy plugin;
+    # a failure there must not erase the new tree or archive the old one.
+    if [[ -n "$legacy" ]]; then
+      rollback_armed=0
+      migrate_legacy_antigravity_plugin "$root" "$rule_backups" "$legacy" || return 1
+      rollback_armed=1
+    fi
+    return 0
   fi
   if [[ "$scope" == global ]]; then
     if [[ "$tool" == pi ]]; then root="${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; else root="$HOME/.claude"; fi
@@ -624,10 +721,12 @@ EOF
     root="$target/.$tool"
     if [[ "$tool" == pi ]]; then instruction="$target/AGENTS.md"; else instruction="$target/CLAUDE.md"; fi
   fi
-  install_instructions "$instruction"
-  for role in nora felix vera iris; do install_role "$tool" "$role" "$root/agents/$role.md"; done
-  install_skills "$root"
-  if [[ "$tool" == pi ]]; then install_pi_subagents_config; fi
+  install_instructions "$instruction" || return 1
+  for role in nora felix vera iris; do
+    install_role "$tool" "$role" "$root/agents/$role.md" || return 1
+  done
+  install_skills "$root" || return 1
+  if [[ "$tool" == pi ]]; then install_pi_subagents_config || return 1; fi
 }
 
 # Verify Pi and install its runtime packages before touching user files. Dry-run stays offline.
@@ -685,17 +784,20 @@ install_pi_subagents_config() {
   "widgetMode": "all"
 }
 EOF
-  put "$temp" "$dst"
+  put "$temp" "$dst" || { rm -f -- "$temp"; return 1; }
   rm -f -- "$temp"
 }
 
-resolve_personality
+trap 'abort_install $?' ERR
+resolve_personality || abort_install $?
 report "WORKFLOW $workflow"
-if has_harness pi; then install_pi_runtime; fi
-install_personality
-has_harness pi && install_one pi
-has_harness claude && install_one claude
-(has_harness antigravity || has_harness agy) && install_one antigravity
+if has_harness pi; then install_pi_runtime || abort_install $?; fi
+install_personality || abort_install $?
+if has_harness pi; then install_one pi || abort_install $?; fi
+if has_harness claude; then install_one claude || abort_install $?; fi
+if has_harness antigravity || has_harness agy; then install_one antigravity || abort_install $?; fi
+# Summary lines are not part of the tree. Do not undo a finished install if one fails.
+rollback_armed=0
 
 if ((with_web)); then
   report 'WEB: enabled for the coordinator and Nora/Felix/Vera; verify runtime access and provider configuration. Iris unchanged.'

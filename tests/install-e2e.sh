@@ -42,6 +42,24 @@ assert_refs() {
     cmp -- "$ref" "$dest/${ref##*/}"
   done
 }
+# Byte-stable listing of files, directories, and links under a tree.
+# A failed install must match the snapshot taken before it ran.
+snapshot_tree() {
+  local dir="$1" out="$2" path crc size
+  : > "$out"
+  while IFS= read -r -d '' path; do
+    if [[ -L "$dir/$path" ]]; then
+      printf 'link %s %s\n' "$path" "$(readlink -- "$dir/$path")"
+    elif [[ -f "$dir/$path" ]]; then
+      read -r crc size _ < <(cksum -- "$dir/$path")
+      printf 'file %s %s %s\n' "$crc" "$size" "$path"
+    elif [[ -d "$dir/$path" ]]; then
+      printf 'dir %s\n' "$path"
+    else
+      printf 'other %s\n' "$path"
+    fi
+  done < <(cd -- "$dir" && find . -print0 | sort -z) >> "$out"
+}
 # Byte-exact text before the managed block, so blank lines there are compared too.
 prefix_bytes() {
   local file="$1" offset
@@ -903,5 +921,97 @@ for file in "$project/AGENTS.md" "$project/CLAUDE.md" "$project/.agents/rules/AG
 done
 "$root/install.sh" --harness pi,claude,antigravity --scope project --target "$project" > "$tmp/crlf-again"
 assert_absent '^WRITE ' "$tmp/crlf-again"
+
+# A skill path blocked by a regular file must fail closed. Files this run created
+# disappear, overwritten files come back, and the blocker is left untouched.
+blocked="$tmp/blocked-skill"
+mkdir -p "$blocked/.claude/agents" "$blocked/.claude/skills"
+printf 'user nora\n' > "$blocked/.claude/agents/nora.md"
+printf 'not a skill directory\n' > "$blocked/.claude/skills/verification"
+printf '# Claude contract\nKeep this blocker text.\n' > "$blocked/CLAUDE.md"
+printf 'leave me\n' > "$blocked/NOTES.txt"
+snapshot_tree "$blocked" "$tmp/blocked-before"
+"$root/install.sh" --harness claude --scope project --target "$blocked" --workflow v2 --no-tui --dry-run --no-web \
+  > "$tmp/blocked-dry"
+snapshot_tree "$blocked" "$tmp/blocked-dry-tree"
+diff -u "$tmp/blocked-before" "$tmp/blocked-dry-tree"
+rc=0
+"$root/install.sh" --harness claude --scope project --target "$blocked" --workflow v2 --no-tui --no-web \
+  > "$tmp/blocked-out" 2> "$tmp/blocked-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+grep -Fq 'Not a directory' "$tmp/blocked-err"
+grep -Fq 'Install failed; undid writes from this run.' "$tmp/blocked-err"
+assert_absent '^DONE$' "$tmp/blocked-out"
+snapshot_tree "$blocked" "$tmp/blocked-after"
+diff -u "$tmp/blocked-before" "$tmp/blocked-after"
+[[ -z "$(find "$blocked" -name '*.quintet-backup-*' -print -quit)" ]]
+cmp -- <(printf 'not a skill directory\n') "$blocked/.claude/skills/verification"
+cmp -- <(printf 'user nora\n') "$blocked/.claude/agents/nora.md"
+# Removing the blocker lets the same project install finish, back up the
+# nonidentical contract, and keep the text outside the managed markers.
+rm -- "$blocked/.claude/skills/verification"
+"$root/install.sh" --harness claude --scope project --target "$blocked" --workflow v2 --no-tui --no-web > "$tmp/blocked-retry"
+assert_workflow v2 "$blocked/CLAUDE.md"
+grep -Fxq 'Keep this blocker text.' "$blocked/CLAUDE.md"
+for role in nora felix vera iris; do
+  [[ -f "$blocked/.claude/agents/$role.md" ]]
+done
+[[ -n "$(find "$blocked" -maxdepth 1 -name 'CLAUDE.md.quintet-backup-*' -print -quit)" ]]
+[[ -f "$blocked/.claude/skills/verification/SKILL.md" ]]
+v1_project="$tmp/workflow-v1-project"
+mkdir -p "$v1_project"
+"$root/install.sh" --harness claude --scope project --target "$v1_project" --workflow v1 --no-tui --no-web > "$tmp/workflow-v1-out"
+assert_workflow v1 "$v1_project/CLAUDE.md"
+for role in nora felix vera iris; do
+  [[ -f "$v1_project/.claude/agents/$role.md" ]]
+done
+"$root/install.sh" --harness claude --scope project --target "$v1_project" --workflow v1 --no-tui --dry-run --no-web > "$tmp/workflow-v1-dry"
+assert_absent '^WRITE ' "$tmp/workflow-v1-dry"
+
+# The same blocked skill on a global Antigravity install must not archive or
+# remove an eligible legacy tree, and must not leave the partial quintet plugin.
+legacy_block_home="$tmp/legacy-block-home"
+mkdir -p "$legacy_block_home"
+seed_legacy "$legacy_block_home"
+legacy_block_quintet="$legacy_block_home/.gemini/config/plugins/quintet"
+mkdir -p "$legacy_block_quintet/rules" "$legacy_block_quintet/skills"
+printf 'old rule\n' > "$legacy_block_quintet/rules/AGENTS.md"
+printf 'block verification\n' > "$legacy_block_quintet/skills/verification"
+snapshot_tree "$legacy_block_home/.gemini" "$tmp/legacy-block-before"
+rc=0
+HOME="$legacy_block_home" XDG_CONFIG_HOME="$legacy_block_home/.config" \
+  "$root/install.sh" --harness antigravity --scope global --workflow v2 --no-tui --no-web \
+  > "$tmp/legacy-block-out" 2> "$tmp/legacy-block-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+grep -Fq 'Not a directory' "$tmp/legacy-block-err"
+assert_absent '^ARCHIVE \|^DONE$' "$tmp/legacy-block-out"
+snapshot_tree "$legacy_block_home/.gemini" "$tmp/legacy-block-after"
+diff -u "$tmp/legacy-block-before" "$tmp/legacy-block-after"
+[[ ! -e "$legacy_block_home/.gemini/config/quintet-backups" ]]
+[[ ! -e "$legacy_block_home/.gemini/config/quintet-rule-backups" ]]
+cmp -- <(printf 'old rule\n') "$legacy_block_quintet/rules/AGENTS.md"
+cmp -- <(printf 'block verification\n') "$legacy_block_quintet/skills/verification"
+
+# Pi packages are still installed before project writes. A blocked skill rolls
+# the project tree back and does not publish subagents.json for the failed run.
+pi_block="$tmp/pi-block"
+pi_block_home="$tmp/pi-block-home"
+mkdir -p "$pi_block/.pi/skills" "$pi_block_home"
+printf 'block\n' > "$pi_block/.pi/skills/verification"
+printf '# Pi contract\nKeep the pi rule.\n' > "$pi_block/AGENTS.md"
+snapshot_tree "$pi_block" "$tmp/pi-block-before"
+: > "$MOCK_PI_LOG"
+rc=0
+MOCK_PI_PACKAGES='npm:unrelated' HOME="$pi_block_home" PI_CODING_AGENT_DIR="$pi_block_home/.pi/agent" \
+  "$root/install.sh" --harness pi --scope project --target "$pi_block" --workflow v2 --no-tui --no-web \
+  > "$tmp/pi-block-out" 2> "$tmp/pi-block-err" || rc=$?
+[[ "$rc" -ne 0 ]]
+grep -Fxq 'pi install npm:@tintinweb/pi-subagents' "$MOCK_PI_LOG"
+grep -Fxq 'pi install npm:pi-web-access' "$MOCK_PI_LOG"
+[[ ! -e "$pi_block_home/.pi/agent/subagents.json" ]]
+snapshot_tree "$pi_block" "$tmp/pi-block-after"
+diff -u "$tmp/pi-block-before" "$tmp/pi-block-after"
+[[ -z "$(find "$pi_block" -name '*.quintet-backup-*' -print -quit)" ]]
+MOCK_PI_PACKAGES="$both_pi_packages"
 
 echo 'install E2E PASS: harnesses, workflow switching, scope, idempotence, settings, web, personality and legacy archive'
