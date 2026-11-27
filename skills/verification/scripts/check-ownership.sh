@@ -23,9 +23,10 @@ Options:
   --require-changes   Fail (exit 1) if zero changed paths are found.
   -h, --help          Show this help message.
 
-Paths are relative to the repository root. Submodules are checked at their
-path in the parent repository. Use a stable worktree and index during the scan.
-A worktree with assume-unchanged or skip-worktree entries exits 2.
+Paths are relative to the repository root. Keep HEAD, the index, and working
+files stable during the scan. Worktree mode exits 2 for assume-unchanged or
+skip-worktree entries and for populated or unreadable submodule directories.
+Committed mode checks gitlink changes at their paths in the parent repository.
 
 Allow patterns:
   Exact paths         AGENTS.md, src/app.py
@@ -184,7 +185,7 @@ glob_to_ere() {
     case "$ch" in
       '*') ere+="[^/]*" ;;
       '?') ere+="[^/]" ;;
-      '.'|'+'|'('|')'|'{'|'}'|'^'|'$'|'|'|'\\'|'['|']') ere+="\\$ch" ;;
+      '.'|'+'|'('|')'|'{'|'}'|'^'|'$'|'|'|'\'|'['|']') ere+="\\$ch" ;;
       *) ere+="$ch" ;;
     esac
     (( i += 1 ))
@@ -217,8 +218,9 @@ trap 'rm -rf -- "$tmp_git_out"' EXIT
 
 run_git_scan() {
   # Git can warn about unreadable paths and still exit successfully.
-  if ! git -C "$git_dir" -c core.fsmonitor=false "$@" > "$tmp_git_out/paths" 2> "$tmp_git_out/errors" ||
-    [[ -s "$tmp_git_out/errors" ]]; then
+  if ! git -C "$git_dir" -c core.fsmonitor=false -c core.ignoreCase=false \
+    -c core.trustctime=true -c core.checkStat=default \
+    "$@" > "$tmp_git_out/paths" 2> "$tmp_git_out/errors" || [[ -s "$tmp_git_out/errors" ]]; then
     cat "$tmp_git_out/errors" >&2
     printf 'check-ownership: incomplete Git scan (%s)\n' "$*" >&2
     return 2
@@ -233,13 +235,31 @@ collect_git_z_paths() {
   done < "$tmp_git_out/paths"
 }
 
+check_submodule_directory() (
+  local path="$1" directory="$git_dir/$1"
+  # A missing or empty directory represents an unpopulated gitlink. Git's
+  # parent diff cannot establish the state of a populated child worktree.
+  if [[ -d "$directory" && ! -L "$directory" ]]; then
+    shopt -s dotglob nullglob
+    local contents=("$directory"/*)
+    if [[ ! -r "$directory" || ! -x "$directory" ]] || (( ${#contents[@]} )); then
+      printf 'check-ownership: populated or unreadable submodule directory prevents a complete scan\n  %s\n' "$path" >&2
+      exit 2
+    fi
+  fi
+)
+
 if [[ -n "$worktree" ]]; then
-  run_git_scan ls-files -v -z
+  run_git_scan ls-files -v --stage -z
   while IFS= read -r -d '' entry; do
+    path="${entry#*$'\t'}"
     # Lowercase tags are assume-unchanged. S is skip-worktree.
     if [[ "$entry" == [a-zS]\ * ]]; then
-      printf 'check-ownership: assume-unchanged or skip-worktree path prevents a complete scan\n  %s\n' "${entry:2}" >&2
+      printf 'check-ownership: assume-unchanged or skip-worktree path prevents a complete scan\n  %s\n' "$path" >&2
       exit 2
+    fi
+    if [[ "$entry" == ?\ 160000\ * ]]; then
+      check_submodule_directory "$path"
     fi
   done < "$tmp_git_out/paths"
 fi

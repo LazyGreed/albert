@@ -68,6 +68,9 @@ git -C "$repo" config user.email "albert-test@example.com"
 git -C "$repo" checkout -b main -q
 printf 'base\n' > "$repo/src/a.py"
 printf 'keep\n' > "$repo/src/b.py"
+printf 'tracked\n' > "$repo/src/foreign"
+printf 'base\n' > "$repo/src/stat.py"
+touch -t 200001010000 "$repo/src/stat.py"
 printf '*.log\n' > "$repo/.gitignore"
 git -C "$repo" add -A
 git -C "$repo" commit -q -m "baseline"
@@ -217,6 +220,40 @@ printf 'foreign\n' > "$repo/private/note.py"
 )
 rm -rf -- "$repo/private"
 
+# A backslash in an exact pattern stays literal before regex punctuation.
+printf 'allowed\n' > "$repo/"'owned\.'
+expect_pass '  owned\.' \
+  "$checker" --base HEAD --worktree "$repo" -- 'owned\.' src/note.py
+printf 'foreign\n' > "$repo/"'owned\X'
+expect_fail '  owned\X' \
+  "$checker" --base HEAD --worktree "$repo" -- 'owned\.' src/note.py
+rm -- "$repo/"'owned\.' "$repo/"'owned\X'
+
+# On a case-sensitive filesystem, Git must report names that differ only in case.
+if [[ ! -e "$repo/src/Foreign" ]]; then
+  printf 'foreign\n' > "$repo/src/Foreign"
+  git -C "$repo" config core.ignoreCase true
+  expect_fail '  src/Foreign' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+  [[ "$(git -C "$repo" config core.ignoreCase)" == true ]]
+  git -C "$repo" config --unset core.ignoreCase
+  rm -- "$repo/src/Foreign"
+fi
+
+# Equal-size content can change while mtime is restored. Let ctime tick even on
+# filesystems with one-second timestamp resolution.
+cp -p -- "$repo/src/stat.py" "$tmp/stat-time"
+sleep 1
+printf 'edit\n' > "$repo/src/stat.py"
+touch -r "$tmp/stat-time" "$repo/src/stat.py"
+git -C "$repo" config core.trustctime false
+git -C "$repo" config core.checkStat minimal
+expect_fail '  src/stat.py' "$checker" --base HEAD --worktree "$repo" -- src/note.py
+[[ "$(git -C "$repo" config core.trustctime)" == false ]]
+[[ "$(git -C "$repo" config core.checkStat)" == minimal ]]
+git -C "$repo" config --unset core.trustctime
+git -C "$repo" config --unset core.checkStat
+git -C "$repo" restore -- src/stat.py
+
 # Gitlink changes must survive Git's submodule diff preferences in both modes.
 git -C "$repo" update-index --add --cacheinfo "160000,$base,foreign-submodule"
 git -C "$repo" commit -q -m 'add gitlink'
@@ -241,4 +278,67 @@ git -C "$repo" replace HEAD "$submodule_base"
 expect_fail '  foreign-submodule' \
   "$checker" --base "$submodule_base" --head HEAD --repo "$repo" -- src/note.py
 
-echo 'ownership E2E PASS: staged and unstaged edits, untracked paths, renames, canceled committed changes, and Git scan overrides'
+# A parent-only diff cannot establish that a populated submodule was fully scanned.
+child="$tmp/child"
+parent="$tmp/parent"
+child_path='child module'
+for fixture in "$child" "$parent"; do
+  git init -q "$fixture"
+  git -C "$fixture" config user.name 'Quintet Test'
+  git -C "$fixture" config user.email 'quintet-test@example.com'
+  git -C "$fixture" commit -q --allow-empty -m 'base'
+done
+parent_base="$(git -C "$parent" rev-parse HEAD)"
+printf 'base\n' > "$child/tracked"
+git -C "$child" add tracked
+git -C "$child" commit -q -m 'track file'
+# The nested module uses the preceding commit of the same fixture repository.
+git -C "$child" -c protocol.file.allow=always submodule add -q "$child" nested
+git -C "$child" commit -q -m 'add nested module'
+git -C "$parent" -c protocol.file.allow=always submodule add -q "$child" "$child_path"
+git -C "$parent" commit -q -m 'add child module'
+git -C "$parent" -c protocol.file.allow=always submodule update -q --init --recursive
+
+child_worktree="$parent/$child_path"
+nested_worktree="$child_worktree/nested"
+for flag in assume-unchanged skip-worktree; do
+  git -C "$nested_worktree" update-index "--$flag" -- tracked
+  printf 'hidden edit\n' > "$nested_worktree/tracked"
+  expect_reject 2 "  $child_path" \
+    "$checker" --base HEAD --worktree "$parent" -- owned
+  git -C "$nested_worktree" update-index "--no-$flag" -- tracked
+  git -C "$nested_worktree" restore -- tracked
+done
+
+mkdir -- "$nested_worktree/private"
+printf 'hidden\n' > "$nested_worktree/private/file"
+(
+  trap 'chmod u+rwx -- "$nested_worktree/private"' EXIT
+  chmod u-rwx -- "$nested_worktree/private"
+  if [[ ! -r "$nested_worktree/private" ]]; then
+    expect_reject 2 "  $child_path" \
+      "$checker" --base HEAD --worktree "$parent" -- owned
+  fi
+)
+rm -rf -- "$nested_worktree/private"
+
+printf 'unreadable edit\n' > "$child_worktree/tracked"
+(
+  trap 'chmod u+rwx -- "$child_worktree"' EXIT
+  chmod u-rwx -- "$child_worktree"
+  if [[ ! -r "$child_worktree" ]]; then
+    expect_reject 2 "  $child_path" \
+      "$checker" --base HEAD --worktree "$parent" -- owned
+  fi
+)
+expect_pass 'OWNERSHIP PASS: 2 path(s) verified' \
+  "$checker" --base "$parent_base" --head HEAD --repo "$parent" -- .gitmodules "$child_path"
+
+git -C "$parent" submodule deinit -q -f -- "$child_path"
+expect_pass 'OWNERSHIP PASS: 0 changed paths' \
+  "$checker" --base HEAD --worktree "$parent" -- owned
+printf 'hidden\n' > "$child_worktree/.leftover"
+expect_reject 2 "  $child_path" \
+  "$checker" --base HEAD --worktree "$parent" -- owned
+
+echo 'ownership E2E PASS: changed paths, Git scan overrides, and incomplete worktrees'
