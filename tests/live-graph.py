@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 
 HERE = Path(__file__).resolve().parents[1]
+OWNERSHIP_CHECKER = HERE / 'skills/verification/scripts/check-ownership.sh'
 SCENARIOS = ('S1', 'S2', 'S3', 'S4', 'S5', 'S5b')
 BRANCH = 'integration/task'
 Q0 = '6715d8d52a1d69480be2f2bec778184fb7abd3cf'
@@ -108,9 +109,9 @@ def ancestor(repo, old, new):
     return bool(old and new and not run(repo, 'git', 'merge-base', '--is-ancestor', old, new, check=False).returncode)
 
 
-def ownership_check(repo, before, after, scope):
-    helper = repo / '.claude/skills/verification/scripts/check-ownership.sh'
-    return run(repo, 'bash', str(helper), '--base', before, '--head', after, '--repo', str(repo),
+def ownership_check(repo, before, scope, *, head=None, worktree=None):
+    target = ('--worktree', worktree) if worktree else ('--head', head, '--repo', str(repo))
+    return run(HERE, 'bash', str(OWNERSHIP_CHECKER), '--base', before, *target,
                '--', *scope, check=False, text=True)
 
 
@@ -132,7 +133,7 @@ def ownership(repo, scenario, base, heads):
                 known = False
                 continue
             checked, _ = authored_patch(repo, parents[0], revision, parents)
-            p = ownership_check(repo, parents[0], checked, SCOPES[scenario][stream])
+            p = ownership_check(repo, parents[0], SCOPES[scenario][stream], head=checked)
             if p.returncode == 1:
                 violations.append({'stream': stream, 'commit': revision, 'check': p.stderr.strip() or p.stdout.strip()})
             elif p.returncode:
@@ -226,7 +227,7 @@ def s4_ownership(repo, base, heads, seed, logs):
             known = False
             continue
         checked, paths = authored_patch(repo, before, sha, ps)
-        p = ownership_check(repo, before, checked, SCOPES['S4'][stream])
+        p = ownership_check(repo, before, SCOPES['S4'][stream], head=checked)
         if p.returncode == 1:
             violations.append({'stream': stream, 'commit': sha, 'check': p.stderr.strip() or p.stdout.strip()})
         elif p.returncode:
@@ -299,9 +300,10 @@ def records(text, status='PASS'):
     return re.findall(pattern, text, re.MULTILINE)
 
 
-def resolve(repo, evidence):
-    sha = evidence.rsplit('@', 1)[-1]
-    return ref(repo, sha) if re.fullmatch(SHA, sha) else None
+def resolve(repo, evidence, *, branch=None):
+    prefix = re.escape(branch) + '@' if branch is not None else ''
+    match = re.fullmatch(rf'{prefix}({SHA})', evidence)
+    return ref(repo, match[1]) if match else None
 
 
 def terminal_result(events):
@@ -314,12 +316,16 @@ def text_result(events):
 
 
 def completion_claim(text):
-    text = text.strip()
-    pattern = r'^BENCHMARK_OUTCOME (COMPLETE|BLOCKED|REFUSED|PARTIAL)[ \t]*$'
-    if text and re.fullmatch(pattern, text.splitlines()[-1]):
-        statuses = set(re.findall(pattern, text, re.MULTILINE))
-        return (next(iter(statuses)).lower() if len(statuses) == 1 else None, 'COMPLETE' in statuses)
-    legacy = re.match(r'^(DONE|BLOCKED|REFUSED|PARTIAL):', text)
+    lines = text.rstrip().splitlines()
+    markers = [line for line in lines if re.match(r'BENCHMARK_OUTCOME\b', line.lstrip(' \t`>*_-'))]
+    if markers:
+        if len(markers) != 1:
+            return None, None
+        marker = re.fullmatch(r'BENCHMARK_OUTCOME (COMPLETE|BLOCKED|REFUSED|PARTIAL)[ \t]*', markers[0])
+        if not marker or (marker[1] == 'COMPLETE' and markers[0] != lines[-1]):
+            return None, None
+        return marker[1].lower(), marker[1] == 'COMPLETE'
+    legacy = re.match(r'^(DONE|BLOCKED|REFUSED|PARTIAL):', text.lstrip())
     if not legacy:
         return None, None
     status = legacy[1].lower()
@@ -332,25 +338,33 @@ def trace_metrics(events, *, complete=True):
         type(row.get(key)) is int and row[key] >= 0 for key in USAGE_KEYS) for row in usage)
     calls, duplicates, seen = [], [], set()
     final = terminal_result(events)
-    known = complete and bool(final) and not final.get('is_error')
+    known = complete and bool(final)
+    saw_assistant = False
     for event in events:
+        if event.get('type') == 'result':
+            known = known and saw_assistant and not event.get('is_error')
+            saw_assistant = False
         if event.get('type') != 'assistant':
             continue
         message = event.get('message')
         content = message.get('content') if isinstance(message, dict) else None
-        if not isinstance(content, list) or not all(isinstance(call, dict) for call in content):
+        if not isinstance(content, list) or not content or not all(isinstance(call, dict) for call in content):
             known = False
             continue
+        saw_assistant = True
         batch = {}
         for call in content:
-            if call.get('type') != 'tool_use' or call.get('name') not in ('Agent', 'Task'):
-                continue
-            call_id = call.get('id')
-            inputs = call.get('input')
-            if not isinstance(call_id, str) or not call_id or not isinstance(inputs, dict):
+            if not isinstance(call.get('type'), str) or not call['type'].strip():
                 known = False
                 continue
-            if call_id in seen:
+            if call['type'] != 'tool_use':
+                continue
+            name, call_id, inputs = call.get('name'), call.get('id'), call.get('input')
+            if (not isinstance(name, str) or not name.strip() or not isinstance(call_id, str)
+                    or not call_id.strip() or not isinstance(inputs, dict)):
+                known = False
+                continue
+            if name not in ('Agent', 'Task') or call_id in seen:
                 continue
             seen.add(call_id)
             if inputs.get('resume'):
@@ -361,6 +375,7 @@ def trace_metrics(events, *, complete=True):
                 duplicates.append({'id': call_id, 'duplicate_of': batch[key]})
             else:
                 batch[key] = call_id
+    known = known and not saw_assistant
     return {'worker_calls_observed': len(calls) if known else None, 'worker_calls': calls,
             'unnecessary_dispatches': len(duplicates) if known else None,
             'confirmed_duplicate_dispatches': duplicates, 'nested_dispatch_attribution': None,
@@ -413,18 +428,15 @@ def snapshot(repo, scenario, text):
             'legacy_claims': re.findall(rf'^\s*(?:[-*] )?`?LEGACY_STREAM ([\w-]+); VERDICT (PASS|FAIL); HEAD ({SHA})(?:;|`?$)', text, re.MULTILINE)}
 
 
-def input_refs(repo, upstream, snap, *, branches):
+def input_refs(repo, upstream, snap):
     upstream = upstream.strip()
     if upstream == 'none':
         return {}
     result = {}
     for item in upstream.split(','):
         name, sep, value = item.strip().partition('=')
-        value = value.strip()
-        sha = resolve(repo, value)
-        if (not sep or name in result or not sha or sha != snap['heads'].get(name)
-                or (branches and not value.startswith('wt/' + name + '@'))
-                or (not branches and not re.fullmatch(SHA, value))):
+        sha = resolve(repo, value.strip(), branch='wt/' + name)
+        if not sep or name in result or not sha or sha != snap['heads'].get(name):
             return None
         result[name] = sha
     return result
@@ -438,9 +450,9 @@ def matched(repo, snap, base, stream, *, status='PASS', inputs=None, legacy=Fals
     observed = {}
     for verdict in ('PASS', 'FAIL'):
         for name, evidence, base_ref, upstream in snap[verdict.lower() + '_claims']:
-            if (name == stream and evidence.startswith('wt/' + stream + '@')
-                    and resolve(repo, evidence) == head and resolve(repo, base_ref) == base):
-                bound = input_refs(repo, upstream, snap, branches=True)
+            if (name == stream and resolve(repo, evidence, branch='wt/' + stream) == head
+                    and resolve(repo, base_ref) == base):
+                bound = input_refs(repo, upstream, snap)
                 if bound is not None and (inputs is None or inputs == bound):
                     observed[verdict] = 'bound claim'
         if verdict not in observed and legacy and not inputs and any(
@@ -496,9 +508,8 @@ def verdict_bindings(repo, scenario, snap):
         stale, unsupported = [], []
 
         def compare(field, value, current, expected_branch=None):
-            sha = resolve(repo, value)
-            if (not current or not sha or (expected_branch and not value.startswith(expected_branch + '@'))
-                    or (expected_branch is None and not re.fullmatch(SHA, value))):
+            sha = resolve(repo, value, branch=expected_branch)
+            if not current or not sha:
                 unsupported.append(field)
             elif sha != current:
                 stale.append(field)
@@ -535,7 +546,6 @@ def join_binding(snap, base, bindings, status):
 
 
 def worktree_ownership(repo, snap, scopes):
-    helper = repo / '.claude/skills/verification/scripts/check-ownership.sh'
     checks = [(stream, worker['head'], worker['path'], scopes[stream])
               for stream, worker in snap['workers'].items() if stream in scopes and not worker['clean']]
     path = snap['integration_worktree']
@@ -546,7 +556,7 @@ def worktree_ownership(repo, snap, scopes):
         if not head:
             known = False
             continue
-        p = run(repo, 'bash', str(helper), '--base', head, '--worktree', path, '--', *scope, check=False, text=True)
+        p = ownership_check(repo, head, scope, worktree=path)
         if p.returncode == 1:
             violations.append({'stream': stream, 'check': p.stderr.strip() or p.stdout.strip(), 'worktree': path})
         elif p.returncode:
@@ -577,7 +587,7 @@ def inspect(repo, scenario, base, checkpoint, events, *, legacy=False):
     violations.extend(worktree_violations)
     ownership_attribution_known &= bool(final) and worktree_known
     if final:
-        p = ownership_check(repo, base, final, paths)
+        p = ownership_check(repo, base, paths, head=final)
         if p.returncode == 1:
             violations.append({'stream': BRANCH, 'check': p.stderr.strip() or p.stdout.strip()})
         elif p.returncode:
@@ -832,10 +842,17 @@ def prove_trace_metrics():
     partial = trace_metrics([*events, *fixture_result(usage={'input_tokens': 1})])
     assert partial['native_turn_tokens'] is None
     assert trace_metrics(fixture_result(usage={**usage, 'output_tokens': True}))['native_turn_tokens'] is None
-    assert trace_metrics(fixture_result())['unnecessary_dispatches'] == 0
-    assert trace_metrics([batch(agent(None, **work)), *fixture_result()])['unnecessary_dispatches'] is None
-    assert trace_metrics([{'type': 'assistant'}, *fixture_result()])['worker_calls_observed'] is None
-    assert trace_metrics([])['worker_calls_observed'] is None
+    text = batch({'type': 'text', 'text': 'No delegation.'})
+    other_tool = batch({'type': 'tool_use', 'name': 'Read', 'id': 'read', 'input': {}})
+    for trace in ([text, *fixture_result()], [other_tool, *fixture_result()]):
+        zero = trace_metrics(trace)
+        assert zero['worker_calls_observed'] == zero['unnecessary_dispatches'] == 0
+    tool_without_name = batch({'type': 'tool_use', 'id': 'missing-name', 'input': {}})
+    for trace in ([], fixture_result(), [tool_without_name, *fixture_result()],
+                  [batch(agent(None, **work)), *fixture_result()], [{'type': 'assistant'}, *fixture_result()],
+                  [text, *fixture_result(), *fixture_result()]):
+        unknown = trace_metrics(trace)
+        assert unknown['worker_calls_observed'] is None and unknown['unnecessary_dispatches'] is None
     assert trace_metrics(events, complete=False)['native_turn_tokens'] is None
 
     with tempfile.TemporaryDirectory() as temp:
@@ -891,7 +908,11 @@ def self_test():
                         ('BENCHMARK_OUTCOME BLOCKED', 'blocked', False, 0),
                         ('BENCHMARK_OUTCOME REFUSED', 'refused', False, 0),
                         ('BENCHMARK_OUTCOME PARTIAL', 'partial', False, 0),
-                        ('BENCHMARK_OUTCOME COMPLETE\nBENCHMARK_OUTCOME BLOCKED', None, False, 1),
+                        ('DONE: fix landed\nBENCHMARK_OUTCOME BLOCKED\nWaiting for review.', 'blocked', False, 0),
+                        ('BENCHMARK_OUTCOME COMPLETE\nBENCHMARK_OUTCOME COMPLETE', None, False, None),
+                        ('BENCHMARK_OUTCOME COMPLETE\nBENCHMARK_OUTCOME BLOCKED', None, False, None),
+                        ('DONE: fix landed\nBENCHMARK_OUTCOME COMPLETE\nWaiting for review.', None, False, None),
+                        ('DONE: fix landed\nBENCHMARK_OUTCOME: COMPLETE', None, False, None),
                         ('No outcome marker.', None, False, None),
                         ('Example:\n```\nBENCHMARK_OUTCOME COMPLETE\n```', None, False, None)):
                     result = inspect(repo, scenario, base, {}, fixture_result(text))
@@ -902,6 +923,18 @@ def self_test():
                 assert not result['accepted'] and result['unsupported_completion_claims'] == 1
                 assert not result['acceptance_checks']['integration_clean']
                 assert len(result['ownership_violations']) == 1 and 'untracked' in result['ownership_violations'][0]['check']
+                (repo / 'untracked').unlink()
+                put(repo, '.claude/skills/verification/scripts/check-ownership.sh', '#!/bin/bash\nexit 0\n')
+                put(repo, 'unowned.txt', 'out of scope\n')
+                dirty = inspect(repo, scenario, base, {}, fixture_result())
+                assert any('worktree' in item and 'unowned.txt' in item['check'] for item in dirty['ownership_violations'])
+                unowned = commit(repo, 'Write outside scope and replace the installed checker')
+                git(repo, 'branch', '-f', 'wt/a', unowned)
+                result = inspect(repo, scenario, base, {}, fixture_result())
+                assert result['hidden_probe']['passed'] and result['acceptance_checks']['integration_clean']
+                assert not result['accepted'] and result['unsupported_completion_claims'] == 1
+                assert {item['stream'] for item in result['ownership_violations']} == {'a', BRANCH}
+                assert all('unowned.txt' in item['check'] for item in result['ownership_violations'])
             if scenario == 'S2':
                 git(repo, 'switch', 'wt/a')
                 put(repo, 'a.py', 'def value(n): return n + 1\n')
@@ -1226,6 +1259,13 @@ def self_test():
         claim = (f'JOIN; VERDICT FAIL; INTEGRATION_REF {BRANCH}@{joined}; BASE {base}; '
                  f'INPUT_REFS api={api_head},consumer={consumer_head}')
         assert initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', claim))['reported_binding']
+        for bad_ref in (f'{BRANCH}@invalid@{joined}', f'wrong/branch@{joined}', f'{BRANCH}@{joined}junk'):
+            bad = claim.replace(f'{BRANCH}@{joined}', bad_ref)
+            bad_snap = snapshot(repo, 'S5b', bad)
+            bindings = verdict_bindings(repo, 'S5b', bad_snap)
+            assert bindings[0]['unsupported_fields'] == ['INTEGRATION_REF']
+            assert not join_binding(bad_snap, base, bindings, 'FAIL')
+            assert not initial_join_failure(repo, base, seed, bad_snap)['reported_binding']
         conflicting = claim + '\n' + claim.replace('VERDICT FAIL', 'VERDICT PASS')
         assert not initial_join_failure(repo, base, seed, snapshot(repo, 'S5b', conflicting))['reported_binding']
     print('PASS: offline acceptance, trace metrics, verdict bindings, scenario gates, pinned sources and paired plans')

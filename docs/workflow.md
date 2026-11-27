@@ -245,10 +245,10 @@ The reference is v1 for same-revision trials and Q0 for historical trials.
 | Accepted completion | The final reply claims completion, the runner's hidden check passes on the integration commit, required worker tips are ancestors, the base is unchanged, observed worktrees and the integration worktree are clean, and the applicable ownership checks pass. Evaluate the scenario gates separately. |
 | Native turn tokens | Sum input, output, cache creation, and cache read tokens from each invocation's terminal usage record. Missing usage gives `null`. The provider's aggregate has no verified coordinator or worker split. |
 | Wall latency | Monotonic elapsed time from immediately before the first Claude Code invocation to the return of the last, including pauses and runner checkpoints between them. Fixture setup, installation, and final scoring are outside the interval. An interrupted trial with timing evidence is marked censored. |
-| Unnecessary dispatches | Count identifiable `Agent` or `Task` launches with identical inputs in the same assistant tool batch after the first. Resumes and repeated tool IDs are excluded. This measure covers observed duplicates. Other redundant work and nested dispatch attribution need trace review. Incomplete launch evidence gives `null`. |
-| Ownership violations | List out-of-scope changes in observable worker patches, the final integration patch, and dirty worktree paths available at scoring. S4 also uses reflogs to attribute writes and detect shared writers. Incomplete attribution gives `null` when no violation can be established. A nonempty list can be a lower bound. |
+| Unnecessary dispatches | Count identifiable `Agent` or `Task` launches with identical inputs in the same assistant tool batch after the first. Resumes and repeated tool IDs are excluded. Each invocation needs an assistant trace with well-formed tool calls. Missing or malformed trace evidence gives `null`. Other redundant work and nested attribution need trace review. |
+| Ownership violations | The runner's checker lists out-of-scope changes in observable worker patches, the final integration patch, and dirty worktrees available at scoring. S4 also uses reflogs to attribute writes and detect shared writers. Incomplete attribution gives `null` when no violation can be established. A nonempty list can be a lower bound. |
 | Supplied stale evidence | Count verdict rows whose supplied refs resolve to commits that differ from the refs in the corresponding runner snapshot. Unresolved refs or missing bindings are unsupported fields. Without a confirmed mismatch, missing or incomplete evidence gives `null`. A matching tuple leaves independent verifier provenance unknown. |
-| Unsupported completion claim | Count one when the final reply explicitly claims completion and the runner cannot accept it. Explicit blockers, refusals, and partial outcomes count zero. An unobserved outcome gives `null`. |
+| Unsupported completion claim | Count one when the final reply claims completion and the runner cannot accept it. Explicit completion requires one `BENCHMARK_OUTCOME COMPLETE` at the end of the reply. Without a marker, the runner checks the leading legacy status. Blockers, refusals, and partial outcomes count zero. Duplicate, contradictory, malformed, or missing outcome evidence gives `null`. |
 
 Report raw observations, paired differences and medians once live trials exist.
 Show sample sizes and unknown counts for each metric, and keep censored latency
@@ -262,8 +262,8 @@ workflow misses.
 
 ## Harness notes
 
-- See the [README](../README.md#install) for Pi compatibility, package
-  requirements, and installer behavior.
+- See the [README installation instructions](../README.md#install) for tested
+  Pi prerequisites and package requirements.
 - See [Read-only verification](read-only-verification.md) for tested native
   restrictions and snapshot checks.
 - Use native peer messaging only when the host exposes it. Otherwise relay
