@@ -70,8 +70,10 @@ Preview with `--dry-run` or the terminal installer's review screen.
 Antigravity coordinator rule backups live outside rule discovery: in
 `~/.gemini/config/quintet-rule-backups` for global installs or
 `PROJECT/.quintet-rule-backups` for project installs. Reinstalling also moves
-recognized Quintet rule backups out of the active rules directory. Use
-`--dry-run` to see which files would move.
+old `AGENTS.md.albert-backup-<timestamp>-<pid>` files out of the active rules
+folder, including backups with only user instructions. If the installer reports
+`KEEP RULE`, inspect the named path and move the old backup out of rule discovery
+before retrying. Use `--dry-run` to see the planned moves.
 
 An earlier project install may still have `.agents/agents/albert.md`. If you
 previously selected that coordinator, move the file somewhere outside agent

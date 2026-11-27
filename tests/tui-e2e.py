@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import pty
 import select
+import subprocess
 import tempfile
 import time
 from pathlib import Path
@@ -203,6 +204,32 @@ def test_legacy_archive_review(root: Path):
     assert 'Keep my legacy rules.' in (config / 'plugins/quintet/rules/AGENTS.md').read_text()
 
 
+def test_rule_relocation_review(root: Path):
+    project = root / 'relocation-tui'
+    project.mkdir()
+    args = ('--harness', 'antigravity', '--scope', 'project', '--no-web')
+    subprocess.run(['bash', str(INSTALL), *args], cwd=project, check=True, stdout=subprocess.DEVNULL)
+    stale = project / '.agents/rules/AGENTS.md.albert-backup-20261127101515-202082'
+    original = b'Original user rules, before the installer set up a coordinator.'
+    stale.write_bytes(original)
+    backups = project / '.quintet-rule-backups'
+    session = Session(project, '--tui', *args)
+    session.expect(b'Cancel')
+    session.send(ARROW_DOWN * 9 + ENTER)
+    session.expect(b'QUINTET  /  REVIEW')
+    session.expect(b'Planned   0 file writes')
+    session.expect(b'Old rule backups to relocate: 1 (outside rule discovery).')
+    assert stale.read_bytes() == original
+    assert not backups.exists()
+    session.send(ENTER)
+    session.expect(b'RELOCATE RULE ')
+    session.expect(b'DONE')
+    session.finish()
+    assert not stale.exists()
+    saved, = backups.glob(f'rule.*/{stale.name}')
+    assert saved.read_bytes() == original
+
+
 if __name__ == '__main__':
     with tempfile.TemporaryDirectory(prefix='albert-tui-') as td:
         root = Path(td)
@@ -228,5 +255,6 @@ esac
         test_dual_project(root)
         test_antigravity_project(root)
         test_legacy_archive_review(root)
+        test_rule_relocation_review(root)
         assert (root / 'pi-installs').read_text() == 'install -l npm:pi-web-access\n'
-    print('TUI E2E PASS: keyboard, review, workflow selection, scopes, web, and legacy archive')
+    print('TUI E2E PASS: keyboard, review, workflow selection, scopes, web, legacy archive, and rule relocation')

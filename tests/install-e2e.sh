@@ -426,32 +426,45 @@ for scope in project global; do
     assert_absent '^WRITE \|^BACKUP RULE \|^RELOCATE RULE ' "$tmp/workflow-again"
   done
 
-  # Only regular files with the exact legacy name and a Quintet managed block move.
+  # The exact old generated name also covers user-only first-install backups.
   stale="$agy_rule.albert-backup-20261127101515-202082"
-  foreign="$agy_rule.albert-backup-20261127101515-202083"
+  user_only="$agy_rule.albert-backup-20261127101515-202083"
   link="$agy_rule.albert-backup-20261127101515-202084"
-  dir="$agy_rule.albert-backup-20261127101515-202085"
+  special="$agy_rule.albert-backup-20261127101515-202085"
   other="$agy_rule.albert-backup-20261127101515-notes"
   cp -- "$tmp/previous-rule-v2" "$tmp/stale-rule"
   printf '\nCustom text from the previous install.\n' >> "$tmp/stale-rule"
+  printf '# User rule with no final newline' > "$tmp/user-only-rule"
   cp -- "$tmp/stale-rule" "$stale"
   cp -- "$tmp/stale-rule" "$other"
-  printf '# User rule\n' > "$foreign"
+  cp -- "$tmp/user-only-rule" "$user_only"
   ln -s -- "$tmp/stale-rule" "$link"
-  mkdir -- "$dir"
+  if "$root/install.sh" --harness antigravity "${scope_args[@]}" --dry-run > "$tmp/unsafe-preview"; then exit 1; fi
+  grep -Fq "KEEP RULE '$link':" "$tmp/unsafe-preview"
+  grep -Fq 'outside rule discovery' "$tmp/unsafe-preview"
+  assert_absent '^WRITE \|^RELOCATE RULE ' "$tmp/unsafe-preview"
+  [[ "$(readlink -- "$link")" == "$tmp/stale-rule" ]]
+  mv -- "$link" "$tmp/manual-link-$scope"
+  mkfifo -- "$special"
+  if "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/unsafe-relocate"; then exit 1; fi
+  grep -Fq "KEEP RULE '$special':" "$tmp/unsafe-relocate"
+  assert_absent '^WRITE \|^RELOCATE RULE ' "$tmp/unsafe-relocate"
+  [[ -p "$special" ]]
+  mv -- "$special" "$tmp/manual-fifo-$scope"
   "$root/install.sh" --harness antigravity "${scope_args[@]}" --dry-run > "$tmp/relocate-preview"
   grep -Fxq "RELOCATE RULE '$stale' under '$rule_backups' (dry run)" "$tmp/relocate-preview"
-  [[ "$(grep -c '^RELOCATE RULE ' "$tmp/relocate-preview")" -eq 1 ]]
+  grep -Fxq "RELOCATE RULE '$user_only' under '$rule_backups' (dry run)" "$tmp/relocate-preview"
+  [[ "$(grep -c '^RELOCATE RULE ' "$tmp/relocate-preview")" -eq 2 ]]
   [[ "$(find "$rule_backups" -type f | wc -l)" -eq "$backup_count" ]]
   cmp -- "$tmp/stale-rule" "$stale"
+  cmp -- "$tmp/user-only-rule" "$user_only"
   "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/relocate"
   assert_absent '^WRITE \|^ARCHIVE \|^KEEP ' "$tmp/relocate"
-  [[ ! -e "$stale" && "$(grep -c '^RELOCATE RULE ' "$tmp/relocate")" -eq 1 ]]
+  [[ ! -e "$stale" && ! -e "$user_only" && "$(grep -c '^RELOCATE RULE ' "$tmp/relocate")" -eq 2 ]]
   relocated="$(find "$rule_backups" -type f -name "${stale##*/}")"
   cmp -- "$tmp/stale-rule" "$relocated"
+  cmp -- "$tmp/user-only-rule" "$(find "$rule_backups" -type f -name "${user_only##*/}")"
   grep -Fxq "RELOCATE RULE '$stale' -> '$relocated'" "$tmp/relocate"
-  [[ "$(readlink -- "$link")" == "$tmp/stale-rule" && -d "$dir" ]]
-  grep -Fxq '# User rule' "$foreign"
   cmp -- "$tmp/stale-rule" "$other"
   "$root/install.sh" --harness antigravity "${scope_args[@]}" > "$tmp/relocate-again"
   assert_absent '^WRITE \|^BACKUP RULE \|^RELOCATE RULE ' "$tmp/relocate-again"
@@ -484,7 +497,7 @@ old_dir="$old_home/.gemini/config/plugins/albert"
 seed_legacy "$old_home"
 printf '\nCustomized legacy worker instruction.\n' >> "$old_dir/agents/felix.md"
 printf '\nCustomized legacy skill.\n' >> "$old_dir/skills/verification/SKILL.md"
-cp -- "$old_dir/rules/AGENTS.md" "$old_dir/rules/AGENTS.md.albert-backup-20261127101515-202082"
+printf 'Original user instructions.\n' > "$old_dir/rules/AGENTS.md.albert-backup-20261127101515-202082"
 cp -a "$old_dir" "$tmp/expected-archive"
 HOME="$old_home" XDG_CONFIG_HOME="$old_home/.config" "$root/install.sh" --harness antigravity --scope global \
   --workflow v1 > "$tmp/agy-old"
@@ -516,10 +529,10 @@ HOME="$carry_home" "$root/install.sh" --harness antigravity --scope global --wor
 seed_legacy "$carry_home"
 printf '\n## House rules\nKeep our bespoke policy.\n' >> "$carry_rules"
 {
-  printf 'Example of the old rules:\n\n```markdown\n'
+  printf 'Example of the old rules:\n\n```markdown\n<!-- QUINTET LEGACY CARRY START -->\n'
   awk '$0=="<!-- ALBERT MANAGED START -->" {inside=1; next}
     $0=="<!-- ALBERT MANAGED END -->" {inside=0; next} !inside {print}' "$carry_rules"
-  printf '```\n\n'
+  printf '<!-- QUINTET LEGACY CARRY END -->\n```\n\n'
   cat -- "$carry_dest"
 } > "$tmp/carry-v2"
 cp -- "$tmp/carry-v2" "$carry_dest"
@@ -538,9 +551,10 @@ prefix_bytes "$saved_v1" > "$tmp/carry-v1-prefix"
 cmp -- "$tmp/carry-v2-prefix" "$tmp/carry-v1-prefix"
 assert_workflow v1 "$carry_dest"
 awk '
-  $0 == "<!-- QUINTET LEGACY CARRY START -->" { if (fenced || managed) exit 1; carry=1; next }
+  /^```/ { fenced=!fenced; next }
+  fenced { next }
+  $0 == "<!-- QUINTET LEGACY CARRY START -->" { if (managed) exit 1; carry=1; next }
   $0 == "<!-- QUINTET LEGACY CARRY END -->" { carry=0; next }
-  /^```/ { fenced=!fenced }
   $0 == "<!-- ALBERT MANAGED START -->" { managed=1 }
   carry && $0 == "Keep our bespoke policy." { rules++ }
   END { if (rules != 1) exit 1 }
@@ -548,7 +562,8 @@ awk '
 [[ "$(grep -Fxc 'Keep our bespoke policy.' "$carry_dest")" -eq 2 ]]
 [[ ! -e "$carry_dir" ]]
 
-# Force a rename-only failure. The legacy tree remains intact and retry does not carry twice.
+# A failed rename keeps the source intact. Retry leaves an unchanged carry alone and
+# replaces it in place if the source changes, backing up the prior rules.
 retry_home="$tmp/retry-home"
 retry_dir="$retry_home/.gemini/config/plugins/albert"
 retry_backup_root="$retry_home/.gemini/config/quintet-backups"
@@ -572,12 +587,31 @@ grep -Fxq 'simulated cross-filesystem rename refusal' "$tmp/agy-retry"
 grep -Fq "KEEP '$retry_dir': could not move the legacy plugin" "$tmp/agy-retry"
 diff -r -- "$tmp/retry-original" "$retry_dir"
 grep -Fxq 'Keep this on retry.' "$retry_dest"
-cp -- "$retry_dest" "$tmp/retry-dest-before"
+awk '$0 == "<!-- ALBERT MANAGED START -->" { print "User rule after the carry.\n" } { print }' \
+  "$retry_dest" > "$tmp/retry-dest-before"
+cp -- "$tmp/retry-dest-before" "$retry_dest"
+REAL_MV="$(command -v mv)" PATH="$tmp/fail-rename:$PATH" HOME="$retry_home" \
+  "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry-same" 2>&1
+assert_absent '^WRITE \|^BACKUP RULE ' "$tmp/agy-retry-same"
+cmp -- "$tmp/retry-dest-before" "$retry_dest"
+cp -- "$seed_plugin/rules/AGENTS.md" "$retry_dir/rules/AGENTS.md"
+printf '\nUse my updated rule instead.\n' >> "$retry_dir/rules/AGENTS.md"
+cp -- "$retry_dir/rules/AGENTS.md" "$tmp/retry-source-edited"
 HOME="$retry_home" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-retry-again"
 grep -Fq "ARCHIVE '$retry_dir' -> '$retry_backup_root/" "$tmp/agy-retry-again"
-assert_absent '^WRITE \|^BACKUP RULE ' "$tmp/agy-retry-again"
-cmp -- "$tmp/retry-dest-before" "$retry_dest"
-[[ "$(grep -Fxc 'Keep this on retry.' "$retry_dest")" -eq 1 ]]
+[[ ! -e "$retry_dir" ]]
+retry_archive=("$retry_backup_root"/albert.*/albert/rules/AGENTS.md)
+[[ "${#retry_archive[@]}" -eq 1 ]]
+cmp -- "$tmp/retry-source-edited" "${retry_archive[0]}"
+assert_absent 'Keep this on retry\.' "$retry_dest"
+[[ "$(grep -Fxc '<!-- QUINTET LEGACY CARRY START -->' "$retry_dest")" -eq 1 ]]
+awk '
+  $0 == "Use my updated rule instead." { rule=NR }
+  $0 == "User rule after the carry." { after=NR }
+  END { if (!rule || rule >= after) exit 1 }
+' "$retry_dest"
+retry_backups=("$retry_home"/.gemini/config/quintet-rule-backups/rule.*/AGENTS.md)
+cmp -- "$tmp/retry-dest-before" "$(grep -lFx 'Keep this on retry.' "${retry_backups[@]}")"
 
 # A dry run previews the carry and archive and changes nothing.
 dry_home="$tmp/dry-home"
@@ -601,6 +635,8 @@ mkdir -p "$keep_dir/skills/my-own-skill" "$keep_dir/skills/empty-dir"
 printf 'my own skill\n' > "$keep_dir/skills/my-own-skill/SKILL.md"
 printf 'my own notes\n' > "$keep_dir/notes.txt"
 keep_sum="$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)"
+keep_backup="$keep_dir/rules/AGENTS.md.albert-backup-20261127101515-202082"
+cp -- "$tmp/user-only-rule" "$keep_backup"
 HOME="$keep_home" XDG_CONFIG_HOME="$keep_home/.config" "$root/install.sh" --harness antigravity --scope global > "$tmp/agy-keep"
 grep -q "^KEEP '$keep_dir': legacy Antigravity plugin kept because it holds entries this installer does not write.$" "$tmp/agy-keep"
 grep -q "^  EXTRA '$keep_dir/notes.txt'$" "$tmp/agy-keep"
@@ -610,6 +646,9 @@ grep -q "^  EXTRA '$keep_dir/skills/empty-dir'$" "$tmp/agy-keep"
 grep -Fxq "  Inspect those entries before moving '$keep_dir' outside plugin discovery." "$tmp/agy-keep"
 assert_absent '^ARCHIVE ' "$tmp/agy-keep"
 assert_absent '^CARRY ' "$tmp/agy-keep"
+[[ ! -e "$keep_backup" ]]
+grep -Fq "RELOCATE RULE '$keep_backup' -> " "$tmp/agy-keep"
+cmp -- "$tmp/user-only-rule" "$(find "$keep_home/.gemini/config/quintet-rule-backups" -type f -name "${keep_backup##*/}")"
 [[ "$(cd "$keep_dir" && find . -type f -exec cksum {} + | sort)" == "$keep_sum" ]]
 [[ -d "$keep_dir/skills/empty-dir" && -f "$keep_quintet/plugin.json" ]]
 

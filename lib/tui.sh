@@ -117,8 +117,9 @@ albert_tui() {
       ti_message="Preview failed: $(tail -n 1 "$ti_preview_file")"
       rm -f -- "$ti_preview_file"; ti_preview_file=''; return 1
     fi
-    local n preview_focus=0 result=0 preview_limit=10 migration='' carry=''
+    local n relocations preview_focus=0 result=0 preview_limit=10 migration='' carry=''
     n="$(grep -c '^WRITE ' "$ti_preview_file" || true)"
+    relocations="$(grep -c '^RELOCATE RULE ' "$ti_preview_file" || true)"
     if grep -q '^ARCHIVE ' "$ti_preview_file"; then
       migration='Archive legacy Albert plugin under ~/.gemini/config/quintet-backups.'
     elif grep -q '^KEEP ' "$ti_preview_file"; then
@@ -129,6 +130,7 @@ albert_tui() {
     fi
     [[ -z "$migration" ]] || preview_limit=$((preview_limit-1))
     [[ -z "$carry" ]] || preview_limit=$((preview_limit-1))
+    if ((relocations)); then preview_limit=$((preview_limit-1)); fi
     while :; do
       printf '\033[?25l\033[H\033[J' >&3
       printf '%sQUINTET  /  REVIEW%s\n\n' "$ti_bold" "$ti_reset" >&3
@@ -137,6 +139,9 @@ albert_tui() {
       printf ' Workflow  %s\n Web       %s\n Planned   %s file writes\n' "$ti_workflow" "$([[ $ti_web -eq 1 ]] && echo enabled || echo disabled)" "$n" >&3
       [[ -z "$migration" ]] || printf ' %s\n' "$migration" >&3
       [[ -z "$carry" ]] || printf ' %s\n' "$carry" >&3
+      if ((relocations)); then
+        printf ' Old rule backups to relocate: %s (outside rule discovery).\n' "$relocations" >&3
+      fi
       printf '\n%sPlanned file writes%s\n' "$ti_bold" "$ti_reset" >&3
       grep '^WRITE ' "$ti_preview_file" | head -n "$preview_limit" >&3 || true
       if ((n > preview_limit)); then printf '  ... and %s more\n' "$((n-preview_limit))" >&3; fi
