@@ -22,6 +22,8 @@ jobs:
         run: bash tests/ownership-e2e.sh
       - name: Dependency graph E2E
         run: bash tests/graph-e2e.sh
+      - name: Recovery ledger E2E
+        run: python3 tests/recovery-e2e.py
       - name: Graph benchmark offline self-test
         run: python3 tests/live-graph.py --self-test
       - name: Install E2E

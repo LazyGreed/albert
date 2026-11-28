@@ -24,15 +24,23 @@ assert_workflow() {
   assert_absent 'QUINTET WORKFLOW\|workflows/v[12]\.md' "$file"
   if [[ "$edition" == v1 ]]; then
     grep -Fq 'sequences work using' "$file"
-    assert_absent 'VERIFIED_AGAINST\|INTEGRATION_REF' "$file"
+    assert_absent 'VERIFIED_AGAINST\|INTEGRATION_REF\|check-recovery.py' "$file"
   else
     grep -Fq 'VERIFIED_AGAINST' "$file"
     grep -Fq 'INTEGRATION_REF' "$file"
+    grep -Fq 'Use `scripts/check-recovery.py --help` in the selected' "$file"
     assert_absent 'sequences work using' "$file"
   fi
   [[ "$(grep -Fxc '<!-- QUINTET MANAGED START -->' "$file")" -eq 1 ]]
   [[ "$(grep -Fxc '<!-- QUINTET MANAGED END -->' "$file")" -eq 1 ]]
   assert_absent '<!-- ALBERT MANAGED' "$file"
+}
+assert_recovery_helper() {
+  local verification="$1"
+  [[ -x "$verification/scripts/check-recovery.py" ]]
+  COLUMNS=100 "$verification/scripts/check-recovery.py" --help | grep -F 'standard-library sqlite3' >/dev/null
+  grep -Fq 'references/workflow.md#v2-recovery' "$verification/SKILL.md"
+  grep -Fqx '### v2 recovery' "$verification/references/workflow.md"
 }
 # Weight-audit references ship byte-for-byte. Enumerate the source tree so a new
 # reference cannot be silently skipped; a missing installed copy fails the cmp.
@@ -351,6 +359,7 @@ for tool in pi claude; do
   cmp -s "$root/skills/weight-space-network-audit/SKILL.md" "$project/.$tool/skills/weight-space-network-audit/SKILL.md"
   assert_refs "$project/.$tool/skills/weight-space-network-audit/references"
   verification="$project/.$tool/skills/verification"
+  assert_recovery_helper "$verification"
   assert_absent 'Denia\|/blob/main/docs/workflow.md' "$verification/SKILL.md"
   grep -Fq 'The coordinator runs the v2 graph gates.' "$verification/SKILL.md"
   grep -Fq 'scripts/check-graph.sh --help' "$verification/SKILL.md"
@@ -589,6 +598,7 @@ assert_absent '^WRITE \|^pi install ' "$tmp/web-again"
 [[ -f "$project/.agents/skills/verification/SKILL.md" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-ownership.sh" ]]
 [[ -x "$project/.agents/skills/verification/scripts/check-readonly.sh" ]]
+assert_recovery_helper "$project/.agents/skills/verification"
 [[ ! -e "$project/.agents/skills/ui-ux" ]]
 cmp -s "$root/skills/alien-science-ideation/SKILL.md" "$project/.agents/skills/alien-science-ideation/SKILL.md"
 cmp -s "$root/skills/alien-science-ideation/references/discovery-workflow.md" "$project/.agents/skills/alien-science-ideation/references/discovery-workflow.md"
@@ -1370,6 +1380,7 @@ assert_workflow v2 "$codex_project/AGENTS.md"
 [[ ! -e "$codex_project/.codex/config.toml" && ! -e "$codex_project/.pi" && ! -e "$codex_project/.claude" ]]
 assert_codex_agents "$codex_project/.codex/agents"
 assert_codex_skills "$codex_project/.agents/skills"
+assert_recovery_helper "$codex_project/.agents/skills/verification"
 [[ ! -e "$codex_project/.codex/skills" ]]
 [[ "$(wc -c < "$codex_project/AGENTS.md")" -le 32768 ]]
 printf 'web_search = "cached"\n' > "$codex_project/.codex/config.toml"

@@ -166,8 +166,9 @@ Source default is [v2](workflows/v2.md). <!-- QUINTET WORKFLOW -->
   writer for an objective and coordinate handoffs in the host.
 - For substantial work, use an independent native session and an existing
   issue or PR when possible. Record the objective, status, key decisions,
-  evidence, next action, and session or branch refs there. Keep transcripts,
-  secondary state stores, and trivial task ledgers out of the workflow.
+  evidence, next action, and session or branch refs there. Keep the v2 recovery
+  ledger with the task's durable evidence. Keep transcripts, redundant state
+  stores, and trivial task ledgers out of the workflow.
 
 ## Verification-first task shaping
 
@@ -186,9 +187,10 @@ Source default is [v2](workflows/v2.md). <!-- QUINTET WORKFLOW -->
   Nora investigates knowledge gaps. Felix handles implementation failures.
   Resolve routine specification choices from evidence or safe experiments.
   Escalate user-only decisions or missing authority.
-- Inspect the cause of a blocked attempt before retrying. Change tactics
-  based on evidence and follow the selected workflow's recovery cap. At the
-  cap report `BLOCKED` with failing checks and a concrete next action.
+- Inspect the cause of a blocked attempt before retrying. Follow the selected
+  workflow's recovery rules and change tactics based on evidence. When those
+  rules require a stop, report `BLOCKED` with failing checks and a concrete
+  next action.
 
 ## Verify, review, finish
 

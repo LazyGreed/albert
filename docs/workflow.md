@@ -107,20 +107,26 @@ ACCEPT: skills/verification/scripts/check-graph.sh --help exits 0 and lists all 
    evidence needed to start each stream. Serialize overlapping readers and
    writers unless the speculative-reader conditions are met.
 2. **Invalidate.** Recheck stream evidence before landing. A change can
-   invalidate a hard input binding or affect a declared read scope. Vera
-   re-verifies stale evidence against the intended inputs. Felix edits when
-   the recheck finds a defect.
+   invalidate a hard input binding or affect a declared read scope. If a
+   binding or gate failure makes a prior Vera `PASS` stale, record the failure
+   in the original scope and reserve a retry before Vera's first recovery
+   re-verification against the intended inputs. Felix edits when the recheck
+   finds a defect.
 3. **Join.** Test the landed streams together on a clean integration branch.
    Bind the result to the revisions tested and recheck the binding before
-   final merge. Route join fixes to the responsible writer.
+   final merge. If a binding or gate failure invalidates the prior combined
+   result, record the failure in `integration` and reserve a retry before the
+   first combined recovery recheck. Route join fixes to the responsible writer.
 
 Use the [v2 workflow](../workflows/v2.md) for the exact gate commands, input
 schema, and evidence requirements.
 
 For example, if API stream `a1` fails and Felix fixes it at `a2`, consumer
-`b1` can be re-verified in a clean checkout combining `a2` and `b1`. When the
-trial passes, keep `b1` and carry its new evidence into the join. An unrelated
-stream keeps its verdict if its inputs are still current.
+`b1` can be re-verified in a clean checkout combining `a2` and `b1`. If the
+input change invalidates `b1`'s prior verdict, record the binding failure and
+reserve an attempt before the trial. When the trial passes, keep `b1` and
+carry its new evidence into the join. An unrelated stream keeps its verdict
+if its inputs are still current.
 
 On resume, derive `pending`, `dispatched`, `reported`, `verified`, `stale`,
 `abandoned`, or `landed` from native sessions, Git, and verdicts. Skip unstarted
@@ -136,9 +142,112 @@ status when needed.
 | Missing tool, access, or permission | Inspect and report the blocker |
 | User-only decision or authority boundary | Ask the user |
 
-Follow the recovery cap for the selected edition: [v1](../workflows/v1.md)
-or [v2](../workflows/v2.md#recovery). At the cap, report failed checks and the
-next action. Never retry an unchanged failing approach or weaken a check.
+Follow the [v1 recovery cap](../workflows/v1.md) when using v1. Report failed
+checks and the next action when recovery stops. Use evidence to choose each
+retry and retain the acceptance checks.
+
+### v2 recovery
+
+The coordinator owns one SQLite ledger per task. Keep it with the plan and
+check evidence at a durable path outside worker checkouts. Record the path and
+original scope IDs in the task's handoff. Initialize the ledger once. The
+per-scope limit defaults to eight, and `init --limit N` pins an override for
+all scopes and subsequent sessions. Eight retries and two consecutive
+unproductive attempts are policy defaults without live validation.
+
+Use `check-recovery.py` from the verification skill's `scripts` directory.
+The installer copies it for Pi, Claude Code, Antigravity, and Codex. Running
+v2 recovery requires Python 3.7 or newer with the standard-library `sqlite3`
+module on the coordinator's machine, including on hosts whose installer can
+run without Python.
+
+- Use the original stream ID for the scope. When a stream is renamed or
+  recreated, record the mapping in the task evidence and keep using that ID.
+  Route a fix to the stream that owns the affected paths. Charge dedicated
+  integration fixes and combined rechecks to the shared `integration` scope.
+  Reserve that name for integration across the task, including new integration
+  branches or fix streams. A routed fix and a later combined recheck are two
+  attempts in their respective scopes.
+- Initial verification can discover a failure without spending a retry. A
+  known binding or gate failure that makes a Vera `PASS` or a combined result
+  stale already triggers recovery. Use that failure to `baseline` the scope
+  or `reopen` it after a recorded pass. Reopening starts a new episode with
+  the existing history and spent retries. It stops if the scope has exhausted
+  its slots. Reserve `next_attempt` with `begin` before the first recovery
+  re-verification and each subsequent retry, including no-edit trials,
+  combined rechecks, and Felix edits with Vera re-review. Bind each attempt
+  to its checkout, ref, intended check, or native session in the evidence.
+  Record its result with `finish` and the same attempt number.
+- Give each failure a stable `--failure` ID, such as `join:billing-contract`.
+  Keep branches, SHAs, logs, and timestamps in `--evidence`. The checker
+  sorts and deduplicates IDs before hashing them. Fingerprints depend on
+  failure IDs alone. Use `--check-set ID` with `baseline`, `reopen`, and failed
+  `finish` to name the checks whose counts can be compared. The set is named
+  `default` when omitted. Give a binding check and a trial with different
+  coverage distinct IDs. The first comparable observation in a set establishes
+  its count for the current episode. A later count below that set's best count
+  is progress. Revisiting a set preserves its best count. For a partial or
+  otherwise unreliable observation of a set, `--incomparable` excludes its
+  count entirely and still records its fingerprint. A clearer cause or measured
+  advance can count through `--progress-key` and `--progress-evidence` describing
+  the observation. A previously recorded key or whitespace-equivalent evidence
+  cannot earn credit again in that scope, even in a new episode.
+- When `change_strategy` is pending, ask Nora to investigate and record her
+  finding and the changed tactic with `strategy`. When evidence invalidates
+  an architecture or dependency assumption, record `assumption` or pass
+  `--assumption` with the observation. If both requirements are pending,
+  record `strategy` first and then resolve `replan`. Status reports this with
+  `state: change_strategy` and `replan_pending: true`. Revise the plan, check
+  affected ownership, dependencies, and acceptance, then record `replan` with
+  the evidence. These actions reset the unproductive streak. They preserve the
+  retry count, each set's best comparable count, and prior observations.
+  After a replan, stop if a fingerprint already observed in the current
+  episode recurs. This includes fingerprints first seen after the replan.
+  A pass ends the episode, so the next failure can open a new episode even
+  if its fingerprint appeared before the pass.
+- When only the user can remove a blocker, record the blocker and required
+  intervention with `block`. After observing the intervention, run
+  `unblock --block SEQUENCE` with evidence. Use the active scope's
+  `block_sequence` from `status`. The token binds the evidence to that blocker.
+  Unblocking restores the prior state, including pending attempts and any
+  strategy or replan requirements. A scope stopped by exhaustion or recurrence
+  has no automatic retry path. An observed pass on the final allowed attempt
+  completes recovery.
+- Use `status` on resume to inspect every scope and its history. Reconcile an
+  in-flight attempt with Git, verdicts, and native sessions, then finish it or
+  record `--result abandoned` with the evidence. Abandoning an attempt keeps
+  its reservation charged and counts toward stagnation. A stale attempt
+  number is rejected. Status reads, baseline observations, and recovery
+  decisions consume zero retries. A new reservation is allowed only in
+  `ready`.
+
+This example uses the Quintet source path. In an installed project, set
+`recovery` to `scripts/check-recovery.py` under the selected verification
+skill and use the ledger path recorded with the task plan.
+
+```sh
+recovery=skills/verification/scripts/check-recovery.py
+ledger=/absolute/path/to/task-evidence/recovery.sqlite3
+"$recovery" --ledger "$ledger" init --limit 8
+"$recovery" --ledger "$ledger" baseline api --failure api:validation \
+  --evidence 'Initial validation test failed at api-work@abc123'
+"$recovery" --ledger "$ledger" status api
+"$recovery" --ledger "$ledger" begin api --attempt 1 --kind edit \
+  --evidence 'Felix to fix validation and Vera to review the targeted check'
+"$recovery" --ledger "$ledger" finish api --attempt 1 --result pass \
+  --evidence 'Vera PASS and validation test passed at api-work@def456'
+```
+
+Commands emit JSON with the scope's state, retry counters, and history. A
+successful command exits 0 even when it records a stop. A rejected action
+exits 1. Usage, storage, and runtime errors exit 2. See `--help` and
+`finish --help` for the command options.
+
+The checker validates ledger transitions and compares caller-supplied IDs.
+The coordinator and verifier substantiate evidence, scope identity,
+comparability, and pass claims. Continue to require independent review and
+applicable ownership, `ready`, `invalidate`, and `join` gates. See the
+[v2 workflow](../workflows/v2.md#recovery).
 
 ## Specialized skills
 
